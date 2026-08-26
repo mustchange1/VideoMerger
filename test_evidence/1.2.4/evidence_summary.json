@@ -1,0 +1,29 @@
+{
+  "release": "VideoMerger 1.2.4",
+  "generated_utc": "2026-08-26T09:16:53+00:00",
+  "host": "Linux x86_64 (Entwicklungshost – kein Windows-Gerät; Windows-Ergebnisse erfordern die PowerShell-Skripte)",
+  "ffmpeg": "/tmp/ffdev (johnvansickle static 7.0.2) für die Suite; /tmp/ffdev-dt (BtbN N-126264) für drawtext-e2e",
+  "suite": {
+    "full": "232 passed, 4 skipped (88.74 s) – full_source_tests.txt",
+    "defaults_fonts_preview": "17 passed (0.32 s) – defaults_fonts_preview_tests.txt",
+    "video_pool": "15 passed (1.51 s) – video_pool_tests.txt",
+    "quote_card": "28 passed (38.38 s, echte FFmpeg-e2e-Renderings) – quote_card_tests.txt"
+  },
+  "skipped_optin": [
+    "VIDEOMERGER_RUN_2MIN_BENCHMARK=1 (zweiminütiges Benchmark)",
+    "VIDEOMERGER_TEST_REAL_ALIGNMENT=1 (echte akustische E2E, 3 Tests)"
+  ],
+  "key_features_verified": [
+    "Video-Pool: 10/100/300/500 Dateien, Required-Only-Auswahl (300 vorhanden -> 14-16 benötigt), nicht genutzte Clips nicht im finalen FFmpeg-Befehl, Metadaten-Cache, Laufzeit skaliert nicht mit ungenutztem Pool",
+    "Quote-Karte: Intro->Quote->Main->Outro, stumm (<= -60 dB im Quote-Bereich, real gemessen), kein SRT/VTT/Subtitles/VO/Musik im Quote-Intervall, alle Zeitskalen/Resolutionen/Übergänge",
+    "Defaults: Intro/Main/Outro Original Audio = Original; Animation = Static Phrase; YouTube Landscape + Maximum",
+    "4 neue Fonts (Inter/Manrope/Lora/Roboto) mit OFL/Apache-Lizenzen, Renderer bleibt auflösungsscharf",
+    "Subtitle-Preview: identische Umbruch-/Metrics-/Safe-Area-Logik wie der Renderer (Preview ≈ Final Render)"
+  ],
+  "files": {
+    "defaults_fonts_preview_tests.txt": "bdc693fdfa4a3cf8be55b7ec4ab6d355814a796704a25be9234c583911de5abf",
+    "full_source_tests.txt": "b61533a83ea891dc966c76d838f27ab6d4ec485ff08f9703628bbc913c198011",
+    "quote_card_tests.txt": "ab67c05f0e739eef3dd09d72c113ff8fbcfa0c093e47dd20e8609becedc9613a",
+    "video_pool_tests.txt": "113b870e59adbeb067c1c352b1de4a580e9c382c91d076ad1f1dc6d4f30f09e5"
+  }
+}

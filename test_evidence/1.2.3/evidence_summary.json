@@ -1,0 +1,36 @@
+{
+  "release": "VideoMerger 1.2.3",
+  "generated_utc": "2026-08-25T23:44:32.918397+00:00",
+  "ffmpeg": "FFmpeg 7.0.2-static (johnvansickle) via VIDEOMERGER_FFMPEG_DIR",
+  "python": "3.13",
+  "gui": "PySide6 offscreen with locally supplied runtime libraries",
+  "host": "Linux development sandbox (not native Windows)",
+  "executed": {
+    "full_source_suite": "172 passed, 3 skipped in 66.97s",
+    "release_feature_suite": "17 passed in 0.07s",
+    "intro_e2e_suite": "2 passed in 4.75s",
+    "skipped_reason": "3 opt-in tests require VIDEOMERGER_TEST_REAL_ALIGNMENT=1 / downloaded local ASR model"
+  },
+  "status": {
+    "randomize_fisher_yates_permutation": "PASS",
+    "randomize_no_readded_files": "PASS",
+    "randomize_persists_and_is_active_immediately": "PASS",
+    "reset_to_natural_order_never_random": "PASS",
+    "natural_order_1_2_3_10": "PASS",
+    "maximum_quality_default_real_encoder_args": "PASS",
+    "youtube_landscape_default": "PASS",
+    "720p_1080p_1440p_4k_resolution_preservation": "PASS",
+    "source_fps_preservation": "PASS",
+    "intro_main_outro_real_render": "PASS",
+    "intro_outro_audio_isolation_acoustic_probe": "PASS",
+    "no_subtitles_on_intro_outro_final": "PASS",
+    "one_click_actual_main_video_handoff": "PASS",
+    "multi_voiceover_missing_script_clear_error": "PASS",
+    "cumulative_offsets_canonical_timeline": "PASS",
+    "single_global_script_mode_preserved": "PASS",
+    "native_windows_gui_setup_export": "NOT EXECUTED",
+    "windows_powershell_5_1": "NOT EXECUTED",
+    "actual_nvenc_qsv_amf_hardware": "NOT EXECUTED",
+    "two_minute_cold_asr_benchmark_123": "NOT EXECUTED (1.2.2 reference: 115.559 s)"
+  }
+}

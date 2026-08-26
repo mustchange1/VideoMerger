@@ -1,0 +1,21 @@
+{
+  "voiceover_processing_seconds": 8.034999996198167e-05,
+  "music_processing_seconds": 0.004846787999895241,
+  "script_processing_seconds": 0.0003986130000157573,
+  "asr_seconds": 45.74731526100004,
+  "alignment_seconds": 0.0024095309997846925,
+  "alignment_cache_hit": false,
+  "alignment_cache_level": "none",
+  "subtitle_creation_seconds": 5.208088438000004,
+  "ffmpeg_rendering_seconds": 63.435210519000066,
+  "finalization_seconds": 0.16610748700009026,
+  "total_pipeline_seconds": 114.90036124000017,
+  "video_analysis_seconds": 0.6587410990000535,
+  "measured_analysis_to_final_seconds": 115.55910233900022,
+  "measured_analysis_to_final_minutes": 1.925985038983337,
+  "benchmark_resolution": "1280x720",
+  "benchmark_duration_seconds": 119.985,
+  "benchmark_encoder": "Burned-in subtitle filter executed in the single final FFmpeg encode.",
+  "baseline_user_observation_minutes": 60.0,
+  "improvement_vs_observed_percent": 96.79002493502777
+}

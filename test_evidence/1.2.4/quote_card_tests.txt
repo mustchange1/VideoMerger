@@ -1,0 +1,38 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.14, pytest-9.0.3, pluggy-1.6.0 -- /usr/local/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/user/VideoMerger
+configfile: pytest.ini
+plugins: anyio-4.14.2
+collecting ... collected 28 items
+
+tests/test_124_quote.py::test_quote_font_size_scales_with_resolution[1920-1080-56] PASSED [  3%]
+tests/test_124_quote.py::test_quote_font_size_scales_with_resolution[2560-1440-75] PASSED [  7%]
+tests/test_124_quote.py::test_quote_font_size_scales_with_resolution[3840-2160-112] PASSED [ 10%]
+tests/test_124_quote.py::test_quote_font_size_scales_with_resolution[1080-1920-56] PASSED [ 14%]
+tests/test_124_quote.py::test_quote_font_size_scales_with_resolution[2160-3840-112] PASSED [ 17%]
+tests/test_124_quote.py::test_quote_never_splits_or_drops_words_acres_matrix PASSED [ 21%]
+tests/test_124_quote.py::test_quote_single_line_short_text PASSED        [ 25%]
+tests/test_124_quote.py::test_quote_long_text_balanced_and_within_four_lines PASSED [ 28%]
+tests/test_124_quote.py::test_quote_no_lone_word_final_line_invariant PASSED [ 32%]
+tests/test_124_quote.py::test_quote_positioned_slightly_above_mathematical_center PASSED [ 35%]
+tests/test_124_quote.py::test_quote_attribution_shares_font_family_never_ultra_thin PASSED [ 39%]
+tests/test_124_quote.py::test_quote_empty_text_layout_is_safe PASSED     [ 42%]
+tests/test_124_quote.py::test_quote_video_chain_structure PASSED         [ 46%]
+tests/test_124_quote.py::test_quote_drawtext_contains_umlaut_lines PASSED [ 50%]
+tests/test_124_quote.py::test_stage2_command_has_no_input_for_quote_and_is_silent PASSED [ 53%]
+tests/test_124_quote.py::test_stage2_without_quote_is_unchanged PASSED   [ 57%]
+tests/test_124_quote.py::test_add_outro_inserts_quote_between_intro_and_main PASSED [ 60%]
+tests/test_124_quote.py::test_add_outro_without_quote_keeps_three_sections PASSED [ 64%]
+tests/test_124_quote.py::test_add_outro_quote_empty_text_is_clear_error PASSED [ 67%]
+tests/test_124_quote.py::test_add_outro_quote_invalid_duration_is_clear_error PASSED [ 71%]
+tests/test_124_quote.py::test_add_outro_all_allowed_quote_durations_pass_validation[1.0] PASSED [ 75%]
+tests/test_124_quote.py::test_add_outro_all_allowed_quote_durations_pass_validation[1.5] PASSED [ 78%]
+tests/test_124_quote.py::test_add_outro_all_allowed_quote_durations_pass_validation[2.0] PASSED [ 82%]
+tests/test_124_quote.py::test_add_outro_all_allowed_quote_durations_pass_validation[2.5] PASSED [ 85%]
+tests/test_124_quote.py::test_add_outro_all_allowed_quote_durations_pass_validation[3.0] PASSED [ 89%]
+tests/test_124_quote.py::test_create_complete_gate_accepts_quote_without_intro_outro PASSED [ 92%]
+tests/test_124_quote.py::test_intro_quote_main_renders_silent_quote_section PASSED [ 96%]
+tests/test_124_quote.py::test_quote_with_outro_renders_all_transitions PASSED [100%]
+
+============================= 28 passed in 38.38s ==============================

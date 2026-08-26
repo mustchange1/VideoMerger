@@ -1,0 +1,287 @@
+Stage 1 – Create Main Video
+Aktive Clip-Reihenfolge: 03.mp4 → 01.mp4 → 02.mp4
+Videomaterial: 3.000 s
+Voiceover: 3.874 s, 22050 Hz, 1 Kanal/Kanäle; Ziel Main Video: 4.874 s inkl. 1.0 s Pause
+Music: 0.653 s, 22050 Hz; wird geloopt und auf 3.874 s begrenzt.
+Script: 8 Wörter; ausgewählte Sprache: German
+WARNUNG: Subtitle alignment warning: 1 script word(s) could not be confidently matched and were constrained between neighboring acoustic timestamps.
+Subtitle Alignment: 8 Wörter, Methode faster-whisper/small word timestamps + script-forced mapping, Kompatibilität 87.5%, Confidence 76.7%
+SRT/VTT validiert; Untertitel enden bei 2.900 s vor Outro.
+WARNUNG: Videomaterial ist 2.474 s kürzer als die Ziel-Timeline; der letzte visuelle Inhalt wird kontrolliert verlängert.
+WARNUNG: Subtitle alignment warning: 1 script word(s) could not be confidently matched and were constrained between neighboring acoustic timestamps.
+FFmpeg executable:
+/home/user/devtools/ffmpeg-7.0.2-amd64-static/ffmpeg
+FFmpeg version:
+ffmpeg version 7.0.2-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2024 the FFmpeg developers
+FFprobe executable:
+/home/user/devtools/ffmpeg-7.0.2-amd64-static/ffprobe
+FFprobe version:
+ffprobe version 7.0.2-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2007-2024 the FFmpeg developers
+FFmpeg preflight command:
+/home/user/devtools/ffmpeg-7.0.2-amd64-static/ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:r=1:d=0.05 -filter_complex '[0:v]null[vout]' -map '[vout]' -frames:v 1 -f null -
+FFmpeg direct -filter_complex preflight: OK
+Eingabedateien: 3 (persistente aktive Projekt-Reihenfolge)
+Tatsächliche Render-Reihenfolge: 03.mp4 → 01.mp4 → 02.mp4
+Ziel: 16:9, 320x180, 30 fps
+Übergang: Cross Dissolve, Kurve: ease_in_out, angefordert 0.30 s
+Effektive Übergänge: 0.300 s, 0.300 s
+Encoding: CPU (libx264); Qualität CRF/CQ 22; Preset fast
+Audio: AAC-LC, 48 kHz, Stereo; Normalisierung: AUS
+Ausgabe: /home/user/VideoMerger/test_evidence/1.2/MainVideo_16x9.mp4
+Starte FFmpeg (Argumentliste ohne Shell; Unicode-Pfade bleiben atomar).
+Rendering command:
+/home/user/devtools/ffmpeg-7.0.2-amd64-static/ffmpeg -hide_banner -y -i /home/user/VideoMerger/temp/manual12/videos/03.mp4 -i /home/user/VideoMerger/temp/manual12/videos/01.mp4 -i /home/user/VideoMerger/temp/manual12/videos/02.mp4 -i /home/user/VideoMerger/temp/alignment/german.wav -stream_loop -1 -i /home/user/VideoMerger/temp/manual12/music.mp3 -loop 1 -i /home/user/VideoMerger/temp/manual12/watermark.png -filter_complex '[0:v:0]fps=30:round=near,tpad=stop_mode=clone:stop_duration=0.066667,trim=duration=1,settb=AVTB,setpts=PTS-STARTPTS[pre0];[pre0]scale=w=320:h=180:flags=lanczos,setsar=1,format=yuv420p[base0];[base0]fps=30:round=near,settb=AVTB[v0];[0:a:0]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0,apad=pad_dur=1.25,atrim=duration=1,asetpts=PTS-STARTPTS[a0];[1:v:0]fps=30:round=near,tpad=stop_mode=clone:stop_duration=0.066667,trim=duration=1,settb=AVTB,setpts=PTS-STARTPTS[pre1];[pre1]scale=w=320:h=180:flags=lanczos,setsar=1,format=yuv420p[base1];[base1]fps=30:round=near,settb=AVTB[v1];[1:a:0]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0,apad=pad_dur=1.25,atrim=duration=1,asetpts=PTS-STARTPTS[a1];[2:v:0]fps=30:round=near,tpad=stop_mode=clone:stop_duration=2.541134,trim=duration=3.474467,settb=AVTB,setpts=PTS-STARTPTS[pre2];[pre2]scale=w=320:h=180:flags=lanczos,setsar=1,format=yuv420p[base2];[base2]fps=30:round=near,settb=AVTB[v2];[2:a:0]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0,apad=pad_dur=3.724467,atrim=duration=3.474467,asetpts=PTS-STARTPTS[a2];[v0][v1]xfade=transition=custom:duration=0.3:offset=0.7:expr='"'"'A*(1-((1-P)*(1-P)*(3-2*(1-P))))+B*((1-P)*(1-P)*(3-2*(1-P)))'"'"',fps=30:round=near,settb=AVTB[vx1];[vx1][v2]xfade=transition=custom:duration=0.3:offset=1.4:expr='"'"'A*(1-((1-P)*(1-P)*(3-2*(1-P))))+B*((1-P)*(1-P)*(3-2*(1-P)))'"'"',fps=30:round=near,settb=AVTB[vx2];[a0][a1]acrossfade=d=0.3:c1=tri:c2=tri[ax1];[ax1][a2]acrossfade=d=0.3:c1=tri:c2=tri[ax2];[vx2]trim=duration=4.874467,setpts=PTS-STARTPTS,format=yuv420p,setsar=1[vprogram];[vprogram]subtitles=filename='"'"'/home/user/VideoMerger/temp/MainVideo_16x9_burn.ass'"'"':charenc=UTF-8[vsubtitles];[5:v:0]scale=w=38:h=-1:flags=lanczos,format=rgba,colorchannelmixer=aa=0.8[watermark];[vsubtitles][watermark]overlay=x=W-w-5:y=5:shortest=1[vwatermark];[vwatermark]fps=30:round=near,format=yuv420p,setsar=1[vout];[ax2]atrim=duration=3.874467,apad=pad_dur=5.124467,atrim=duration=4.874467[original_main];[3:a:0]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=1,atrim=duration=3.874467,apad=pad_dur=5.124467,atrim=duration=4.874467[voice_pre];[voice_pre]asplit=2[voice_mix][voice_side];[4:a:0]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=0.28,atrim=duration=3.874467,apad=pad_dur=5.124467,atrim=duration=4.874467[music_pre];[music_pre][voice_side]sidechaincompress=threshold=0.025:ratio=8:attack=25:release=450:makeup=1[ducked_music];[original_main][voice_mix][ducked_music]amix=inputs=3:normalize=0:dropout_transition=0,alimiter=limit=0.95:attack=5:release=50[mixed_main];[mixed_main]aresample=48000:async=1,atrim=duration=4.874467[aout]' -map '[vout]' -map '[aout]' -c:v libx264 -preset fast -crf 22 -profile:v high -pix_fmt yuv420p -fps_mode cfr -c:a aac -profile:a aac_low -b:a 192k -ar 48000 -ac 2 -movflags +faststart -metadata:s:v:0 rotate=0 -color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv -max_muxing_queue_size 4096 -progress pipe:1 -nostats /home/user/VideoMerger/test_evidence/1.2/MainVideo_16x9.mp4
+FFmpeg: [Parsed_subtitles_60 @ 0x46704140] libass API version: 0x1703000
+FFmpeg: [Parsed_subtitles_60 @ 0x46704140] libass source: commit: 0.17.3-12-g5c00ca266dd49dd7cf93a79f09a661ab1ff66439
+FFmpeg: [Parsed_subtitles_60 @ 0x46704140] Shaper: FriBidi 1.0.11 (SIMPLE) HarfBuzz-ng 3.1.1 (COMPLEX)
+FFmpeg: [Parsed_subtitles_60 @ 0x46704140] Using font provider fontconfig
+FFmpeg: Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/home/user/VideoMerger/temp/manual12/videos/03.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Duration: 00:00:01.00, start: 0.000000, bitrate: 102 kb/s
+FFmpeg:   Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 320x180 [SAR 1:1 DAR 16:9], 9 kb/s, 30 fps, 30 tbr, 15360 tbn (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : VideoHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg:   Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp, 70 kb/s (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : SoundHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg: Input #1, mov,mp4,m4a,3gp,3g2,mj2, from '/home/user/VideoMerger/temp/manual12/videos/01.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Duration: 00:00:01.00, start: 0.000000, bitrate: 101 kb/s
+FFmpeg:   Stream #1:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 320x180 [SAR 1:1 DAR 16:9], 9 kb/s, 30 fps, 30 tbr, 15360 tbn (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : VideoHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg:   Stream #1:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp, 70 kb/s (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : SoundHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg: Input #2, mov,mp4,m4a,3gp,3g2,mj2, from '/home/user/VideoMerger/temp/manual12/videos/02.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Duration: 00:00:01.00, start: 0.000000, bitrate: 101 kb/s
+FFmpeg:   Stream #2:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 320x180 [SAR 1:1 DAR 16:9], 9 kb/s, 30 fps, 30 tbr, 15360 tbn (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : VideoHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg:   Stream #2:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp, 70 kb/s (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : SoundHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg: [aist#3:0/pcm_s16le @ 0x467d9800] Guessed Channel Layout: mono
+FFmpeg: Input #3, wav, from '/home/user/VideoMerger/temp/alignment/german.wav':
+FFmpeg:   Duration: 00:00:03.87, bitrate: 352 kb/s
+FFmpeg:   Stream #3:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 22050 Hz, mono, s16, 352 kb/s
+FFmpeg: Input #4, mp3, from '/home/user/VideoMerger/temp/manual12/music.mp3':
+FFmpeg:   Metadata:
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Duration: 00:00:00.65, start: 0.050113, bitrate: 34 kb/s
+FFmpeg:   Stream #4:0: Audio: mp3 (mp3float), 22050 Hz, mono, fltp, 32 kb/s
+FFmpeg: Input #5, png_pipe, from '/home/user/VideoMerger/temp/manual12/watermark.png':
+FFmpeg:   Duration: N/A, bitrate: N/A
+FFmpeg:   Stream #5:0: Video: png, rgb24(pc, gbr/unknown/unknown), 80x40 [SAR 1:1 DAR 2:1], 25 fps, 25 tbr, 25 tbn
+FFmpeg: Stream mapping:
+FFmpeg:   Stream #0:0 (h264) -> fps:default
+FFmpeg:   Stream #0:1 (aac) -> aresample:default
+FFmpeg:   Stream #1:0 (h264) -> fps:default
+FFmpeg:   Stream #1:1 (aac) -> aresample:default
+FFmpeg:   Stream #2:0 (h264) -> fps:default
+FFmpeg:   Stream #2:1 (aac) -> aresample:default
+FFmpeg:   Stream #3:0 (pcm_s16le) -> aresample:default
+FFmpeg:   Stream #4:0 (mp3float) -> aresample:default
+FFmpeg:   Stream #5:0 (png) -> scale:default
+FFmpeg:   setsar:default -> Stream #0:0 (libx264)
+FFmpeg:   atrim:default -> Stream #0:1 (aac)
+FFmpeg: Press [q] to stop, [?] for help
+FFmpeg: [Parsed_subtitles_60 @ 0x7f9f480e1a40] libass API version: 0x1703000
+FFmpeg: [Parsed_subtitles_60 @ 0x7f9f480e1a40] libass source: commit: 0.17.3-12-g5c00ca266dd49dd7cf93a79f09a661ab1ff66439
+FFmpeg: [Parsed_subtitles_60 @ 0x7f9f480e1a40] Shaper: FriBidi 1.0.11 (SIMPLE) HarfBuzz-ng 3.1.1 (COMPLEX)
+FFmpeg: [Parsed_subtitles_60 @ 0x7f9f480e1a40] Using font provider fontconfig
+FFmpeg: [Parsed_subtitles_60 @ 0x7f9f480e1a40] fontselect: (Arial, 400, 0) -> /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf, 0, DejaVuSans
+FFmpeg: [libx264 @ 0x46773840] using SAR=1/1
+FFmpeg: [libx264 @ 0x46773840] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+FFmpeg: [libx264 @ 0x46773840] profile High, level 1.3, 4:2:0, 8-bit
+FFmpeg: [libx264 @ 0x46773840] 264 - core 164 r3191 4613ac3 - H.264/MPEG-4 AVC codec - Copyleft 2003-2024 - http://www.videolan.org/x264.html - options: cabac=1 ref=2 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=6 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=3 lookahead_threads=1 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=1 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=30 rc=crf mbtree=1 crf=22.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+FFmpeg: Output #0, mp4, to '/home/user/VideoMerger/test_evidence/1.2/MainVideo_16x9.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 320x180 [SAR 1:1 DAR 16:9], q=2-31, 30 fps, 15360 tbn
+FFmpeg:       Metadata:
+FFmpeg:         rotate          : 0
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg:       Side data:
+FFmpeg:         cpb: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+FFmpeg:   Stream #0:1: Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s
+FFmpeg:       Metadata:
+FFmpeg:         encoder         : Lavc61.3.100 aac
+FFmpeg: [mp4 @ 0x466db300] Starting second pass: moving the moov atom to the beginning of the file
+FFmpeg: [out#0/mp4 @ 0x467f7540] video:24KiB audio:88KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 5.900719%
+FFmpeg: frame=  145 fps=0.0 q=-1.0 Lsize=     119KiB time=00:00:04.76 bitrate= 203.8kbits/s speed=6.22x
+FFmpeg: [libx264 @ 0x46773840] frame I:3     Avg QP:21.54  size:  2612
+FFmpeg: [libx264 @ 0x46773840] frame P:41    Avg QP:11.78  size:   276
+FFmpeg: [libx264 @ 0x46773840] frame B:101   Avg QP:12.91  size:    44
+FFmpeg: [libx264 @ 0x46773840] consecutive B-frames:  4.8%  6.9%  0.0% 88.3%
+FFmpeg: [libx264 @ 0x46773840] mb I  I16..4:  7.9% 80.4% 11.7%
+FFmpeg: [libx264 @ 0x46773840] mb P  I16..4:  9.0%  0.1%  0.6%  P16..4:  2.2%  0.2%  0.1%  0.0%  0.0%    skip:87.8%
+FFmpeg: [libx264 @ 0x46773840] mb B  I16..4:  0.0%  0.0%  0.0%  B16..8:  0.7%  0.0%  0.0%  direct: 8.3%  skip:90.9%  L0:48.0% L1:52.0% BI: 0.0%
+FFmpeg: [libx264 @ 0x46773840] 8x8 transform intra:35.2% inter:50.8%
+FFmpeg: [libx264 @ 0x46773840] coded y,uvDC,uvAC intra: 5.4% 9.0% 8.6% inter: 0.3% 6.9% 0.7%
+FFmpeg: [libx264 @ 0x46773840] i16 v,h,dc,p: 82%  5% 13%  0%
+FFmpeg: [libx264 @ 0x46773840] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu: 17%  5% 78%  0%  0%  0%  0%  0%  0%
+FFmpeg: [libx264 @ 0x46773840] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 23% 27% 28%  1%  3%  5%  5%  2%  5%
+FFmpeg: [libx264 @ 0x46773840] i8c dc,h,v,p: 90%  9%  1%  1%
+FFmpeg: [libx264 @ 0x46773840] Weighted P-Frames: Y:19.5% UV:19.5%
+FFmpeg: [libx264 @ 0x46773840] ref P L0: 96.4%  3.6%
+FFmpeg: [libx264 @ 0x46773840] ref B L0: 81.2% 18.8%
+FFmpeg: [libx264 @ 0x46773840] kb/s:39.10
+FFmpeg: [aac @ 0x4676ea40] Qavg: 22834.777
+Validiere Ausgabedatei mit FFprobe …
+Validierung: Dateigröße: 0.12 MiB
+Validierung: Fast Start: OK (moov vor mdat)
+Validierung: Container: mov,mp4,m4a,3gp,3g2,mj2
+Validierung: Video: h264, yuv420p, 320x180, 30.000 fps, SAR 1:1, 4.833 s
+Validierung: Audio: aac, 48000 Hz, 2 Kanäle, 4.874 s
+Validierung: Bitrate: 199310 bit/s
+Validierung: Dauer: 4.874 s
+Export completed successfully.
+Prüfe Dateistabilität für 2 Eingabedatei(en) …
+Dateistabilität: OK (Größe und Änderungszeit unverändert).
+Analysiere 1/2: MainVideo_16x9.mp4
+Analysiere 2/2: outro.mp4
+Stage 2 – Add Outro
+Outro: 0.800 s; audio available: yes
+Outro receives no application voiceover, no background music, and no subtitles.
+Outro original audio mode: original
+FFmpeg executable:
+/home/user/devtools/ffmpeg-7.0.2-amd64-static/ffmpeg
+FFmpeg version:
+ffmpeg version 7.0.2-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2024 the FFmpeg developers
+FFprobe executable:
+/home/user/devtools/ffmpeg-7.0.2-amd64-static/ffprobe
+FFprobe version:
+ffprobe version 7.0.2-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2007-2024 the FFmpeg developers
+FFmpeg direct -filter_complex preflight: bereits erfolgreich geprüft.
+Eingabedateien: 2 (persistente aktive Projekt-Reihenfolge)
+Tatsächliche Render-Reihenfolge: MainVideo_16x9.mp4 → outro.mp4
+Ziel: 16:9, 320x180, 30 fps
+Übergang: Cross Dissolve, Kurve: ease_in_out, angefordert 0.30 s
+Effektive Übergänge: 0.300 s
+Encoding: CPU (libx264); Qualität CRF/CQ 22; Preset fast
+Audio: AAC-LC, 48 kHz, Stereo; Normalisierung: AUS
+Ausgabe: /home/user/VideoMerger/test_evidence/1.2/FinalVideo_16x9.mp4
+Starte FFmpeg (Argumentliste ohne Shell; Unicode-Pfade bleiben atomar).
+Rendering command:
+/home/user/devtools/ffmpeg-7.0.2-amd64-static/ffmpeg -hide_banner -y -i /home/user/VideoMerger/test_evidence/1.2/MainVideo_16x9.mp4 -i /home/user/VideoMerger/temp/manual12/outro.mp4 -loop 1 -i /home/user/VideoMerger/temp/manual12/watermark.png -filter_complex '[0:v:0]fps=30:round=near,tpad=stop_mode=clone:stop_duration=0.066667,trim=duration=4.833333,settb=AVTB,setpts=PTS-STARTPTS[pre0];[pre0]scale=w=320:h=180:flags=lanczos,setsar=1,format=yuv420p[base0];[base0]fps=30:round=near,settb=AVTB[v0];[0:a:0]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=1,apad=pad_dur=5.083333,atrim=duration=4.833333,asetpts=PTS-STARTPTS[a0];[1:v:0]fps=30:round=near,tpad=stop_mode=clone:stop_duration=0.066667,trim=duration=0.8,settb=AVTB,setpts=PTS-STARTPTS[pre1];[pre1]scale=w=320:h=180:flags=lanczos,setsar=1,format=yuv420p[base1];[base1]fps=30:round=near,settb=AVTB[v1];[1:a:0]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=1,apad=pad_dur=1.05,atrim=duration=0.8,asetpts=PTS-STARTPTS[a1];[v0][v1]xfade=transition=custom:duration=0.3:offset=4.533333:expr='"'"'A*(1-((1-P)*(1-P)*(3-2*(1-P))))+B*((1-P)*(1-P)*(3-2*(1-P)))'"'"',fps=30:round=near,settb=AVTB[vx1];[a0][a1]acrossfade=d=0.3:c1=tri:c2=tri[ax1];[vx1]trim=duration=5.333333,setpts=PTS-STARTPTS,format=yuv420p,setsar=1[vprogram];[2:v:0]scale=w=38:h=-1:flags=lanczos,format=rgba,colorchannelmixer=aa=0.8[watermark];[vprogram][watermark]overlay=x=W-w-5:y=5:shortest=1:enable='"'"'gte(t,4.533333)'"'"'[vwatermark];[vwatermark]fps=30:round=near,format=yuv420p,setsar=1[vout];[ax1]aresample=48000:async=1,atrim=duration=5.333333[aout]' -map '[vout]' -map '[aout]' -c:v libx264 -preset fast -crf 22 -profile:v high -pix_fmt yuv420p -fps_mode cfr -c:a aac -profile:a aac_low -b:a 192k -ar 48000 -ac 2 -movflags +faststart -metadata:s:v:0 rotate=0 -color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv -max_muxing_queue_size 4096 -progress pipe:1 -nostats /home/user/VideoMerger/test_evidence/1.2/FinalVideo_16x9.mp4
+FFmpeg: Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/home/user/VideoMerger/test_evidence/1.2/MainVideo_16x9.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Duration: 00:00:04.87, start: 0.000000, bitrate: 199 kb/s
+FFmpeg:   Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 320x180 [SAR 1:1 DAR 16:9], 40 kb/s, 30 fps, 30 tbr, 15360 tbn (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : VideoHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg:   Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 147 kb/s (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : SoundHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg: Input #1, mov,mp4,m4a,3gp,3g2,mj2, from '/home/user/VideoMerger/temp/manual12/outro.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Duration: 00:00:00.80, start: 0.000000, bitrate: 106 kb/s
+FFmpeg:   Stream #1:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 320x180 [SAR 1:1 DAR 16:9], 11 kb/s, 30 fps, 30 tbr, 15360 tbn (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : VideoHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg:   Stream #1:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, mono, fltp, 70 kb/s (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : SoundHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg: Input #2, png_pipe, from '/home/user/VideoMerger/temp/manual12/watermark.png':
+FFmpeg:   Duration: N/A, bitrate: N/A
+FFmpeg:   Stream #2:0: Video: png, rgb24(pc, gbr/unknown/unknown), 80x40 [SAR 1:1 DAR 2:1], 25 fps, 25 tbr, 25 tbn
+FFmpeg: Stream mapping:
+FFmpeg:   Stream #0:0 (h264) -> fps:default
+FFmpeg:   Stream #0:1 (aac) -> aresample:default
+FFmpeg:   Stream #1:0 (h264) -> fps:default
+FFmpeg:   Stream #1:1 (aac) -> aresample:default
+FFmpeg:   Stream #2:0 (png) -> scale:default
+FFmpeg:   setsar:default -> Stream #0:0 (libx264)
+FFmpeg:   atrim:default -> Stream #0:1 (aac)
+FFmpeg: Press [q] to stop, [?] for help
+FFmpeg: [libx264 @ 0x1e4000c0] using SAR=1/1
+FFmpeg: [libx264 @ 0x1e4000c0] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+FFmpeg: [libx264 @ 0x1e4000c0] profile High, level 1.3, 4:2:0, 8-bit
+FFmpeg: [libx264 @ 0x1e4000c0] 264 - core 164 r3191 4613ac3 - H.264/MPEG-4 AVC codec - Copyleft 2003-2024 - http://www.videolan.org/x264.html - options: cabac=1 ref=2 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=6 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=3 lookahead_threads=1 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=1 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=30 rc=crf mbtree=1 crf=22.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+FFmpeg: Output #0, mp4, to '/home/user/VideoMerger/test_evidence/1.2/FinalVideo_16x9.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 320x180 [SAR 1:1 DAR 16:9], q=2-31, 30 fps, 15360 tbn
+FFmpeg:       Metadata:
+FFmpeg:         rotate          : 0
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg:       Side data:
+FFmpeg:         cpb: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+FFmpeg:   Stream #0:1: Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s
+FFmpeg:       Metadata:
+FFmpeg:         encoder         : Lavc61.3.100 aac
+FFmpeg: [mp4 @ 0x1e430840] Starting second pass: moving the moov atom to the beginning of the file
+FFmpeg: [out#0/mp4 @ 0x1e3b6b40] video:26KiB audio:103KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 5.462277%
+FFmpeg: frame=  159 fps=0.0 q=-1.0 Lsize=     137KiB time=00:00:05.23 bitrate= 214.2kbits/s speed=9.16x
+FFmpeg: [libx264 @ 0x1e4000c0] frame I:3     Avg QP:20.49  size:  2534
+FFmpeg: [libx264 @ 0x1e4000c0] frame P:46    Avg QP:13.75  size:   240
+FFmpeg: [libx264 @ 0x1e4000c0] frame B:110   Avg QP:12.89  size:    70
+FFmpeg: [libx264 @ 0x1e4000c0] consecutive B-frames:  5.7%  6.3%  0.0% 88.1%
+FFmpeg: [libx264 @ 0x1e4000c0] mb I  I16..4: 10.0% 78.3% 11.7%
+FFmpeg: [libx264 @ 0x1e4000c0] mb P  I16..4:  6.2%  0.1%  0.5%  P16..4:  2.5%  0.2%  0.1%  0.0%  0.0%    skip:90.3%
+FFmpeg: [libx264 @ 0x1e4000c0] mb B  I16..4:  0.0%  0.0%  0.0%  B16..8:  0.6%  0.0%  0.0%  direct:13.0%  skip:86.3%  L0:42.4% L1:56.8% BI: 0.9%
+FFmpeg: [libx264 @ 0x1e4000c0] 8x8 transform intra:39.2% inter:46.7%
+FFmpeg: [libx264 @ 0x1e4000c0] coded y,uvDC,uvAC intra: 6.1% 10.8% 10.3% inter: 0.2% 10.3% 0.7%
+FFmpeg: [libx264 @ 0x1e4000c0] i16 v,h,dc,p: 82%  5% 13%  0%
+FFmpeg: [libx264 @ 0x1e4000c0] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu:  8% 11% 81%  0%  0%  0%  0%  0%  0%
+FFmpeg: [libx264 @ 0x1e4000c0] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 23% 26% 29%  2%  4%  4%  5%  2%  5%
+FFmpeg: [libx264 @ 0x1e4000c0] i8c dc,h,v,p: 87% 12%  1%  1%
+FFmpeg: [libx264 @ 0x1e4000c0] Weighted P-Frames: Y:28.3% UV:28.3%
+FFmpeg: [libx264 @ 0x1e4000c0] ref P L0: 98.3%  1.7%
+FFmpeg: [libx264 @ 0x1e4000c0] ref B L0: 97.3%  2.7%
+FFmpeg: [libx264 @ 0x1e4000c0] kb/s:39.73
+FFmpeg: [aac @ 0x1e44de80] Qavg: 27084.984
+Validiere Ausgabedatei mit FFprobe …
+Validierung: Dateigröße: 0.13 MiB
+Validierung: Fast Start: OK (moov vor mdat)
+Validierung: Container: mov,mp4,m4a,3gp,3g2,mj2
+Validierung: Video: h264, yuv420p, 320x180, 30.000 fps, SAR 1:1, 5.300 s
+Validierung: Audio: aac, 48000 Hz, 2 Kanäle, 5.333 s
+Validierung: Bitrate: 210212 bit/s
+Validierung: Dauer: 5.333 s
+Export completed successfully.
+EVIDENCE MAIN PASS: /home/user/VideoMerger/test_evidence/1.2/MainVideo_16x9.mp4 4.874s
+EVIDENCE FINAL PASS: /home/user/VideoMerger/test_evidence/1.2/FinalVideo_16x9.mp4 5.333s

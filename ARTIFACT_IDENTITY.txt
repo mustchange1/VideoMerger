@@ -1,0 +1,10 @@
+VideoMerger 1.2.4 Artifact Identity
+
+Version: 1.2.4
+Final filename: VideoMerger_Final_1.2.4.zip
+Build ID: ed9483bf-f50a-49b2-a15c-29de6b59ce6a
+Recreated: 2026-08-26 (Europe/Berlin)
+Build UTC: 2026-08-26T09:17:05+00:00
+Source: rebuilt from the final VideoMerger 1.2.4 source tree (additive upgrade of the tested 1.2.3 application); not copied from a prior ZIP.
+Verification order: create ZIP -> calculate SHA-256 -> clean extraction -> verify exact extracted files -> run full suite on the extracted tree -> report the same SHA-256.
+Note: the ZIP's own SHA-256 is necessarily reported outside the ZIP to avoid self-reference.

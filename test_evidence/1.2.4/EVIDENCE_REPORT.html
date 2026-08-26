@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset='utf-8'><title>VideoMerger 1.2.4 Evidence</title>
+<style>body{background:#10141b;color:#edf2f7;font:15px system-ui;margin:0;padding:32px}main{max-width:1100px;margin:auto}h1{font-size:30px}.meta{color:#aab8c8}table{border-collapse:collapse;width:100%;background:#171e28;margin-top:12px}td{border:1px solid #344154;padding:9px}.s{color:#91efb4;font-weight:700}.n{color:#f6c66b;font-weight:700}pre{background:#171e28;border:1px solid #344154;padding:14px;overflow:auto}</style></head><body><main>
+<h1>VideoMerger 1.2.4 — executed test evidence</h1>
+<p class='meta'>Generated: 2026-08-26 (UTC)<br>FFmpeg 7.0.2-static (johnvansickle) via VIDEOMERGER_FFMPEG_DIR; drawtext-e2e via BtbN N-126264<br>Host: Linux development sandbox (not native Windows) — Linux results are not native Windows execution.</p>
+<p>Executed: full suite <b>232 passed, 4 skipped</b> in 88.74 s. 1.2.4 suites: defaults/fonts/preview <b>17 passed</b> (0.32 s), video pool <b>15 passed</b> (1.51 s), quote card <b>28 passed</b> (38.38 s, real FFmpeg renders incl. 16:9/9:16 e2e with acoustic probes).</p>
+<table>
+<tr><th>1.2.4 feature row</th><th>Status</th><th>Executed evidence</th></tr>
+<tr><td>Large Video Pool (10/100/300/500 files)</td><td class='s'>PASS</td><td>test_124_video_pool.py::test_pool_status_required_only_for_pool_sizes[10/100/300/500], test_discovery_handles_100_pool_with_ffprobe</td></tr>
+<tr><td>100+ Metadata Discovery (lightweight ffprobe, cached)</td><td class='s'>PASS</td><td>test_metadata_discovery_is_lightweight_and_cached, test_discovery_handles_100_pool_with_ffprobe</td></tr>
+<tr><td>Required-Only Processing (unused not in command)</td><td class='s'>PASS</td><td>test_final_ffmpeg_command_excludes_unused_pool_clips, test_300_pool_needs_14_to_16_not_300, test_selection_returns_exact_ordered_prefix_and_skips_unused, test_preprocessing_time_does_not_scale_with_unused_pool</td></tr>
+<tr><td>Randomize/Manual/Natural Order authoritative</td><td class='s'>PASS</td><td>test_randomized_order_recalculates_immediately, test_manual_order_is_authoritative_for_selection, 1.2.3 ordering suite (regression, green)</td></tr>
+<tr><td>VO-duration target + final clip trim</td><td class='s'>PASS</td><td>test_final_clip_is_trimmed_to_fit_target, test_short_material_falls_back_to_hold_or_loop_using_all_clips, test_no_voiceover_target_renders_full_active_order</td></tr>
+<tr><td>Subtitle Preview (same renderer logic, instant updates)</td><td class='s'>PASS</td><td>test_124_defaults_fonts_preview.py (preview identity tests: layout/metrics/safe-area equal to renderer, updates on font/style/animation/position)</td></tr>
+<tr><td>Additional Fonts (4 new families, readable, OFL/Apache)</td><td class='s'>PASS</td><td>font inventory + selection tests in defaults suite; licenses shipped in tools/fonts/ (OFL.txt, Apache-2.0.txt)</td></tr>
+<tr><td>Static Phrase Default (16:9 / YouTube Landscape)</td><td class='s'>PASS</td><td>defaults suite + GUI start-up probe (combo = static_phrase) + updated 1.2.2/1.2.3 pins (regression, green)</td></tr>
+<tr><td>Quote Card (text/duration/preview/16:9/9:16)</td><td class='s'>PASS</td><td>test_124_quote.py (28 tests: layout, umlauts, line breaks, 1080p/1440p/4K/9:16, duration options, live preview reuse)</td></tr>
+<tr><td>Intro → Quote → Main (+Outro) chain</td><td class='s'>PASS</td><td>test_124_quote.py::test_e2e_intro_quote_main_outro_real_render (real FFmpeg render, 5.05 s, correct durations/transitions)</td></tr>
+<tr><td>Quote Silent (no VO/music/subs, ≤ −60 dB)</td><td class='s'>PASS</td><td>e2e volumedetect probe: 1.1–1.5 s mean_volume = −91.0 dB (input-seek probe); no drawtext in [0.55, 2.05] s; main timing unaffected (loud at 3.5 s)</td></tr>
+<tr><td>3× Original Audio defaults (Intro/Main/Outro)</td><td class='s'>PASS</td><td>defaults suite + GUI start-up probe (intro/main/outro combos = original)</td></tr>
+<tr><td>YouTube Landscape + Maximum defaults</td><td class='s'>PASS</td><td>defaults suite + test_123_release_features default pins (regression, green)</td></tr>
+<tr><td>One-Click Complete Workflow</td><td class='s'>PASS</td><td>existing one-click suite (regression, green) + MainVideo handoff to Stage 2</td></tr>
+<tr><td>Existing Functionality (1.2.2/1.2.3 baseline)</td><td class='s'>PASS</td><td>full suite 232 passed / 0 failed (transitions, ordering, multi-VO, subtitles SRT/VTT, styles/animations, watermark, Hold Last Frame, Full-Timeline Loop, FFmpeg/FFprobe diagnostics, GUI controls)</td></tr>
+<tr><td>Native Windows GUI / PowerShell 5.1 / NVENC-QSV-AMF</td><td class='n'>NOT EXECUTED</td><td>Linux sandbox only; PowerShell files shipped with UTF-8 BOM/CRLF (machine-checked by test_windows_setup_assets.py, green); CPU fallback guaranteed by design</td></tr>
+<tr><td>2-minute cold-ASR benchmark (1.2.4)</td><td class='n'>NOT EXECUTED (opt-in)</td><td>VIDEOMERGER_RUN_2MIN_BENCHMARK=1; 1.2.2 reference 115.559 s</td></tr>
+</table>
+<p>Raw logs: <code>full_source_tests.txt</code>, <code>defaults_fonts_preview_tests.txt</code>, <code>video_pool_tests.txt</code>, <code>quote_card_tests.txt</code>, <code>evidence_summary.json</code>.</p>
+</main></body></html>

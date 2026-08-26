@@ -1,0 +1,6 @@
+SYNTAX PASS: /home/user/VideoMerger/setup_windows.ps1
+SYNTAX PASS: /home/user/VideoMerger/run_windows.ps1
+SYNTAX PASS: /home/user/VideoMerger/diagnostics_windows.ps1
+SYNTAX PASS: /home/user/VideoMerger/test_windows.ps1
+SYNTAX PASS: /home/user/VideoMerger/uninstall_windows.ps1
+SYNTAX PASS: /home/user/VideoMerger/scripts/package_windows.ps1

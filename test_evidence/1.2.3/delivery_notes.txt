@@ -1,0 +1,22 @@
+VideoMerger 1.2.3 — delivery evidence summary (Linux development sandbox)
+
+Artifact: /home/user/VideoMerger_Final_1.2.3.zip
+Size: 3,873,857 bytes
+Files: 232
+SHA-256: a632632e4b1b97c44bb7f42e07bc24183f59652c814a99b895a1265661e8110d
+Version: 1.2.3
+Build ID: 5c38b293-0b77-410e-961e-1b33b3a9f077
+
+Source-tree suite: 172 passed, 3 skipped in 66.36s (benchmarks excluded)
+Extracted-tree suite: 172 passed, 3 skipped in 66.41s (same ZIP, clean extract)
+Release-feature suite: 17 passed in 0.07s
+Intro e2e suite: 2 passed in 4.75s (real FFmpeg renders)
+Manifest verification: 232/232, no missing/extra/mismatch — PASS
+PowerShell 7.5.2 parser: 5/5 scripts PASS (BOM + CRLF confirmed)
+README required-file check: PASS
+diagnostics_windows.ps1 smoke: structure PASS; Windows-only items FAIL on Linux (expected, setup_windows.ps1 creates them)
+Download endpoint: http://127.0.0.1:8765/VideoMerger_Final_1.2.3.zip — byte-compare PASS, re-hashed per request
+
+NOT EXECUTED: native Windows GUI/setup/export; Windows PowerShell 5.1;
+actual NVENC/QSV/AMF hardware encoding; full two-minute cold-ASR benchmark
+for 1.2.3 (1.2.2 reference 115.559 s).

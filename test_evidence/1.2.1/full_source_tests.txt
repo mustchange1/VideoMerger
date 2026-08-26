@@ -1,0 +1,5 @@
+s....................................................................... [ 52%]
+..................................................................       [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_121_benchmark_2min.py:72: set VIDEOMERGER_RUN_2MIN_BENCHMARK=1 for measured two-minute benchmark
+137 passed, 1 skipped in 42.57s

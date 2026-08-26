@@ -1,0 +1,27 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.14, pytest-9.0.3, pluggy-1.6.0 -- /usr/local/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/user/VideoMerger
+configfile: pytest.ini
+plugins: anyio-4.14.2
+collecting ... collected 17 items
+
+tests/test_124_defaults_fonts_preview.py::test_three_audio_tracks_default_to_original PASSED [  5%]
+tests/test_124_defaults_fonts_preview.py::test_audio_modes_remain_independently_settable PASSED [ 11%]
+tests/test_124_defaults_fonts_preview.py::test_default_animation_is_static_phrase_and_all_five_remain PASSED [ 17%]
+tests/test_124_defaults_fonts_preview.py::test_youtube_landscape_and_maximum_quality_defaults PASSED [ 23%]
+tests/test_124_defaults_fonts_preview.py::test_four_new_families_bundled_with_regular_and_bold[inter] PASSED [ 29%]
+tests/test_124_defaults_fonts_preview.py::test_four_new_families_bundled_with_regular_and_bold[manrope] PASSED [ 35%]
+tests/test_124_defaults_fonts_preview.py::test_four_new_families_bundled_with_regular_and_bold[lora] PASSED [ 41%]
+tests/test_124_defaults_fonts_preview.py::test_four_new_families_bundled_with_regular_and_bold[roboto] PASSED [ 47%]
+tests/test_124_defaults_fonts_preview.py::test_bundled_fonts_carry_valid_redistribution_licenses PASSED [ 52%]
+tests/test_124_defaults_fonts_preview.py::test_eveleth_is_detection_only_with_legal_fallback PASSED [ 58%]
+tests/test_124_defaults_fonts_preview.py::test_font_selector_offers_all_available_families PASSED [ 64%]
+tests/test_124_defaults_fonts_preview.py::test_preview_uses_renderer_font_size_and_safe_area PASSED [ 70%]
+tests/test_124_defaults_fonts_preview.py::test_preview_line_break_is_exactly_the_renderer_split PASSED [ 76%]
+tests/test_124_defaults_fonts_preview.py::test_preview_never_exceeds_two_lines_and_flags_truncation PASSED [ 82%]
+tests/test_124_defaults_fonts_preview.py::test_preview_matches_burned_in_cue_layout_exactly PASSED [ 88%]
+tests/test_124_defaults_fonts_preview.py::test_preview_reacts_instantly_to_font_style_and_position PASSED [ 94%]
+tests/test_124_defaults_fonts_preview.py::test_gui_defaults_and_live_preview_updates_without_export PASSED [100%]
+
+============================== 17 passed in 0.32s ==============================

@@ -1,0 +1,7 @@
+1
+00:00:00,120 --> 00:00:02,250
+Alpha bravo charlie delta echo
+
+2
+00:00:02,260 --> 00:00:04,400
+foxtrot golf hotel india.

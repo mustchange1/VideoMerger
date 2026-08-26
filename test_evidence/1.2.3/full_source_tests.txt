@@ -1,0 +1,42 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.14, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/user/VideoMerger
+configfile: pytest.ini
+plugins: anyio-4.14.2
+collected 175 items
+
+tests/test_121_cache_performance.py .....                                [  2%]
+tests/test_121_loop_behavior.py ...                                      [  4%]
+tests/test_121_subtitle_workflow.py ..s                                  [  6%]
+tests/test_122_complete_workflow.py .                                    [  6%]
+tests/test_122_professional_subtitles.py ..................              [ 17%]
+tests/test_123_intro_e2e.py ..                                           [ 18%]
+tests/test_123_release_features.py .................                     [ 28%]
+tests/test_4k_quality_e2e.py .                                           [ 28%]
+tests/test_alignment_subtitles.py ..................ss                   [ 40%]
+tests/test_audio_formats_e2e.py .....                                    [ 42%]
+tests/test_command_builder.py ....                                       [ 45%]
+tests/test_e2e_matrix.py ............                                    [ 52%]
+tests/test_file_stability.py ..                                          [ 53%]
+tests/test_gui_controls.py ...                                           [ 54%]
+tests/test_hardware.py ...                                               [ 56%]
+tests/test_main_workflow_e2e.py ....                                     [ 58%]
+tests/test_manual_ordering.py ...                                        [ 60%]
+tests/test_media_analyzer.py ....                                        [ 62%]
+tests/test_output_manager.py ...                                         [ 64%]
+tests/test_outro_modes_e2e.py .                                          [ 65%]
+tests/test_project_structure.py ....                                     [ 67%]
+tests/test_sorting_discovery.py ......                                   [ 70%]
+tests/test_stage12_graphs.py ..............                              [ 78%]
+tests/test_target.py ......                                              [ 82%]
+tests/test_transition_effects.py ............                            [ 89%]
+tests/test_transition_renders.py .....                                   [ 92%]
+tests/test_visual_effects.py ..                                          [ 93%]
+tests/test_watermark_e2e.py ........                                     [ 97%]
+tests/test_windows_setup_assets.py ....                                  [100%]
+
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_121_subtitle_workflow.py:143: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for the real acoustic E2E
+SKIPPED [1] tests/test_alignment_subtitles.py:157: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for downloaded local model test
+SKIPPED [1] tests/test_alignment_subtitles.py:181: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for downloaded local model test
+================== 172 passed, 3 skipped in 66.97s (0:01:06) ===================

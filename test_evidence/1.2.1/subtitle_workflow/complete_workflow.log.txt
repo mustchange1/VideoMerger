@@ -1,0 +1,133 @@
+Prüfe Dateistabilität für 1 Eingabedatei(en) …
+Dateistabilität: OK (Größe und Änderungszeit unverändert).
+Analysiere 1/1: background.mp4 (FFprobe)
+Subtitles auto-enabled: Voiceover + Script are assigned; SRT, VTT and burn-in are mandatory.
+Stage 1 – Create Main Video
+Aktive Clip-Reihenfolge: background.mp4
+Short-video mode: Hold Last Frame (separate from Full-Timeline Loop).
+Videomaterial: 5.867 s
+Voiceover: 5.048 s, 22050 Hz, 1 Kanal/Kanäle; Ziel Main Video: 5.548 s inkl. 0.5 s Pause
+Music: nicht zugewiesen.
+Script: 9 Wörter; ausgewählte Sprache: English
+Alignment cache: MISS – voiceover ASR executed once
+WARNUNG: The supplied script and voiceover appear to differ. Subtitle synchronization may be inaccurate.
+WARNUNG: Subtitle alignment warning: 3 script word(s) could not be confidently matched and were constrained between neighboring acoustic timestamps.
+Subtitle Alignment: 9 Wörter, Methode faster-whisper/small word timestamps + script-forced mapping, Kompatibilität 63.2%, Confidence 53.3%
+SRT/VTT validiert; Untertitel enden bei 4.480 s vor der Quiet Pause.
+WARNUNG: Videomaterial ist länger als die Voiceover-Timeline; die aktive Reihenfolge bleibt erhalten und der letzte benötigte Clip wird passend gekürzt.
+WARNUNG: The supplied script and voiceover appear to differ. Subtitle synchronization may be inaccurate.
+WARNUNG: Subtitle alignment warning: 3 script word(s) could not be confidently matched and were constrained between neighboring acoustic timestamps.
+FFmpeg executable:
+/home/user/devtools/ffmpeg-static/ffmpeg
+FFmpeg version:
+ffmpeg version 7.0.2-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2024 the FFmpeg developers
+FFprobe executable:
+/home/user/devtools/ffmpeg-static/ffprobe
+FFprobe version:
+ffprobe version 7.0.2-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2007-2024 the FFmpeg developers
+FFmpeg preflight command:
+/home/user/devtools/ffmpeg-static/ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=16x16:r=1:d=0.05 -filter_complex '[0:v]null[vout]' -map '[vout]' -frames:v 1 -f null -
+FFmpeg direct -filter_complex preflight: OK
+Eingabedateien: 1 (persistente aktive Projekt-Reihenfolge)
+Tatsächliche Render-Reihenfolge: background.mp4
+Ziel: 16:9, 640x360, 30 fps
+Übergang: Smooth Blur Crossfade, Kurve: ease_in_out, angefordert 0.50 s
+Encoding: CPU (libx264); Qualität CRF/CQ 26; Preset fast
+Audio: AAC-LC, 48 kHz, Stereo; Normalisierung: AUS
+Ausgabe: test_evidence/1.2.1/subtitle_workflow/output/MainVideo_16x9.mp4
+Burned-In Subtitle Guard: ASS file present and subtitles filter included in the one-pass graph.
+Starte FFmpeg (Argumentliste ohne Shell; Unicode-Pfade bleiben atomar).
+Rendering command:
+/home/user/devtools/ffmpeg-static/ffmpeg -hide_banner -y -i /home/user/VideoMerger/test_evidence/1.2.1/subtitle_workflow/assets/background.mp4 -i /home/user/VideoMerger/test_evidence/1.2.1/subtitle_workflow/assets/KnownVoiceover.wav -filter_complex '[0:v:0]fps=30:round=near,tpad=stop_mode=clone:stop_duration=0.066667,trim=duration=5.548209,settb=AVTB,setpts=PTS-STARTPTS[pre0];[pre0]scale=w=640:h=360:flags=lanczos,setsar=1,format=yuv420p[base0];[base0]fps=30:round=near,settb=AVTB[v0];anullsrc=r=48000:cl=stereo:d=5.548209,atrim=duration=5.548209,asetpts=PTS-STARTPTS[a0];[v0]trim=duration=5.548209,setpts=PTS-STARTPTS,format=yuv420p,setsar=1[vprogram];[vprogram]subtitles=filename='"'"'/home/user/VideoMerger/temp/MainVideo_16x9_burn.ass'"'"':charenc=UTF-8[vsubtitles];[vsubtitles]fps=30:round=near,format=yuv420p,setsar=1[vout];[a0]atrim=duration=5.048209,apad=pad_dur=5.798209,atrim=duration=5.548209[original_main];[1:a:0]aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=1,atrim=duration=5.048209,apad=pad_dur=5.798209,atrim=duration=5.548209[voice_pre];[original_main][voice_pre]amix=inputs=2:normalize=0:dropout_transition=0,alimiter=limit=0.95:attack=5:release=50[mixed_main];[mixed_main]aresample=48000:async=1,atrim=duration=5.548209[aout]' -map '[vout]' -map '[aout]' -c:v libx264 -preset fast -crf 26 -profile:v high -pix_fmt yuv420p -fps_mode cfr -c:a aac -profile:a aac_low -b:a 192k -ar 48000 -ac 2 -movflags +faststart -metadata:s:v:0 rotate=0 -color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv -max_muxing_queue_size 4096 -progress pipe:1 -nostats test_evidence/1.2.1/subtitle_workflow/output/MainVideo_16x9.mp4
+FFmpeg: [Parsed_subtitles_17 @ 0x12ad8580] libass API version: 0x1703000
+FFmpeg: [Parsed_subtitles_17 @ 0x12ad8580] libass source: commit: 0.17.3-12-g5c00ca266dd49dd7cf93a79f09a661ab1ff66439
+FFmpeg: [Parsed_subtitles_17 @ 0x12ad8580] Shaper: FriBidi 1.0.11 (SIMPLE) HarfBuzz-ng 3.1.1 (COMPLEX)
+FFmpeg: [Parsed_subtitles_17 @ 0x12ad8580] Using font provider fontconfig
+FFmpeg: Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/home/user/VideoMerger/test_evidence/1.2.1/subtitle_workflow/assets/background.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Duration: 00:00:05.87, start: 0.000000, bitrate: 6 kb/s
+FFmpeg:   Stream #0:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 640x360 [SAR 1:1 DAR 16:9], 4 kb/s, 30 fps, 30 tbr, 15360 tbn (default)
+FFmpeg:       Metadata:
+FFmpeg:         handler_name    : VideoHandler
+FFmpeg:         vendor_id       : [0][0][0][0]
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg: [aist#1:0/pcm_s16le @ 0x12ac81c0] Guessed Channel Layout: mono
+FFmpeg: Input #1, wav, from '/home/user/VideoMerger/test_evidence/1.2.1/subtitle_workflow/assets/KnownVoiceover.wav':
+FFmpeg:   Duration: 00:00:05.05, bitrate: 352 kb/s
+FFmpeg:   Stream #1:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 22050 Hz, mono, s16, 352 kb/s
+FFmpeg: Stream mapping:
+FFmpeg:   Stream #0:0 (h264) -> fps:default
+FFmpeg:   Stream #1:0 (pcm_s16le) -> aresample:default
+FFmpeg:   setsar:default -> Stream #0:0 (libx264)
+FFmpeg:   atrim:default -> Stream #0:1 (aac)
+FFmpeg: Press [q] to stop, [?] for help
+FFmpeg: [Parsed_subtitles_17 @ 0x7f0464026f40] libass API version: 0x1703000
+FFmpeg: [Parsed_subtitles_17 @ 0x7f0464026f40] libass source: commit: 0.17.3-12-g5c00ca266dd49dd7cf93a79f09a661ab1ff66439
+FFmpeg: [Parsed_subtitles_17 @ 0x7f0464026f40] Shaper: FriBidi 1.0.11 (SIMPLE) HarfBuzz-ng 3.1.1 (COMPLEX)
+FFmpeg: [Parsed_subtitles_17 @ 0x7f0464026f40] Using font provider fontconfig
+FFmpeg: [libx264 @ 0x12ad7e00] using SAR=1/1
+FFmpeg: [libx264 @ 0x12ad7e00] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512
+FFmpeg: [libx264 @ 0x12ad7e00] profile High, level 3.0, 4:2:0, 8-bit
+FFmpeg: [libx264 @ 0x12ad7e00] 264 - core 164 r3191 4613ac3 - H.264/MPEG-4 AVC codec - Copyleft 2003-2024 - http://www.videolan.org/x264.html - options: cabac=1 ref=2 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=6 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=3 lookahead_threads=1 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=1 keyint=250 keyint_min=25 scenecut=40 intra_refresh=0 rc_lookahead=30 rc=crf mbtree=1 crf=26.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+FFmpeg: Output #0, mp4, to 'test_evidence/1.2.1/subtitle_workflow/output/MainVideo_16x9.mp4':
+FFmpeg:   Metadata:
+FFmpeg:     major_brand     : isom
+FFmpeg:     minor_version   : 512
+FFmpeg:     compatible_brands: isomiso2avc1mp41
+FFmpeg:     encoder         : Lavf61.1.100
+FFmpeg:   Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 640x360 [SAR 1:1 DAR 16:9], q=2-31, 30 fps, 15360 tbn
+FFmpeg:       Metadata:
+FFmpeg:         rotate          : 0
+FFmpeg:         encoder         : Lavc61.3.100 libx264
+FFmpeg:       Side data:
+FFmpeg:         cpb: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+FFmpeg:   Stream #0:1: Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s
+FFmpeg:       Metadata:
+FFmpeg:         encoder         : Lavc61.3.100 aac
+FFmpeg: [Parsed_subtitles_17 @ 0x7f0464026f40] fontselect: (Arial, 400, 0) -> /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf, 0, DejaVuSans
+FFmpeg: [mp4 @ 0x12b295c0] Starting second pass: moving the moov atom to the beginning of the file
+FFmpeg: [out#0/mp4 @ 0x12b41580] video:19KiB audio:109KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 5.763012%
+FFmpeg: frame=  166 fps=0.0 q=-1.0 Lsize=     135KiB time=00:00:05.46 bitrate= 202.5kbits/s speed=13.4x
+FFmpeg: [libx264 @ 0x12ad7e00] frame I:3     Avg QP:11.26  size:  1580
+FFmpeg: [libx264 @ 0x12ad7e00] frame P:42    Avg QP:13.62  size:   260
+FFmpeg: [libx264 @ 0x12ad7e00] frame B:121   Avg QP:16.71  size:    22
+FFmpeg: [libx264 @ 0x12ad7e00] consecutive B-frames:  2.4%  0.0%  3.6% 94.0%
+FFmpeg: [libx264 @ 0x12ad7e00] mb I  I16..4: 97.9%  0.0%  2.1%
+FFmpeg: [libx264 @ 0x12ad7e00] mb P  I16..4:  0.2%  0.1%  0.2%  P16..4:  0.3%  0.0%  0.1%  0.0%  0.0%    skip:99.1%
+FFmpeg: [libx264 @ 0x12ad7e00] mb B  I16..4:  0.0%  0.0%  0.0%  B16..8:  0.3%  0.0%  0.0%  direct: 0.0%  skip:99.7%  L0:47.9% L1:51.8% BI: 0.3%
+FFmpeg: [libx264 @ 0x12ad7e00] 8x8 transform intra:1.1% inter:0.0%
+FFmpeg: [libx264 @ 0x12ad7e00] coded y,uvDC,uvAC intra: 3.8% 5.6% 5.5% inter: 0.0% 0.1% 0.1%
+FFmpeg: [libx264 @ 0x12ad7e00] i16 v,h,dc,p: 95%  1%  4%  0%
+FFmpeg: [libx264 @ 0x12ad7e00] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu:  2% 16% 79%  1%  1%  1%  1%  0%  0%
+FFmpeg: [libx264 @ 0x12ad7e00] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 20% 19% 36%  2%  3%  7%  4%  4%  4%
+FFmpeg: [libx264 @ 0x12ad7e00] i8c dc,h,v,p: 93%  5%  2%  0%
+FFmpeg: [libx264 @ 0x12ad7e00] Weighted P-Frames: Y:2.4% UV:2.4%
+FFmpeg: [libx264 @ 0x12ad7e00] ref P L0: 74.7% 25.3%
+FFmpeg: [libx264 @ 0x12ad7e00] ref B L0: 94.5%  5.5%
+FFmpeg: [libx264 @ 0x12ad7e00] ref B L1: 93.7%  6.3%
+FFmpeg: [libx264 @ 0x12ad7e00] kb/s:26.44
+FFmpeg: [aac @ 0x12b38140] Qavg: 25789.273
+Validiere Ausgabedatei mit FFprobe …
+Validierung: Dateigröße: 0.13 MiB
+Validierung: Fast Start: OK (moov vor mdat)
+Validierung: Container: mov,mp4,m4a,3gp,3g2,mj2
+Validierung: Video: h264, yuv420p, 640x360, 30.000 fps, SAR 1:1, 5.533 s
+Validierung: Audio: aac, 48000 Hz, 2 Kanäle, 5.548 s
+Validierung: Bitrate: 199503 bit/s
+Validierung: Dauer: 5.548 s
+Burned-In Subtitles: PASS – Filter im finalen MP4-Encode ausgeführt.
+Export completed successfully.
+Subtitle Generation: PASS · Word-Level Alignment: PASS · SRT: PASS · VTT: PASS · Burned-In Subtitles: PASS
+Visual verification frames (decoded from final MP4): MainVideo_16x9.subtitle_first.png, MainVideo_16x9.subtitle_middle.png, MainVideo_16x9.subtitle_final.png
+PERFORMANCE voiceover_processing_seconds=0.011
+PERFORMANCE music_processing_seconds=0.000
+PERFORMANCE asr_seconds=5.696
+PERFORMANCE alignment_seconds=0.000
+PERFORMANCE subtitle_creation_seconds=0.001
+PERFORMANCE ffmpeg_rendering_seconds=0.467
+PERFORMANCE finalization_seconds=0.050
+PERFORMANCE total_pipeline_seconds=6.938

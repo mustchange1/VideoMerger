@@ -1,0 +1,67 @@
+{
+  "version": "1.2.1",
+  "model": "small",
+  "voiceover_seconds": 5.048209,
+  "subtitle_enabled_input": false,
+  "subtitles_auto_enabled": true,
+  "final_video": "MainVideo_16x9.mp4",
+  "burn_filter_in_final_graph": true,
+  "srt": "MainVideo_16x9.srt",
+  "vtt": "MainVideo_16x9.vtt",
+  "canonical_timeline": "MainVideo_16x9.subtitle_timeline.json",
+  "first_middle_final_checks": [
+    {
+      "position": "first",
+      "word": "Alpha",
+      "start": 0.12,
+      "end": 0.4,
+      "speech_rms": 0.045863507705341415,
+      "bright_caption_pixels": 111,
+      "frame": "MainVideo_16x9.subtitle_first.png"
+    },
+    {
+      "position": "middle",
+      "word": "echo",
+      "start": 1.98,
+      "end": 2.26,
+      "speech_rms": 0.08786872386637289,
+      "bright_caption_pixels": 494,
+      "frame": "MainVideo_16x9.subtitle_middle.png"
+    },
+    {
+      "position": "final",
+      "word": "india.",
+      "start": 3.96,
+      "end": 4.3,
+      "speech_rms": 0.0991736613520145,
+      "bright_caption_pixels": 821,
+      "frame": "MainVideo_16x9.subtitle_final.png"
+    }
+  ],
+  "timings": {
+    "voiceover_processing_seconds": 0.011186275999989448,
+    "music_processing_seconds": 4.679998255596729e-07,
+    "script_processing_seconds": 0.00014286600003288186,
+    "asr_seconds": 5.696375760999899,
+    "alignment_seconds": 0.00032334100001207844,
+    "alignment_cache_hit": false,
+    "alignment_cache_level": "none",
+    "subtitle_creation_seconds": 0.0012287470001410838,
+    "ffmpeg_rendering_seconds": 0.46687959400014734,
+    "finalization_seconds": 0.05022656599999209,
+    "total_pipeline_seconds": 6.938009383000008
+  },
+  "files_sha256": {
+    "assets/KnownVoiceover.wav": "5c39a8f3fe91e26c419be98a71c3c6e21eec1cd6314d836926b11c9596f4505e",
+    "assets/background.mp4": "c82b25a4f04efba332d81d1e3c91e1cc1307f84b3ee5aa52c832c1e25c0447a9",
+    "assets/script.txt": "7ab3d02c0e140b5056f2b5e7712876c9abba2bb3a1027512eb6e2f04ebbf7b6b",
+    "complete_workflow.log.txt": "2dc0d0c97248e72a8a38ed60fc9c2d6ffdba7b07ac391e190f9651ea1c08b4ba",
+    "output/MainVideo_16x9.mp4": "7c862fe699b4be70ce6d687ef9b04d2af251f5602220dfd735ee92666b4184fa",
+    "output/MainVideo_16x9.srt": "5f9e8181a8ca2f53f3d7946ce437a695f22aadb1e460638c8173bf8815e36fa9",
+    "output/MainVideo_16x9.subtitle_final.png": "37aada8d0d1142ad9f4bec4253293882abfaac2be0d31cad2edb48d7c4bf8a97",
+    "output/MainVideo_16x9.subtitle_first.png": "2893ed1c6625776fed46377a3ed94a051e467efc604bc2ff996de5f8ceb28943",
+    "output/MainVideo_16x9.subtitle_middle.png": "b93832246364c74179f1db3d52b139298b6db3458e1bdbb5a6d8a6ea2cf953cf",
+    "output/MainVideo_16x9.subtitle_timeline.json": "17f43957af7f8840c0ca2a9f860837bc78348a44c0bfa29bf75f67ae888e8ad4",
+    "output/MainVideo_16x9.vtt": "964b7f5c62727a21b605ed4a8ea9e6265d99e366f9186c4f8aab010d1c112e2c"
+  }
+}

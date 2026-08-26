@@ -1,0 +1,25 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.14, pytest-9.0.3, pluggy-1.6.0 -- /usr/local/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/user/VideoMerger
+configfile: pytest.ini
+plugins: anyio-4.14.2
+collecting ... collected 15 items
+
+tests/test_124_video_pool.py::test_pool_status_required_only_for_pool_sizes[10] PASSED [  6%]
+tests/test_124_video_pool.py::test_pool_status_required_only_for_pool_sizes[100] PASSED [ 13%]
+tests/test_124_video_pool.py::test_pool_status_required_only_for_pool_sizes[300] PASSED [ 20%]
+tests/test_124_video_pool.py::test_pool_status_required_only_for_pool_sizes[500] PASSED [ 26%]
+tests/test_124_video_pool.py::test_300_pool_needs_14_to_16_not_300 PASSED [ 33%]
+tests/test_124_video_pool.py::test_preprocessing_time_does_not_scale_with_unused_pool PASSED [ 40%]
+tests/test_124_video_pool.py::test_selection_returns_exact_ordered_prefix_and_skips_unused PASSED [ 46%]
+tests/test_124_video_pool.py::test_final_clip_is_trimmed_to_fit_target PASSED [ 53%]
+tests/test_124_video_pool.py::test_manual_order_is_authoritative_for_selection PASSED [ 60%]
+tests/test_124_video_pool.py::test_randomized_order_recalculates_immediately PASSED [ 66%]
+tests/test_124_video_pool.py::test_short_material_falls_back_to_hold_or_loop_using_all_clips PASSED [ 73%]
+tests/test_124_video_pool.py::test_no_voiceover_target_renders_full_active_order PASSED [ 80%]
+tests/test_124_video_pool.py::test_final_ffmpeg_command_excludes_unused_pool_clips PASSED [ 86%]
+tests/test_124_video_pool.py::test_metadata_discovery_is_lightweight_and_cached PASSED [ 93%]
+tests/test_124_video_pool.py::test_discovery_handles_100_pool_with_ffprobe PASSED [100%]
+
+============================== 15 passed in 1.51s ==============================

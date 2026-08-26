@@ -1,0 +1,12 @@
+{
+  "changed_style": "short_2",
+  "alignment_cache_hit": true,
+  "alignment_cache_level": "alignment",
+  "asr_seconds": 0.0,
+  "video": "MainVideo_16x9.mp4",
+  "verification_frames": [
+    "MainVideo_16x9.subtitle_first.png",
+    "MainVideo_16x9.subtitle_middle.png",
+    "MainVideo_16x9.subtitle_final.png"
+  ]
+}

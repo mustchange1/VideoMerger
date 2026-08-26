@@ -1,0 +1,1 @@
+"""VideoMerger application package."""

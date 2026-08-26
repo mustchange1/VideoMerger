@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "authoritative_script": "Alpha bravo charlie delta echo foxtrot golf hotel india.",
+  "language": "en",
+  "method": "faster-whisper/small word timestamps + script-forced mapping",
+  "compatibility": 0.631578947368421,
+  "average_confidence": 0.5326664282215966,
+  "words": [
+    {
+      "text": "Alpha",
+      "start": 0.12,
+      "end": 0.4,
+      "confidence": 0.0,
+      "script_start": 0,
+      "script_end": 5
+    },
+    {
+      "text": "bravo",
+      "start": 0.4,
+      "end": 0.8,
+      "confidence": 0.9182120561599731,
+      "script_start": 6,
+      "script_end": 11
+    },
+    {
+      "text": "charlie",
+      "start": 1.04,
+      "end": 1.34,
+      "confidence": 0.9183189868927002,
+      "script_start": 12,
+      "script_end": 19
+    },
+    {
+      "text": "delta",
+      "start": 1.34,
+      "end": 1.98,
+      "confidence": 0.0,
+      "script_start": 20,
+      "script_end": 25
+    },
+    {
+      "text": "echo",
+      "start": 1.98,
+      "end": 2.26,
+      "confidence": 0.9117581248283386,
+      "script_start": 26,
+      "script_end": 30
+    },
+    {
+      "text": "foxtrot",
+      "start": 2.26,
+      "end": 3.04,
+      "confidence": 0.0,
+      "script_start": 31,
+      "script_end": 38
+    },
+    {
+      "text": "golf",
+      "start": 3.04,
+      "end": 3.34,
+      "confidence": 0.4015991985797882,
+      "script_start": 39,
+      "script_end": 43
+    },
+    {
+      "text": "hotel",
+      "start": 3.34,
+      "end": 3.76,
+      "confidence": 0.6931229829788208,
+      "script_start": 44,
+      "script_end": 49
+    },
+    {
+      "text": "india.",
+      "start": 3.96,
+      "end": 4.3,
+      "confidence": 0.9509865045547485,
+      "script_start": 50,
+      "script_end": 56
+    }
+  ],
+  "cues": [
+    {
+      "index": 1,
+      "start": 0.12,
+      "end": 4.4799999999999995,
+      "text": "Alpha bravo charlie delta echo foxtrot golf hotel india.",
+      "word_indexes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ]
+    }
+  ],
+  "verification_word_indexes": [
+    0,
+    4,
+    8
+  ]
+}
