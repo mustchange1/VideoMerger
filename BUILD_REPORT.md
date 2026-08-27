@@ -1,115 +1,44 @@
-# BUILD REPORT – VideoMerger 1.2.4
+# BUILD REPORT – VideoMerger 1.3.0
 
-Date: 2026-08-26  
-Basis: exact tested `VideoMerger_Final_1.2.3.zip` source tree, changed additively  
-Target: `VideoMerger_Final_1.2.4.zip`
+Date: 2026-08-27
+Basis: exact tested `VideoMerger_Final_1.2.4.zip` source tree (git `b48a993c22c12149ffe9e260c9756fbd0ae9ec31`), changed additively
+Target: `VideoMerger_Final_1.3.0.zip`
 
-## Implemented release changes
+## Implemented release changes (spec → implementation)
 
-- **Large Video Pool (Required-Only processing)**: the Input Folder is a source library, not a render queue. Lightweight `ffprobe` metadata discovery (filename, path, duration, resolution, fps, codec, audio presence, size — never a full decode of all files) with a persistent metadata cache. Selection stops as soon as the **current active order** (Natural / Manual / Randomized — the order is authoritative) covers the voiceover-derived target duration; only the required prefix is rendered. With 300 available and ~14 needed, exactly 14–16 clips enter the pipeline and the remaining ~286 never appear in any decode, filter, transition or encode stage. The final clip is trimmed to fit the target; if the material is still short, the Full-Timeline Loop repeats the selected A-B-C sequence (not just the final clip, not the whole pool) and Hold Last Frame holds only the final frame as needed. Pre-processing time does not scale with the unused pool size (measured: 20 vs. 500 pool, same selected count ≈ same pre-processing). GUI status row shows `Videos in Input Folder / Required / Selected / Not Used / Target Duration` and updates after Analyze, voiceover changes, Randomize and manual reorder.
-- **No pool pre-rendering**: pool clips are processed directly by the final atomic `-filter_complex` command; no intermediate clip files are produced for the pool.
-- **Cache discipline**: changing subtitle style/font/animation/quote text/duration/Intro/Outro does NOT re-analyze the pool; order-only changes do not reprocess unused clips.
-- **Quote Card (new optional section)**: Stage 2 composes Intro → (transition) → Quote → (transition) → Main → (transition) → Outro. `[ ] Add Quote` checkbox; large multiline text field (German/English/umlauts/punctuation); duration default 2.0 s with options 1.0/1.5/2.0/2.5/3.0 s. Cinematic/editorial design: dark neutral default background with subtle vignette, quote as single focal point slightly above mathematical center, automatic balanced line breaks at word/phrase boundaries (never a broken word, no lone-word lines), resolution-aware font size rendered at native resolution (1920×1080 / 2560×1440 / 3840×2160 / 1080×1920 / 2160×3840). Uses the existing transition system (no separate transition type). **Quote Card Audio = Silent**: no voiceover, no generated music, no subtitles — the quote never enters the SRT/VTT/burn-in timeline and does not affect Main Video subtitle timing (verified acoustically: ≤ −60 dB in the pure quote window of a real render). Live GUI quote preview reuses the same layout/line-break/font-metrics logic as the renderer. The architecture is extensible to custom backgrounds.
-- **Real subtitle preview (Preview ≈ Final Render)**: the GUI subtitle preview is now a canvas that renders the exact demo cue through the **same** line-breaking, font-metrics, safe-area and position logic as the burned-in renderer (no fake GUI text, no FFmpeg render). Font, style, animation, position, wrapping, max-two-line behavior, word highlighting and realistic scaling/safe margins update instantly on any control change.
-- **Four additional fonts**: Inter, Manrope, Lora and Roboto (Regular + Bold each) — readable, professional long-form look with German + English coverage and strong bolds — added to the existing Noto Sans fallback. All five animation types and the complete ten-preset style system remain unchanged. Bundled fonts carry valid redistribution licenses (OFL / Apache-2.0, shipped in `tools/fonts/`); proprietary fonts (e.g. Eveleth) remain detection-only with legal redistributable fallback. The font selector lists all available fonts; the renderer stays resolution-aware.
-- **1.2.4 defaults**: Intro/Main/Outro Original Audio all default to **Original** (Mute/Low/Original remain, independently settable); subtitle animation default **Static Phrase** for Long-Form / YouTube Landscape (all 5 animations remain selectable); Output Preset **YouTube Landscape** + Quality **Maximum** unchanged.
-- **One-click complete workflow extended**: Video Pool + Voiceovers + Scripts + Music + Intro + optional Quote + Main + Outro + Subtitles + Watermark → FinalVideo. The actual rendered `MainVideo.mp4` is still physically handed to Stage 2.
-- Everything from 1.2.3/1.2.2 remains: Basic Merge, separate Stage 1/Stage 2, natural/manual/random ordering, four transitions and defaults, audio modes, ten subtitle presets with five animations (max two lines), watermark, Hold Last Frame / Full-Timeline Loop, SRT/VTT, validation, FFmpeg/FFprobe handling, encoders with CPU fallback and non-overwriting output behavior.
+1. **Windows subtitle filtergraph fix (root cause)**
+   FFmpeg now always runs with `cwd` = project root (`engine.export` → `_execute(working_directory)`). Every render-time file the filtergraph references is app-staged under that root with ASCII names: the burned-in ASS under `temp/`, the legal fonts under `tools/fonts`, the quote-card font file. The `subtitles=filename=`, `fontsdir=` and `fontfile=` values therefore become plain relative POSIX paths — on ANY Windows machine, whatever the unpack location (`C:\Users\Jürgen Müller\Downloads\VideoMerger_Final_1.3.0` works). No drive-letter colon, backslash, space or non-ASCII byte can appear in the value, making it immune to both filtergraph parser passes, the C-runtime/libass `fopen` and the Windows code page. Paths that cannot be made relative are emitted UNQUOTED with forward slashes and the verified two-level escape table: unlike the 1.2.4 quoted form, this represents apostrophes (`C:/Users/O'Brien/…` previously raised ValueError and aborted the render) and never produces a broken quoted span. Windows drive/UNC paths are normalized as pure strings (never resolved against a POSIX cwd). Real libass burn regression tests cover umlaut/space/apostrophe absolute paths, a non-ASCII working directory with a relative value, and the engine burn pass with the real fonts dir — at all subtitle fonts/animations/positions, 16:9 + 9:16, 1080p + 4K (geometry tests).
+2. **Smart Last-Clip Stretch (Duration Fit Mode)** — `cut` (default, byte-identical proven 1.2.4 behavior) or `stretch`: the shortest ordered prefix is taken one clip shorter and ONLY its final occurrence is slowed (`setpts` + clip-audio `atempo`) so the complete source content fills the voiceover target exactly. Configurable maximum stretch 5/10 (default)/15/20/Custom %. Transitions, order and visual continuity preserved; beyond the limit it falls back to the normal last-clip trimming — never to Hold Last Frame. Mirrored in pure O(n) duration math by `video_pool` so GUI status and render agree.
+3. **Global Video Speed** — 0.50x–2.00x, default 1.00x. Voiceover stays the timing authority: target duration, subtitle timeline, voiceover and music behavior unchanged (e2e proves byte-identical SRT at 1.00x vs 1.50x); clip playback rate and required-clip selection adapt. Clip-own audio follows the rate for internal A/V sync.
+4. **Main Video End Padding (manual)** — free 0.0–5.0 s spin box; the existing ~1 s default preserved exactly (pinned by tests in models + GUI).
+5. **Large Video Pool — safe optimization only** — no redesign. `compute_pool_status` now derives required/selected from ONE prefix pass (previously two full transition computations); `required_selection_length` reuses the already computed prefix list; stretch/speed parameters flow through the same single pass. Pinned by tests: exactly one prefix computation per status, unchanged selection numbers for 120–200-file pools, input order never re-sorted, repeated status updates never spawn an FFprobe process, media metadata cache remains stat-keyed.
+6. **Subtitle quality (Long-Form YouTube)** — cues preferably 1–2 measured lines of natural phrases; one/two-word groups are merged into the better-fitting neighbor or rebalanced (one word moved) within the measured two-line geometry and word budget; word-level timing never changes (cue starts are exactly the first word's acoustic start, no overlap, no leading/lagging, nothing reaches into the quiet pause). Static Phrase remains the default animation; safe areas and all ten presets unchanged.
+7. **Subtitle Preview** — the live canvas and the reworked larger dialog paint through ONE shared routine (`paint_subtitle_layout`) using the exact renderer geometry (same `preview_cue` layout: font, size, wrapping, safe area, position, colors/highlights) and stage the animation with a word-progress slider.
+8. **Quote Card (fixed and completed)** — a real visual card at native resolution (16:9/9:16, 1080p/4K). Five polished styles with distinct palettes: Clean Editorial (DEFAULT: warm white `#F6F1E7` background, dark elegant serif type, hairline accent, subtle vignette, generous whitespace), Warm Cinematic (film grain), Soft Paper (paper grain), Minimal Film, Elegant Contrast (gold hairline). Manual controls: quote text, attribution, font, font size 60–160 %, weight, text color, background color, zoom 0–10 % (bounded `zoompan`, one output frame per input frame so the duration is exact), position (center/upper/lower), safe-area padding 3–15 %, duration free 0.5–5.0 s (default 2.0 s), optional dedicated transition duration around the card (same 45 % clamp). Still always silent (acoustically verified ≤ −60 dB in the pure quote window) and never receives main voiceover, main subtitles or unrelated audio; sequence Intro → transition → Quote → transition → Main → transition → Outro e2e-tested.
+9. **One-Click complete workflow** — one click produces Video Pool + Voiceover(s) + Script(s) + Background Music + Subtitles + Watermark + Intro + optional Quote + Main Video + Outro = FinalVideo; the rendered Main Video automatically flows into Stage 2 (no manual Stage-1→Stage-2 selection). Stage 1/Stage 2 remain separately usable.
+10. **Outputs** — explicit Main Video render produces `MainVideo_16x9.mp4` + `MainVideo_16x9_no_subtitles.mp4` (+ SRT/VTT); one-click's primary output is the final video `FinalVideo_16x9.mp4` plus `FinalVideo_16x9_no_subtitles.mp4`. The subtitled version always remains the primary. Implementation: clean master render first, then a dedicated libass burn pass (audio stream-copied, same encoder arguments and color tags) — both files share one timeline and one bundle index.
+11. **Clean Output directory** — Output contains only user-facing files (final/main MP4s, `_no_subtitles` variants, SRT, VTT, `FinalVideo_16x9_YouTube.txt`). Verification PNGs and the subtitle timeline JSON live under `temp/` (internal evidence/cache). Asserted exactly by an e2e directory-listing test.
+12. **Automatic YouTube title + description** — `FinalVideo_16x9_YouTube.txt` (TITLE/DESCRIPTION/LANGUAGE) generated from the authoritative voiceover transcript whenever a successful final video exists: strong opening (the transcript's own first thought), a useful summary (salient verbatim sentences), important themes (verbatim key phrases), one natural channel-follow CTA for philosophical/spiritual/modern insights; German → German, English → English (auto-detected or explicit). No invented facts, no keyword stuffing — extraction-only.
+13. **Local / free / unlimited metadata generation** — the generator is deterministic pure Python (always available offline, unlimited use). Optional polish from a locally running Ollama (`127.0.0.1:11434` only) under strict validation; any problem falls back to the deterministic draft. No OpenAI/Claude/Gemini/paid API, no subscription, no per-video credits, no API keys anywhere (test-enforced). Metadata failures never block video rendering and are reported clearly; without an authoritative transcript nothing is written (never invented).
+14. **Defaults preserved** — Intro/Main/Outro Original Audio = Original; Subtitle Animation = Static Phrase; YouTube Landscape + Maximum Quality; End Padding = 1.0 s; Quote disabled unless enabled, duration 2.0 s, Clean Editorial, subtle zoom; Duration Fit = Cut Last Clip; Maximum Stretch = 10 %; Global Speed = 1.00x. All pinned by `tests/test_130_defaults.py`.
+15. **No regression** — Basic Merge, Stage 1/Stage 2, all four transitions, manual/natural/random ordering, large pools, Full-Timeline Loop, Hold Last Frame, Intro/Main/Quote/Outro, multiple voiceovers/scripts, music loop/trim/ducking, Mute/Low/Original, watermark, SRT/VTT, burned subtitles, preview, all 7 fonts, 4K/16:9/9:16, caching, Maximum Quality, one-click: all 232 baseline tests still pass unmodified except three intentional expectation updates (free quote duration error message, one-click 3-phase progress labels, end-padding spin box instead of the fixed combo — each updated to the new documented behavior with equivalent or stronger assertions).
 
 ## Executed environment
 
-- Linux development sandbox, Python 3.13, PySide6 6.11.2 (offscreen)
-- FFmpeg/FFprobe 7.0.2-static (johnvansickle) via `VIDEOMERGER_FFMPEG_DIR` for the suite; BtbN N-126264 (with drawtext) for the quote-card e2e renders
-- PowerShell parser checks on Linux (not Windows PowerShell 5.1)
-- Linux/offscreen results are **not** represented as native Windows execution.
+- Linux development sandbox, Python 3.11.2, PySide6 6.11.2 (offscreen; headless GL/xkb/dbus stubs)
+- FFmpeg/FFprobe n8.0-23-gd1f31a829d (BtbN-class GPL build with drawtext + libass, obtained from the `ffmpeg8-binaries`/`ffprobe8-binaries` wheels because the sandbox blocks release-assets.githubusercontent.com)
+- Linux results are NOT represented as native Windows execution; the Windows-specific logic is covered by cross-platform path-strategy tests plus real libass burns over Windows-style hostile paths.
 
-## Executed source-tree tests
+## Executed source-tree tests (final run before packaging)
 
 ```text
-232 passed, 4 skipped in 88.74s
+327 passed, 4 skipped (opt-in gates) — 0 failed
 ```
 
-The 4 skipped tests are opt-in (`VIDEOMERGER_RUN_2MIN_BENCHMARK=1` benchmark; `VIDEOMERGER_TEST_REAL_ALIGNMENT=1` real-acoustic e2e, 3 tests). New 1.2.4 suites executed: `tests/test_124_defaults_fonts_preview.py` **17 passed** (0.32 s), `tests/test_124_video_pool.py` **15 passed** (1.51 s, real ffprobe discovery on 10/100/300/500 pools), `tests/test_124_quote.py` **28 passed** (38.38 s, real FFmpeg renders incl. 16:9 + 9:16 e2e with acoustic silence probes and subtitle-timeline checks). Three legacy default-pins (1.2.2/1.2.3/GUI) were updated to the intentional 1.2.4 defaults (Static Phrase animation, 7 fonts, Intro audio Original) — every remaining baseline test passes unchanged.
+The 4 skips are the pre-existing opt-in gates (`VIDEOMERGER_RUN_2MIN_BENCHMARK=1`; `VIDEOMERGER_TEST_REAL_ALIGNMENT=1` ×3). New 1.3.0 suites: `test_130_windows_subtitle_paths.py` (9), `test_130_stretch_speed_padding.py` (12), `test_130_quote_styles.py` (41), `test_130_outputs_and_metadata.py` (12), `test_130_subtitle_quality.py` (16), `test_130_defaults.py` (8), `test_130_pool_optimization.py` (5).
 
-Evidence:
+Evidence: `test_evidence/1.3.0/` (full suite output, evidence summary, manifest).
 
-- `test_evidence/1.2.4/full_source_tests.txt`
-- `test_evidence/1.2.4/defaults_fonts_preview_tests.txt`
-- `test_evidence/1.2.4/video_pool_tests.txt`
-- `test_evidence/1.2.4/quote_card_tests.txt`
-- `test_evidence/1.2.4/EVIDENCE_REPORT.html`
-- `test_evidence/1.2.4/evidence_summary.json`
-- `test_evidence/1.2.4/EVIDENCE_MANIFEST_SHA256.txt`
+## Packaging / delivery verification (this build)
 
-## Performance
-
-The 1.2.1–1.2.3 structural performance fixes (timeline-gated blur and ramp blend, one atomic `-filter_complex`, one final lossy encode, cached ASR/alignment/probes) remain fully in place. New 1.2.4 guarantee: pre-processing/selection time does **not** scale with the unused pool size — measured by `test_preprocessing_time_does_not_scale_with_unused_pool` (20 vs. 500 pool, identical selected count). The full two-minute cold-ASR benchmark is opt-in for 1.2.4 (1.2.2 reference: 115.559 s analysis-to-final).
-
-## Required status matrix
-
-`PASS` means the stated behavior was actually executed on this host. `NOT EXECUTED` identifies platform/hardware checks not run here.
-
-### Large Video Pool
-
-| Item | Status |
-|---|---|
-| 10 / 100 / 300 / 500-file pools handled efficiently | PASS – pool-size status tests |
-| Lightweight ffprobe metadata discovery (no full decode) | PASS – discovery test with real ffprobe on 100 files |
-| Metadata cached across changes | PASS – cache test |
-| Required-only selection stops at covered VO duration | PASS – 300 pool → 14–16 selected |
-| Unused clips absent from final FFmpeg command (no decode/filter/transition/encode) | PASS – command-exclusion assertion |
-| Active order (Natural / Manual / Randomized) authoritative | PASS – per-order selection tests |
-| Randomize + Reset + manual reorder with immediate recalculation | PASS |
-| Final clip trimmed to fit target | PASS |
-| Still short → Full-Timeline Loop of selected A-B-C / Hold Last Frame | PASS – fallback tests |
-| No voiceover → full active order rendered | PASS |
-| Pre-processing time independent of unused pool size | PASS – 20 vs. 500 measurement |
-| No pool pre-rendering (direct `-filter_complex` processing) | PASS – no intermediate clip files |
-| GUI status row (Folder/Required/Selected/Not Used/Target) | PASS – status update tests |
-
-### Subtitle preview, fonts, defaults
-
-| Item | Status |
-|---|---|
-| Preview reuses renderer line-breaking/metrics/safe-area/position logic | PASS – identity assertions (Preview ≈ Final Render) |
-| Instant updates on font/style/animation/position/size/color | PASS |
-| Word highlighting + max two lines in preview | PASS |
-| Four additional fonts (Inter/Manrope/Lora/Roboto, Reg+Bold) present, selectable, licensed | PASS – font inventory + selection |
-| Font selector lists all available fonts | PASS |
-| All 5 animations + full ten-preset style system kept | PASS |
-| Static Phrase default (16:9 / YouTube Landscape) in settings and GUI | PASS |
-| Intro/Main/Outro Original Audio default = Original (Mute/Low/Original remain) | PASS |
-| YouTube Landscape + Maximum defaults kept | PASS |
-
-### Quote Card
-
-| Item | Status |
-|---|---|
-| Quote disabled → chain unchanged (regression) | PASS |
-| Intro → Quote → Main (+Outro) real render | PASS – e2e (5.05 s, correct section durations/transitions) |
-| 16:9 and 9:16 real renders | PASS – e2e |
-| 1080p / 1440p / 4K native-resolution layouts | PASS |
-| Duration options 1.0/1.5/2.0/2.5/3.0, default 2.0 | PASS |
-| German/English/umlauts/punctuation (line break + escaping) | PASS – umlaut e2e asserts burned-in text |
-| Automatic line breaks (word/phrase boundaries, no broken words, no lone words) | PASS |
-| Live GUI quote preview (text/font/lines/bg/duration/format) | PASS |
-| Uses existing transition system | PASS |
-| Quote silent: ≤ −60 dB in pure quote window (measured −91.0 dB) | PASS – volumedetect on real render |
-| No subtitles / VO / music on quote; Main subtitle timing unaffected | PASS – drawtext-window + main-loud probe |
-| Extensible background architecture (default dark neutral + vignette) | PASS – layout unit tests |
-
-### One click and regression
-
-| Item | Status |
-|---|---|
-| One-click complete workflow (Pool + VO + Scripts + Music + Intro + Quote + Main + Outro + Subs + Watermark → FinalVideo) | PASS – regression e2e (real MainVideo handoff to Stage 2) |
-| All 1.2.3/1.2.2 features (transitions, ordering, multi-VO, SRT/VTT, styles/animations, watermark, Hold Last Frame, Full-Timeline Loop, validation, FFmpeg/FFprobe, PowerShell assets) | PASS – full suite 232/0 |
-| Subtitle/style/quote changes do not re-analyze pool | PASS – cache tests |
-| Native Windows GUI/setup/export | NOT EXECUTED (Linux sandbox) |
-| Windows PowerShell 5.1 | NOT EXECUTED (UTF-8 BOM/CRLF + German integrity machine-checked) |
-| Actual NVENC/QSV/AMF hardware encoding | NOT EXECUTED (CPU fallback by design) |
-| Full two-minute cold-ASR benchmark | NOT EXECUTED for 1.2.4 (opt-in; 1.2.2 reference 115.559 s) |
-
-## Packaging and exact artifact
-
-The direct-root ZIP excludes `.venv`, downloaded models, downloaded FFmpeg binaries, caches, logs, user config and generated runtime outputs. It includes source, tests, Windows scripts, documentation, legal fonts/licenses and 1.2.4 release evidence. The final ZIP checksum and the exact clean-extraction suite result are recorded externally in `VideoMerger_Final_1.2.4_DELIVERY_VERIFICATION.txt` and the delivery response because an archive cannot self-reference its own final hash.
+Verification order: build ZIP from the clean tree (excluding `.git`, `dev/`, caches, local settings and temp artifacts) → SHA-256 → clean extraction to a fresh directory → full test suite run against the EXACT extracted tree → identical SHA-256 re-check → artifact attached. Results are recorded in `test_evidence/1.3.0/` and `ARTIFACT_IDENTITY.txt`.

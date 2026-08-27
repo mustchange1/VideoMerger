@@ -43,6 +43,11 @@ class MediaInfo:
     # Quote Card). Such items never receive an ``-i`` input and are rendered
     # silently; they can never enter the subtitle/voiceover/music timeline.
     is_generated_quote: bool = False
+    # 1.3.0: per-occurrence playback rate (global Main Video speed and/or the
+    # Smart Last-Clip Stretch). 1.0 = untouched source timing; < 1.0 slows the
+    # clip down (stretch), > 1.0 speeds it up. The render graph applies this
+    # via setpts on the video chain and atempo on the clip's own audio.
+    playback_rate: float = 1.0
 
     @property
     def display_name(self) -> str:
@@ -111,6 +116,19 @@ class ExportSettings:
     ducking_release_ms: int = 450
     final_pause: float = 1.0
     short_video_mode: str = "hold"  # hold | loop
+    # 1.3.0 smart duration fit: how the last selected clip reaches an exact
+    # voiceover-derived target. ``cut`` keeps the proven 1.2.4 trimming
+    # behavior (default); ``stretch`` slows only the final selected clip as
+    # much as necessary, bounded by ``max_stretch_percent``. A required
+    # stretch beyond the limit falls back to the normal cut/trim behavior —
+    # never to Hold Last Frame.
+    duration_fit_mode: str = "cut"  # cut | stretch
+    max_stretch_percent: float = 10.0  # 5 | 10 | 15 | 20 | custom (1–50)
+    # 1.3.0 global Main Video playback speed (0.50–2.00, default 1.00). The
+    # voiceover remains the timing authority: subtitle timing, voiceover and
+    # music behavior are never altered; only the clip playback rate changes
+    # and the required clip selection adapts to still cover the voiceover.
+    video_speed: float = 1.0
 
     subtitle_enabled: bool = False
     subtitle_language: str = "German"  # German | English | Auto
@@ -139,8 +157,20 @@ class ExportSettings:
     quote_enabled: bool = False
     quote_text: str = ""
     quote_attribution: str = ""
-    quote_duration: float = 2.0  # seconds (1.0–3.0 in the GUI)
+    quote_duration: float = 2.0  # seconds (0.5–5.0 in the 1.3.0 GUI)
     quote_font: str = "inter"
+    # 1.3.0 quote card style system: five polished styles with manual controls.
+    # Defaults preserve the 1.2.4 guarantees: disabled unless enabled,
+    # duration 2.0 s, cleanest/most readable style, subtle zoom, bold weight.
+    quote_style: str = "clean_editorial"  # clean_editorial | warm_cinematic | soft_paper | minimal_film | elegant_contrast
+    quote_font_size_percent: int = 100  # 60–160 % of the resolution-aware size
+    quote_font_weight: str = "bold"  # bold | regular
+    quote_text_color: str = ""  # "" = style default (0xRRGGBB override)
+    quote_background_color: str = ""  # "" = style default (0xRRGGBB override)
+    quote_zoom_percent: float = 4.0  # 0–10 % subtle cinematic zoom
+    quote_position: str = "center"  # center | upper | lower
+    quote_safe_padding_percent: float = 8.0  # safe-area padding (3–15 % of min edge)
+    quote_transition_duration: float = 0.0  # 0.0 = use the global transition duration
 
     # Render-time values filled by MainProjectEngine; they are harmless if
     # persisted and are recalculated before every Stage-1 render.
@@ -239,6 +269,9 @@ class MainVideoResult:
     canonical_timeline: Path | None = None
     verification_frames: list[Path] = field(default_factory=list)
     timings: dict[str, float | str | bool] = field(default_factory=dict)
+    # 1.3.0: additional user-facing output WITHOUT burned-in subtitles. None
+    # when no subtitles were generated; otherwise this file always exists.
+    video_no_subtitles: Path | None = None
 
 
 @dataclass(slots=True)
@@ -246,6 +279,9 @@ class CompleteWorkflowResult:
     main: MainVideoResult
     final_video: Path
     final_report: ValidationReport
+    # 1.3.0: final composition rendered from the subtitle-free Main Video.
+    final_video_no_subtitles: Path | None = None
+    youtube_metadata: Path | None = None
 
 
 LogCallback = Callable[[str], None]

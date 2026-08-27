@@ -1,4 +1,4 @@
-VideoMerger 1.2.4 Project Root
+﻿VideoMerger 1.3.0 Project Root
 
 setup_windows.ps1, run_windows.ps1 and diagnostics_windows.ps1 must be located in this same directory.
 The deterministic local FFmpeg location after setup is:

@@ -11,7 +11,7 @@ from pathlib import Path
 from .command_builder import FFmpegCommandBuilder
 from .errors import ExportCancelled, ExportError, ValidationError, VideoMergerError
 from .file_stability import wait_for_files_stable
-from .hardware import resolve_encoder
+from .hardware import encoder_arguments, resolve_encoder
 from .media_analyzer import MediaAnalyzer
 from .models import ExportSettings, LogCallback, MediaInfo, ProgressCallback, ResolvedExport, ValidationReport
 from .paths import project_root
@@ -35,6 +35,9 @@ class VideoMergerEngine:
         self._ffmpeg_version = ""
         self._ffprobe_version = ""
         self.last_filter_graph = ""
+        # 1.3.0: the composition (main render) graph of the last export() call;
+        # last_filter_graph may afterwards hold the subtitle burn-in graph.
+        self.last_render_graph = ""
         self.last_timings: dict[str, float] = {}
 
     def _version_line(self, executable: Path, name: str) -> str:
@@ -135,6 +138,7 @@ class VideoMergerEngine:
         progress: ProgressCallback = lambda _event: None,
         log: LogCallback = lambda _message: None,
         cancel_event: threading.Event | None = None,
+        working_directory: Path | str | None = None,
     ) -> ValidationReport:
         export_started = time.perf_counter()
         self.last_timings = {}
@@ -142,6 +146,14 @@ class VideoMergerEngine:
         preflight_started = time.perf_counter()
         self.preflight(log)
         self.last_timings["preflight_seconds"] = time.perf_counter() - preflight_started
+        # 1.3.0: FFmpeg runs with cwd = project root by default. The
+        # filtergraph's file references (staged ASS, fonts dir, quote font)
+        # are then plain relative ASCII paths — the root-cause Windows fix
+        # for drive colons/backslashes/spaces/umlauts in filter values.
+        # Every input/output path is absolute, so the cwd never changes what
+        # is read or written.
+        workdir = Path(working_directory) if working_directory else project_root()
+        output_path = output_path.expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temp_dir = project_root() / "temp"
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +179,7 @@ class VideoMergerEngine:
             built = self.builder.build(media, settings, resolved, output_path)
             self.last_timings["command_build_seconds"] = time.perf_counter() - build_started
             self.last_filter_graph = built.filter_graph
+            self.last_render_graph = built.filter_graph
             if settings.workflow_stage == "main" and settings.subtitle_enabled:
                 if not settings.subtitle_ass_path or not Path(settings.subtitle_ass_path).is_file():
                     raise ExportError(
@@ -184,7 +197,7 @@ class VideoMergerEngine:
                 render_started = time.perf_counter()
                 self._execute(
                     built.command, media, resolved, progress, log, cancel_event,
-                    transition_label(settings.transition_type),
+                    transition_label(settings.transition_type), workdir,
                 )
             except ExportError as first_error:
                 if isinstance(first_error, ExportCancelled):
@@ -198,7 +211,7 @@ class VideoMergerEngine:
                     graph_path.write_text(built.filter_graph, encoding="utf-8", newline="\n")
                     self._execute(
                         built.command, media, resolved, progress, log, cancel_event,
-                        transition_label(settings.transition_type),
+                        transition_label(settings.transition_type), workdir,
                     )
                 else:
                     raise
@@ -236,6 +249,94 @@ class VideoMergerEngine:
             elif graph_path.exists():
                 log(f"Diagnose-Filtergraph wurde nach dem Fehler aufbewahrt: {graph_path}")
 
+    def burn_subtitles(
+        self,
+        clean_video: Path,
+        ass_path: Path,
+        fonts_dir: str,
+        output_path: Path,
+        resolved: ResolvedExport,
+        media: list[MediaInfo],
+        progress: ProgressCallback = lambda _event: None,
+        log: LogCallback = lambda _message: None,
+        cancel_event: threading.Event | None = None,
+    ) -> ValidationReport:
+        """1.3.0: burn an existing ASS into an already rendered clean video.
+
+        The primary (subtitled) output is produced from the clean master with
+        one lightweight re-encode — video passes through the real libass
+        ``subtitles`` filter, audio is stream-copied (no generation loss), the
+        same encoder arguments and color tags as the main pipeline are used.
+        This is the second half of the two-file subtitle output (clean +
+        burned) and keeps the burned variant bit-anchored to the clean render.
+        """
+        cancel_event = cancel_event or threading.Event()
+        self.preflight(log)
+        if not Path(ass_path).is_file():
+            raise ExportError(
+                "SUBTITLE GENERATION FAILED [burn-in preparation]: ASS subtitle file is missing."
+            )
+        clean_video = Path(clean_video).expanduser().resolve()
+        output_path = Path(output_path).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        from .filter_escape import filter_file_value
+
+        anchor = project_root()
+        filename_value = filter_file_value(str(ass_path), anchor)
+        fonts_value = filter_file_value(fonts_dir, anchor) if fonts_dir else ""
+        fonts_option = f":fontsdir={fonts_value}" if fonts_value else ""
+        graph = (
+            f"[0:v:0]subtitles=filename={filename_value}{fonts_option}:charenc=UTF-8[vsub]"
+        )
+        self.last_filter_graph = graph
+        if "subtitles=filename=" not in graph:
+            raise ExportError(
+                "SUBTITLE GENERATION FAILED [FFmpeg filter graph]: burned-in subtitle filter is missing."
+            )
+        log("Burned-In Subtitle Guard: ASS file present and subtitles filter included in the burn pass.")
+        command = [
+            str(self.ffmpeg_path), "-hide_banner", "-y",
+            "-i", str(clean_video),
+            "-filter_complex", graph,
+            "-map", "[vsub]", "-map", "0:a:0?",
+            *encoder_arguments(resolved.encoder, resolved.crf, resolved.preset),
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            "-metadata:s:v:0", "rotate=0",
+            "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
+            "-max_muxing_queue_size", "4096",
+            "-progress", "pipe:1", "-nostats",
+            str(output_path),
+        ]
+        export_succeeded = False
+        try:
+            self._execute(
+                command, media, resolved, progress, log, cancel_event,
+                "Subtitle Burn-In", anchor,
+            )
+            if cancel_event.is_set():
+                raise ExportCancelled("Export wurde vom Benutzer abgebrochen.")
+            log("Validiere Untertitel-Ausgabedatei mit FFprobe …")
+            report = validate_output(output_path, self.ffprobe_path, resolved)
+            for detail in report.details:
+                log("Validierung: " + detail)
+            if not report.ok:
+                raise ValidationError("Export failed validation. " + " ".join(report.details))
+            report.details.append(
+                "Burned-in subtitle filter executed in the dedicated subtitle encode."
+            )
+            log("Burned-In Subtitles: PASS – Filter im Untertitel-Encode ausgeführt.")
+            export_succeeded = True
+            return report
+        finally:
+            if not export_succeeded and output_path.exists():
+                try:
+                    output_path.unlink()
+                    log("Unvollständige/ungültige Untertitel-Ausgabe wurde entfernt.")
+                except OSError as cleanup_error:
+                    log(f"WARNUNG: Ungültige Untertitel-Ausgabe konnte nicht entfernt werden: {cleanup_error}")
+
     def _execute(
         self,
         command: list[str],
@@ -245,6 +346,7 @@ class VideoMergerEngine:
         log: LogCallback,
         cancel_event: threading.Event,
         transition_name: str,
+        working_directory: Path | str | None = None,
     ) -> None:
         rendered_command = format_command_for_log(command)
         if os.name == "nt" and len(rendered_command) > 30_000:
@@ -254,6 +356,8 @@ class VideoMergerEngine:
             )
         log("Starte FFmpeg (Argumentliste ohne Shell; Unicode-Pfade bleiben atomar).")
         log("Rendering command:\n" + rendered_command)
+        if working_directory is not None:
+            log(f"FFmpeg working directory: {working_directory}")
         tracker = ProgressTracker(media, resolved, transition_name)
         stderr_tail: deque[str] = deque(maxlen=80)
         try:
@@ -267,6 +371,7 @@ class VideoMergerEngine:
                 bufsize=1,
                 creationflags=hidden_process_flags(),
                 env=safe_subprocess_env(),
+                cwd=str(working_directory) if working_directory is not None else None,
             )
         except OSError as exc:
             raise ExportError(f"FFmpeg konnte nicht gestartet werden: {exc}") from exc

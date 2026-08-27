@@ -1,0 +1,38 @@
+{
+  "version": "1.3.0",
+  "baseline": "v1.2.4 / git b48a993c22c12149ffe9e260c9756fbd0ae9ec31 (untouched reference)",
+  "created_local": "2026-08-27 (Europe/Berlin)",
+  "created_utc": "2026-08-27T16:34:57+00:00",
+  "artifact": {
+    "filename": "VideoMerger_Final_1.3.0.zip",
+    "bytes": 2742654,
+    "sha256": "4d4be55907b616d99b526745f7b285e8bd7efb491a5cbc664c8e38603a9d0455",
+    "deterministic_rebuild": "byte-identical rebuilds (fixed entry timestamps)"
+  },
+  "verification_order": [
+    "build ZIP from the clean tree (same exclusions as scripts/package_windows.ps1)",
+    "calculate SHA-256",
+    "clean extraction into an empty directory (python zipfile -e)",
+    "verify required structure (PROJECT_ROOT.txt, setup/run/diagnostics ps1, app/main.py, requirements.txt)",
+    "verify every MANIFEST_SHA256.txt entry inside the extracted ZIP (169/169 hashes match)",
+    "run the complete test suite against the exact extracted tree",
+    "re-calculate the same SHA-256"
+  ],
+  "source_tree_tests": "332 passed, 4 skipped (opt-in gates) - 0 failed",
+  "extracted_zip_tests": "332 passed, 4 skipped (opt-in gates) - 0 failed",
+  "new_test_suites": {
+    "tests/test_130_windows_subtitle_paths.py": 9,
+    "tests/test_130_stretch_speed_padding.py": 12,
+    "tests/test_130_quote_styles.py": 41,
+    "tests/test_130_outputs_and_metadata.py": 12,
+    "tests/test_130_subtitle_quality.py": 16,
+    "tests/test_130_defaults.py": 8,
+    "tests/test_130_pool_optimization.py": 5
+  },
+  "baseline_tests_preserved": "232 of the 232 baseline tests still pass (3 intentional expectation updates documented in BUILD_REPORT.md)",
+  "skips": [
+    "VIDEOMERGER_RUN_2MIN_BENCHMARK=1 (opt-in benchmark)",
+    "VIDEOMERGER_TEST_REAL_ALIGNMENT=1 x3 (opt-in real-acoustic e2e)"
+  ],
+  "test_host": "Linux sandbox, Python 3.11.2, PySide6 6.11.2 offscreen, FFmpeg n8.0 drawtext+libass"
+}

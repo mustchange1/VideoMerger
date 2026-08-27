@@ -1,0 +1,11 @@
+s..........s............................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 64%]
+.............ss......................................................... [ 85%]
+................................................                         [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_121_benchmark_2min.py:72: set VIDEOMERGER_RUN_2MIN_BENCHMARK=1 for measured two-minute benchmark
+SKIPPED [1] tests/test_121_subtitle_workflow.py:143: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for the real acoustic E2E
+SKIPPED [1] tests/test_alignment_subtitles.py:157: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for downloaded local model test
+SKIPPED [1] tests/test_alignment_subtitles.py:181: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for downloaded local model test
+332 passed, 4 skipped in 126.52s (0:02:06)

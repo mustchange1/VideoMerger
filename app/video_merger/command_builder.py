@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import quote
-from .filter_escape import escape_quoted_value
+from .filter_escape import filter_file_value
 from .hardware import encoder_arguments
 from .models import ExportSettings, MediaSequence, ResolvedExport
+from .paths import project_root
 from .transition_effects import normalize_transition, transition_blur_sigma, xfade_expression
 
 
@@ -25,13 +26,30 @@ def _percent_gain(value: int) -> float:
 
 
 def _filter_path(value: str) -> str:
-    # FFmpeg filter syntax needs an additional escaping layer beyond subprocess
-    # argument safety. Forward slashes plus escaped drive colon work on Windows.
-    # The value is always emitted INSIDE single quotes, where only ONE parse
-    # pass applies escaping (pass 1 copies quoted spans verbatim) — see
-    # filter_escape.escape_quoted_value for the verified rules.
-    normalized = str(Path(value).expanduser().resolve()).replace("\\", "/")
-    return escape_quoted_value(normalized)
+    """Filter value for a file path (subtitles/fontsdir/drawtext fontfile).
+
+    1.3.0 root-cause Windows fix: FFmpeg runs with ``cwd`` = project root and
+    every render-time file referenced by the graph is app-staged under that
+    root with an ASCII name, so the graph normally receives a plain relative
+    POSIX path — no drive-letter colon, no backslash, no space, no umlaut can
+    appear in the value on any Windows machine.  Paths outside the anchor
+    fall back to the verified UNQUOTED two-level escaped absolute form
+    (forward slashes; apostrophe-safe — the 1.2.4 quoted form raised
+    ValueError for ``C:/Users/O'Brien/...`` and could not represent it).
+    See :mod:`filter_escape` for the verified two-pass parse rules.
+    """
+    return filter_file_value(value, project_root())
+
+
+def _atempo_chain(rate: float) -> str:
+    """atempo chain for a clip playback rate (atempo range is 0.5–100)."""
+    parts: list[str] = []
+    remaining = max(0.25, min(100.0, rate))
+    while remaining < 0.5 - 1e-9:
+        parts.append("atempo=0.5")
+        remaining /= 0.5
+    parts.append(f"atempo={_number(remaining)}")
+    return ",".join(parts)
 
 
 def _watermark_active(settings: ExportSettings) -> bool:
@@ -94,8 +112,9 @@ class FFmpegCommandBuilder:
             duration = resolved.effective_durations[index]
             base = f"base{index}"
             if item.is_generated_quote:
-                # 1.2.4: Die Quote-Karte wird vollständig im Graph generiert
-                # (color-Quelle + Vignette + drawtext). Sie ist stumm: das
+                # 1.2.4/1.3.0: Die Quote-Karte wird vollständig im Graph
+                # generiert (color-Quelle + stilabhängige Behandlung +
+                # drawtext + optionaler subtiler Zoom). Sie ist stumm: das
                 # Audio-Label kommt unten über den anullsrc-Zweig
                 # (audio.present=False). Kein -i-Input, keine Quelle auf
                 # Festplatte.
@@ -107,19 +126,36 @@ class FFmpegCommandBuilder:
                             settings.quote_font,
                             width,
                             height,
+                            style_key=settings.quote_style,
+                            font_size_percent=settings.quote_font_size_percent,
+                            font_weight=settings.quote_font_weight,
+                            text_color=settings.quote_text_color,
+                            background_color=settings.quote_background_color,
+                            zoom_percent=settings.quote_zoom_percent,
+                            position=settings.quote_position,
+                            safe_padding_percent=settings.quote_safe_padding_percent,
                         ),
                         width, height, resolved.fps, duration, base,
                     )
                 )
             else:
                 original_duration = item.source_duration or item.duration
-                extra_pad = max(2.0 / resolved.fps, duration - original_duration + 2.0 / resolved.fps)
+                # 1.3.0 playback_rate: global Main Video speed and/or Smart
+                # Last-Clip Stretch. rate < 1 slows the clip (stretch), rate
+                # > 1 speeds it up. trim works in SOURCE seconds, so the clip
+                # is trimmed to duration*rate and then time-scaled; tpad must
+                # cover the *scaled* source so a slowed clip never runs out of
+                # real frames before its timeline duration ends.
+                rate = max(0.25, min(4.0, float(getattr(item, "playback_rate", 1.0) or 1.0)))
+                needed_source = max(2.0 / resolved.fps, duration * rate)
+                extra_pad = max(2.0 / resolved.fps, needed_source - original_duration + 2.0 / resolved.fps)
+                rate_video = "" if abs(rate - 1.0) < 1e-6 else f"setpts=PTS/{_number(rate)},"
                 source = f"[{real_input[index]}:v:0]"
                 pre = f"pre{index}"
                 lines.append(
                     f"{source}fps={resolved.fps_expr}:round=near,"
                     f"tpad=stop_mode=clone:stop_duration={_number(extra_pad)},"
-                    f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
+                    f"trim=duration={_number(needed_source)},{rate_video}settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
                 )
 
                 target_ratio = width / height
@@ -230,10 +266,17 @@ class FFmpegCommandBuilder:
             else:
                 clip_gain = 1.0
             if item.audio.present and real_input[index] is not None:
+                # 1.3.0: the clip's own audio follows its playback rate so a
+                # stretched/sped-up clip keeps internal A/V sync. Voiceover,
+                # music and subtitles are never affected.
+                rate_audio = ""
+                rate = max(0.25, min(4.0, float(getattr(item, "playback_rate", 1.0) or 1.0)))
+                if abs(rate - 1.0) > 1e-6:
+                    rate_audio = _atempo_chain(rate) + ","
                 lines.append(
                     f"[{real_input[index]}:a:0]aresample=48000:async=1:first_pts=0,"
                     f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
-                    f"volume={_number(clip_gain)},"
+                    f"{rate_audio}volume={_number(clip_gain)},"
                     f"apad=pad_dur={_number(duration + 0.25)},atrim=duration={_number(duration)},"
                     f"asetpts=PTS-STARTPTS[{audio_label}]"
                 )
@@ -292,12 +335,15 @@ class FFmpegCommandBuilder:
             and settings.subtitle_ass_path
         ):
             output = "vsubtitles"
+            # 1.3.0: both values are emitted UNQUOTED (see filter_escape).
+            # Under the project-root working directory they are plain ASCII
+            # relative paths; the absolute fallback is two-level escaped.
             fonts_option = (
-                f":fontsdir='{_filter_path(settings.subtitle_fonts_dir)}'"
+                f":fontsdir={_filter_path(settings.subtitle_fonts_dir)}"
                 if settings.subtitle_fonts_dir else ""
             )
             lines.append(
-                f"[{visual_label}]subtitles=filename='{_filter_path(settings.subtitle_ass_path)}'"
+                f"[{visual_label}]subtitles=filename={_filter_path(settings.subtitle_ass_path)}"
                 f"{fonts_option}:charenc=UTF-8[{output}]"
             )
             visual_label = output

@@ -149,8 +149,13 @@ def test_actual_one_click_stage1_handoff_stage2_validation_and_outro_isolation(f
     assert any(f"Actual Stage 1 input used by Stage 2: {result.main.video}" in line for line in logs)
     assert any("ONE-CLICK COMPLETE WORKFLOW – PASS" in line for line in logs)
     assert progress and max(item.percent for item in progress) == pytest.approx(100.0)
-    assert any(item.stage.startswith("One-Click 1/2") for item in progress)
-    assert any(item.stage.startswith("One-Click 2/2") for item in progress)
+    # 1.3.0: the one-click workflow runs Stage 1 (Main), Stage 2 (final with
+    # burned subtitles) and — because subtitles were generated — a third pass
+    # composing the additional no-subtitles final variant.
+    assert any(item.stage.startswith("One-Click 1/") for item in progress)
+    assert any(item.stage.startswith("One-Click 2/") for item in progress)
+    assert any(item.stage.startswith("One-Click 3/") for item in progress)
+    assert any(item.stage.startswith("One-Click – Complete") for item in progress)
 
     # Stage 1 duration is voiceover 1.20 s plus the configured quiet .50 s.
     assert result.main.report.duration == pytest.approx(1.70, abs=.08)

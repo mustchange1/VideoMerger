@@ -1,4 +1,4 @@
-# Architektur – VideoMerger 1.2.3
+# Architektur – VideoMerger 1.3.0
 
 ## Additiver Aufbau
 
@@ -99,3 +99,26 @@ Stage 2 leert Subtitle-ASS, Voiceover, Script und Musik. Die in MainVideo enthal
 ## Validierung und Tests
 
 FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverhältnis, Dauer, Audio und Faststart. Subtitle-Tests führen echte Libass-Burns für fünf Animationen, fünf Long-Form-Stile, drei Fontwahlen/Fallbacks, vier Positionen sowie 1920×1080, 3840×2160 und 1080×1920 aus. One Click wird als echter Stage-1→Stage-2-Lauf mit Audio-/Subtitle-Isolation getestet; 1.2.3 testet zusätzlich Intro→Main→Outro, Fisher-Yates-Randomisierung, Multi-Voiceover-Ausrichtung mit kumulativen Offsets und Qualitäts-/Auflösungs-/FPS-Erhalt (720p/1080p/1440p/4K). Evidenz liegt unter `test_evidence/1.2.3/`.
+
+
+## Architektur-Zusätze 1.3.0
+
+### Windows-sichere Filterpfade
+
+`filter_escape.filter_file_value()` ist die einzige Stelle für Dateipfade im Filtergraph. FFmpeg läuft mit `cwd = project_root()` (`engine._execute(..., working_directory)`); alle Render-Dateien (staged ASS unter `temp/`, `tools/fonts`, Quote-Font) bekommen relative ASCII-Werte. Außerhalb des Ankers: UNQUOTED + Zwei-Stufen-Escape (apostrophe-sicher). `command_builder._filter_path`, `quote._filter_path_for` und `engine.burn_subtitles` nutzen ausschließlich diesen Einstiegspunkt.
+
+### Dauer-Fit, Speed, End-Padding
+
+`timeline.fit_media_to_duration(..., duration_fit_mode, max_stretch_percent, playback_rate)` bleibt die eine Auswahl-Mathematik. `cut` = exaktes 1.2.4-Verhalten; `stretch` zieht das Präfix bevorzugt einen Clip kürzer und dehnt nur den letzten (relativ zur geschwindigkeitsskalierten Timeline-Dauer, begrenzt). `video_pool` spiegelt dieselbe Entscheidung in O(n) (eine Präfix-Berechnung pro Status). `MediaInfo.playback_rate` wird im Graph via `setpts=PTS/rate` + `atempo` umgesetzt (nur Clip-Audio; Voiceover/Musik/Untertitel unberührt). `final_pause` bleibt die autoritative End-Padding-Größe (GUI: freier Spin, Standard 1,0 s).
+
+### Doppelte Untertitel-Ausgaben + sauberer Output
+
+`create_main` rendert zuerst das saubere Master (`_no_subtitles.mp4`), dann brennt `engine.burn_subtitles()` die ASS in die primäre Datei (libass-Pass, Audio Stream-Copy, identische Encoder-Argumente). SRT/VTT liegen im Output; Timeline-JSON und Verifikations-PNGs bleiben unter `temp/`. `create_complete` reserviert beide FinalVideo-Namen vorab, rendert die primäre (untertitelte) Komposition aus dem untertitelten Main und die Clean-Variante aus dem sauberen Main.
+
+### Quote-Karten-Stile
+
+`quote.QUOTE_STYLES` (fünf `QuoteStyleSpec`) definieren Hintergrund/Text/Attribution/Hairline/Korn/Default-Font; `layout_quote(...)` nimmt alle manuellen Regler keyword-only an (Geometrie-erhaltende Defaults). `quote_video_chain()` setzt stilabhängig Vignette/Korn/Hairline/drawtext/zoompan (d=1 → Dauer exakt) und bleibt stumm (anullsrc). `add_outro` validiert die freie Dauer 0,5–5,0 s und kann die Übergänge um die Karte separat begrenzen (`quote_transition_duration`, gleiche 45-%-Clamp-Regel).
+
+### Lokale YouTube-Metadaten
+
+`youtube_metadata.py`: deterministischer Extraktor (Titel = stärkster Eröffnungssatz; Zusammenfassung = saliente Originalsätze; Themen = wörtliche Schlüsselphrasen; CTA) + optionale lokale Ollama-Politur unter strikter Validierung (nur `127.0.0.1:11434`, nie eine Cloud-API). Fehler blockieren das Rendern nie; ohne autoritatives Transkript wird nichts erfunden.

@@ -384,8 +384,9 @@ def test_add_outro_quote_empty_text_is_clear_error(tmp_path):
 
 
 def test_add_outro_quote_invalid_duration_is_clear_error(tmp_path):
-    project, settings = _add_outro_expect_error(tmp_path, DE_UMLAUT, 2.2)
-    with pytest.raises(VideoMergerError, match="1\\.0 / 1\\.5 / 2\\.0 / 2\\.5 / 3\\.0"):
+    # 1.3.0: freie Quote-Dauer 0.5–5.0 s; außerhalb gibt es den klaren Fehler.
+    project, settings = _add_outro_expect_error(tmp_path, DE_UMLAUT, 5.5)
+    with pytest.raises(VideoMergerError, match="0\\.5–5\\.0"):
         project.add_outro(settings, tmp_path)
 
 

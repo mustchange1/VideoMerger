@@ -1,10 +1,11 @@
-VideoMerger 1.2.4 Artifact Identity
+﻿VideoMerger 1.3.0 Artifact Identity
 
-Version: 1.2.4
-Final filename: VideoMerger_Final_1.2.4.zip
-Build ID: ed9483bf-f50a-49b2-a15c-29de6b59ce6a
-Recreated: 2026-08-26 (Europe/Berlin)
-Build UTC: 2026-08-26T09:17:05+00:00
-Source: rebuilt from the final VideoMerger 1.2.4 source tree (additive upgrade of the tested 1.2.3 application); not copied from a prior ZIP.
-Verification order: create ZIP -> calculate SHA-256 -> clean extraction -> verify exact extracted files -> run full suite on the extracted tree -> report the same SHA-256.
-Note: the ZIP's own SHA-256 is necessarily reported outside the ZIP to avoid self-reference.
+Version: 1.3.0
+Final filename: VideoMerger_Final_1.3.0.zip
+Build ID: 7c1f93a2-4e8b-46d7-9f60-2a3b8e51d0c4
+Recreated: 2026-08-27 (Europe/Berlin)
+Build UTC: 2026-08-27T16:30:10+00:00
+Source: rebuilt additively from the exact tested VideoMerger 1.2.4 source tree (git b48a993c22c12149ffe9e260c9756fbd0ae9ec31); not copied from a prior ZIP.
+Verification order: create ZIP -> calculate SHA-256 -> clean extraction -> verify exact extracted files -> run the full suite on the exact extracted tree -> report the same SHA-256.
+Baseline reference: the v1.2.4 reference itself remains untouched as its own git commit (b48a993) and release ZIP; 1.3.0 is purely additive on top.
+Note: the ZIP's own SHA-256 is necessarily reported outside the ZIP to avoid self-reference (test_evidence/1.3.0/release_artifact_sha256.txt and the delivery report).

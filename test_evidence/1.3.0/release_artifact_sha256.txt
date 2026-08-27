@@ -1,0 +1,5 @@
+VideoMerger_Final_1.3.0.zip
+SHA-256: 4d4be55907b616d99b526745f7b285e8bd7efb491a5cbc664c8e38603a9d0455
+Bytes: 2742654
+Built: 2026-08-27 (Europe/Berlin)
+Tested: full suite executed against the clean-extracted ZIP (332 passed, 4 skipped opt-in, 0 failed)
