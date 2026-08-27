@@ -53,7 +53,10 @@ def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
         # 1.2.4: Intro-Original-Audio default "original" (vor 1.2.4 "mute").
         assert window.original_audio_combo.currentData() == "original"
         assert window.outro_audio_combo.currentData() == "original"
-        assert window.pause_combo.currentData() == 1.0
+        # 1.3.0: Main Video End Padding ist eine freie Zahl-Eingabe; der
+        # bestehende Standard (~1 Sekunde) bleibt exakt erhalten.
+        assert window.end_padding_spin.value() == 1.0
+        assert window._settings().final_pause == 1.0
         assert window.music_volume_slider.value() == 22
         assert window.ducking_check.isChecked()
         assert window.subtitle_language_combo.currentText() == "German"

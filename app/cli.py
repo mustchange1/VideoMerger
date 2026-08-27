@@ -44,6 +44,31 @@ def main() -> int:
         "--short-video", choices=["hold", "loop"], default="hold",
         help="hold final rendered frame or loop the complete active ordered timeline",
     )
+    # 1.3.0 smart duration fit + global video speed.
+    parser.add_argument(
+        "--duration-fit", choices=["cut", "stretch"], default="cut",
+        help="cut the last selected clip (default) or stretch (slow) it within the stretch limit",
+    )
+    parser.add_argument(
+        "--max-stretch", type=float, default=10.0,
+        help="maximum stretch of the final clip in percent (default 10)",
+    )
+    parser.add_argument(
+        "--video-speed", type=float, default=1.0,
+        help="global Main Video playback speed 0.50-2.00 (default 1.00; voiceover stays the timing authority)",
+    )
+    # 1.3.0 quote card (optional, silent section between Intro and Main).
+    parser.add_argument("--quote", action="store_true", help="enable the generated quote card")
+    parser.add_argument("--quote-text", default="", help="quote card text")
+    parser.add_argument("--quote-attribution", default="", help="quote card attribution")
+    parser.add_argument("--quote-duration", type=float, default=2.0, help="quote card duration 0.5-5.0 s")
+    parser.add_argument(
+        "--quote-style",
+        choices=["clean_editorial", "warm_cinematic", "soft_paper", "minimal_film", "elegant_contrast"],
+        default="clean_editorial",
+    )
+    parser.add_argument("--quote-font", default="inter")
+    parser.add_argument("--quote-zoom", type=float, default=4.0, help="subtle quote zoom 0-10 percent")
     parser.add_argument("--subtitles", action="store_true")
     parser.add_argument("--language", choices=["German", "English", "Auto"], default="German")
     parser.add_argument("--subtitle-style", default="long_1")
@@ -74,6 +99,16 @@ def main() -> int:
         music_path=args.music, original_audio_mode=args.original_audio,
         music_volume=args.music_volume, final_pause=args.pause,
         short_video_mode=args.short_video,
+        duration_fit_mode=args.duration_fit,
+        max_stretch_percent=max(1.0, min(50.0, args.max_stretch)),
+        video_speed=max(0.5, min(2.0, args.video_speed)),
+        quote_enabled=args.quote,
+        quote_text=args.quote_text,
+        quote_attribution=args.quote_attribution,
+        quote_duration=max(0.5, min(5.0, args.quote_duration)),
+        quote_style=args.quote_style,
+        quote_font=args.quote_font,
+        quote_zoom_percent=max(0.0, min(10.0, args.quote_zoom)),
         subtitle_enabled=args.subtitles, subtitle_language=args.language,
         subtitle_style=args.subtitle_style, subtitle_animation=args.subtitle_animation,
         subtitle_font=args.subtitle_font, subtitle_position=args.subtitle_position,

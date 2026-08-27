@@ -85,3 +85,99 @@ def escape_quoted_value(value: str) -> str:
     for ch in ",;[]":
         out = out.replace(ch, "\\" + ch)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# 1.3.0: Windows-proof file-path strategy for the subtitles/fontsdir/drawtext
+# fontfile filter options (the real drive-letter/backslash/space/umlaut
+# problem).  The root cause of the classic Windows failures is that an
+# absolute path has to survive BOTH filtergraph parser passes AND the C
+# runtime/libass ``fopen`` with the system code page: a ``C:\\Users\\Käthe\\…``
+# prefix can break in any of those layers depending on the FFmpeg build.
+#
+# The fix removes the failure surface instead of escaping harder:
+#
+# 1. Render-time files referenced by the filtergraph (staged ASS subtitle
+#    file, bundled fonts directory, quote-card font file) are always created
+#    by this application itself under the project root with app-controlled
+#    ASCII names (``temp/<stem>_burn.ass``, ``tools/fonts``).  When the file
+#    lies under the anchor directory (the FFmpeg working directory), the
+#    filter receives a RELATIVE POSIX path: no drive-letter colon, no
+#    backslash, no space, no non-ASCII byte can remain — immune to both
+#    parser passes, to the Windows code page and to libass ``fopen``.  This
+#    holds for EVERY location a user unpacks the project to, including
+#    ``C:\\Users\\Jürgen Müller\\Downloads\\VideoMerger_Final_1.3.0``.
+# 2. Paths that cannot be made relative fall back to an UNQUOTED absolute
+#    value with forward slashes and the verified two-level escape table.
+#    Unlike the 1.2.4 quoted form, an unquoted value can represent an
+#    apostrophe (e.g. ``C:/Users/O'Brien/…``), so path-dependent renders no
+#    longer raise ValueError and never emit a broken quoted span.
+# --------------------------------------------------------------------------- #
+
+from pathlib import Path as _Path
+import re as _re
+
+_WINDOWS_ABSOLUTE = _re.compile(r"^[A-Za-z]:[\\/]")
+_WINDOWS_UNC = _re.compile(r"^\\\\[^\\/]+")
+
+
+def normalize_filter_path_text(value: str | _Path) -> str:
+    """Normalize any path text to forward-slash absolute POSIX form.
+
+    Windows drive paths (``C:\\...``) and UNC paths (``\\\\server\\...``) are
+    normalized as pure strings: ``Path.resolve()`` on a non-Windows host
+    would otherwise treat ``C:`` as a relative segment and mangle the path.
+    """
+    text = str(value).strip()
+    if _WINDOWS_ABSOLUTE.match(text) or _WINDOWS_UNC.match(text):
+        return text.replace("\\", "/")
+    return str(_Path(value).expanduser().resolve()).replace("\\", "/")
+
+
+def relative_filter_path(value: str | _Path, anchor: str | _Path) -> str | None:
+    """Return an ASCII-safe relative POSIX filter value under ``anchor``.
+
+    Returns None when the path does not lie under ``anchor`` or when the
+    relative remainder still contains a non-ASCII character, a space, a
+    colon, an apostrophe or another character that could stress either
+    parser pass (the caller then uses the absolute fallback).  App-staged
+    render-time files always produce a pure ``[a-z0-9_./-]+`` value.
+    """
+    target = _Path(value).expanduser().resolve()
+    anchor_path = _Path(anchor).expanduser().resolve()
+    try:
+        relative = target.relative_to(anchor_path)
+    except ValueError:
+        return None
+    if not str(relative) or str(relative) == ".":
+        return None
+    text = relative.as_posix()
+    if any(not (ch.isascii() and (ch.isalnum() or ch in "./-_")) for ch in text):
+        return None
+    # A leading "./" is unnecessary; a bare "../" escape can never happen
+    # after relative_to(), which is the point of the anchor.
+    return text
+
+
+def escape_absolute_filter_path(value: str | _Path) -> str:
+    """Escape an absolute path as an UNQUOTED filter value (two passes).
+
+    Forward slashes first, then the verified two-level table.  Handles
+    drive-letter colons (``C:``), backslash remnants, spaces, umlauts and
+    apostrophes without raising.
+    """
+    return escape_unquoted_value(normalize_filter_path_text(value))
+
+
+def filter_file_value(value: str | _Path, anchor: str | _Path | None) -> str:
+    """The one entry point for file paths inside the filtergraph.
+
+    ``anchor`` is the working directory the FFmpeg process will run in
+    (the project root).  Prefer the safe relative form; otherwise the
+    escaped absolute form.  The returned value must be emitted UNQUOTED.
+    """
+    if anchor is not None:
+        relative = relative_filter_path(value, anchor)
+        if relative is not None:
+            return relative
+    return escape_absolute_filter_path(value)

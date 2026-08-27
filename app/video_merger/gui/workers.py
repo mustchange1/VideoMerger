@@ -77,7 +77,11 @@ class ProcessingWorker(QObject):
                         cancel_event=self.cancel_event,
                     )
                     output_store.add(result.main.video)
+                    if result.main.video_no_subtitles:
+                        output_store.add(result.main.video_no_subtitles)
                     output_store.add(result.final_video)
+                    if result.final_video_no_subtitles:
+                        output_store.add(result.final_video_no_subtitles)
                     self.finished.emit(str(result.final_video), result)
                 else:
                     result = project.create_main(
@@ -86,6 +90,8 @@ class ProcessingWorker(QObject):
                         cancel_event=self.cancel_event,
                     )
                     output_store.add(result.video)
+                    if result.video_no_subtitles:
+                        output_store.add(result.video_no_subtitles)
                     self.finished.emit(str(result.video), result)
                 return
             if self.mode == "preview":

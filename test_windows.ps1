@@ -13,7 +13,7 @@ $env:VIDEOMERGER_TEST_REAL_ALIGNMENT = '1'
 $env:VIDEOMERGER_TEST_ALIGNMENT_MODEL = 'small'
 if ($Benchmark) {
     $env:VIDEOMERGER_RUN_2MIN_BENCHMARK = '1'
-    $env:VIDEOMERGER_BENCHMARK_RESULT = Join-Path $Root 'test_evidence\1.2.4\benchmark_windows_result.json'
+    $env:VIDEOMERGER_BENCHMARK_RESULT = Join-Path $Root 'test_evidence\1.3.0\benchmark_windows_result.json'
 }
 & $Python -m pip install -r (Join-Path $Root "requirements-dev.txt")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

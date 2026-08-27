@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.setStyleSheet(APP_STYLE)
         self._load_settings()
-        self._append_log("VideoMerger 1.2.4 gestartet – Video-Pool (Required-Only), Quote-Karte, echte Subtitle-Preview. Alle Videodaten bleiben lokal.")
+        self._append_log("VideoMerger 1.3.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Video-Speed, Quote-Karten-Stile, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
 
     def _build_ui(self) -> None:
         scroll = QScrollArea()
@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("VideoMerger")
         title.setObjectName("title")
-        subtitle = QLabel("Zwei Stufen · Voiceover · Musik · Wort-Sync · Untertitel · Video-Pool · Quote-Karte · Outro · lokal")
+        subtitle = QLabel("Zwei Stufen · Voiceover · Musik · Wort-Sync · Untertitel · Video-Pool · Quote-Karte · Smart Stretch · Video-Speed · lokal")
         subtitle.setObjectName("subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -254,19 +254,62 @@ class MainWindow(QMainWindow):
         audio_layout.addWidget(self.music_volume_value, 7, 2)
         self.ducking_check = QCheckBox("Voiceover Ducking – Musik weich unter Sprache absenken")
         audio_layout.addWidget(self.ducking_check, 8, 0, 1, 3)
-        self.pause_combo = QComboBox()
-        for value in (0.5, 1.0, 1.5, 2.0):
-            self.pause_combo.addItem(f"{value:.1f} sec", value)
+        # 1.3.0 Main Video End Padding: manual, free setting (0.0–5.0 s);
+        # the existing ~1 second default is preserved exactly.
+        self.end_padding_spin = QDoubleSpinBox()
+        self.end_padding_spin.setRange(0.0, 5.0)
+        self.end_padding_spin.setSingleStep(0.1)
+        self.end_padding_spin.setDecimals(1)
+        self.end_padding_spin.setSuffix(" sec")
+        self.end_padding_spin.setValue(1.0)
         self.short_video_combo = QComboBox()
         self.short_video_combo.addItem("Hold Last Frame – finalen Frame halten", "hold")
         self.short_video_combo.addItem("Full-Timeline Loop – komplette manuelle Reihenfolge wiederholen", "loop")
-        # 1.2.4: Zieldauer-Einflüsse sofort im Video-Pool-Status zeigen.
-        self.pause_combo.currentIndexChanged.connect(self._update_pool_status)
+        # 1.3.0 Duration Fit Mode: Cut Last Clip (Standard) or Smart Stretch.
+        self.duration_fit_combo = QComboBox()
+        self.duration_fit_combo.addItem("Cut Last Clip (Standard)", "cut")
+        self.duration_fit_combo.addItem("Stretch Last Clip (Smart, minimal slow motion)", "stretch")
+        self.duration_fit_combo.currentIndexChanged.connect(self._sync_stretch_controls)
+        self.max_stretch_combo = QComboBox()
+        for value in (5, 10, 15, 20):
+            self.max_stretch_combo.addItem(f"{value} %", float(value))
+        self.max_stretch_combo.addItem("Custom", -1.0)
+        self.max_stretch_combo.setCurrentIndex(1)  # 10 % = Standard
+        self.max_stretch_combo.currentIndexChanged.connect(self._sync_stretch_controls)
+        self.max_stretch_spin = QDoubleSpinBox()
+        self.max_stretch_spin.setRange(1.0, 50.0)
+        self.max_stretch_spin.setSingleStep(1.0)
+        self.max_stretch_spin.setDecimals(1)
+        self.max_stretch_spin.setSuffix(" %")
+        self.max_stretch_spin.setValue(10.0)
+        # 1.3.0 Global Video Speed: 0.50x–2.00x, 1.00x default. Voiceover,
+        # subtitles and music are never affected (voiceover = timing authority).
+        self.video_speed_combo = QComboBox()
+        for step in range(10, 41):  # 0.50 … 2.00 in 0.05 steps
+            value = step / 20.0
+            label = f"{value:.2f}x" + ("  (Standard)" if abs(value - 1.0) < 1e-9 else "")
+            self.video_speed_combo.addItem(label, value)
+        self.video_speed_combo.setCurrentIndex(10)  # 1.00x
+        # 1.2.4/1.3.0: Zieldauer-Einflüsse sofort im Video-Pool-Status zeigen.
+        self.end_padding_spin.valueChanged.connect(self._update_pool_status)
         self.short_video_combo.currentIndexChanged.connect(self._update_pool_status)
-        audio_layout.addWidget(QLabel("Quiet Pause before Outro"), 9, 0)
-        audio_layout.addWidget(self.pause_combo, 9, 1)
+        self.duration_fit_combo.currentIndexChanged.connect(self._update_pool_status)
+        self.max_stretch_combo.currentIndexChanged.connect(self._update_pool_status)
+        self.max_stretch_spin.valueChanged.connect(self._update_pool_status)
+        self.video_speed_combo.currentIndexChanged.connect(self._update_pool_status)
+        audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 9, 0)
+        audio_layout.addWidget(self.end_padding_spin, 9, 1)
         audio_layout.addWidget(QLabel("If Video Is Too Short"), 10, 0)
         audio_layout.addWidget(self.short_video_combo, 10, 1)
+        audio_layout.addWidget(QLabel("Duration Fit Mode"), 11, 0)
+        audio_layout.addWidget(self.duration_fit_combo, 11, 1)
+        audio_layout.addWidget(QLabel("Maximum Stretch"), 12, 0)
+        stretch_row = QHBoxLayout()
+        stretch_row.addWidget(self.max_stretch_combo)
+        stretch_row.addWidget(self.max_stretch_spin)
+        audio_layout.addLayout(stretch_row, 12, 1)
+        audio_layout.addWidget(QLabel("Main Video Speed"), 13, 0)
+        audio_layout.addWidget(self.video_speed_combo, 13, 1)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -545,12 +588,12 @@ class MainWindow(QMainWindow):
         self.outro_audio_combo.addItem("Low", "low")
         self.outro_audio_combo.addItem("Mute", "mute")
         self.outro_transition_check = QCheckBox("Use selected visual transition between sections")
-        # 1.2.4 Quote Card: optionale, STILLE Zitatkarte zwischen Intro und
-        # MainVideo (Intro → [Quote] → MainVideo → Outro). Sie erhält keine
-        # Voiceover, keine Musik und keine Untertitel und nutzt das bestehende
-        # Transition-System. Design: dunkler, editorialer Hintergrund mit
-        # Vignette, Zitat als einziger Fokus leicht über der Mitte.
-        self.quote_check = QCheckBox("Add Quote Card – stille Zitatkarte vor dem Main Video (1.2.4)")
+        # 1.2.4/1.3.0 Quote Card: optionale, STILLE Zitatkarte zwischen Intro
+        # und MainVideo (Intro → [Quote] → MainVideo → Outro). Sie erhält
+        # keine Voiceover, keine Musik und keine Untertitel und nutzt das
+        # bestehende Transition-System. 1.3.0: fünf polierte Styles mit
+        # vollständigen manuellen Gestaltungsreglern.
+        self.quote_check = QCheckBox("Add Quote Card – stille Zitatkarte vor dem Main Video")
         self.quote_text_edit = QPlainTextEdit()
         self.quote_text_edit.setPlaceholderText(
             "Zitat in Deutsch oder Englisch – Umlaute, Anführungszeichen und Punktzeichen sind erlaubt …"
@@ -558,20 +601,77 @@ class MainWindow(QMainWindow):
         self.quote_text_edit.setFixedHeight(72)
         self.quote_attribution_edit = QLineEdit()
         self.quote_attribution_edit.setPlaceholderText("Attribution (optional), z. B. – Marie Curie")
-        self.quote_duration_combo = QComboBox()
-        for value in (1.0, 1.5, 2.0, 2.5, 3.0):
-            self.quote_duration_combo.addItem(f"{value:.1f} sec", value)
-        self.quote_duration_combo.setCurrentIndex(2)  # 2.0 s = Standard
+        # 1.3.0: freie Dauer 0.5–5.0 s (Standard bleibt 2.0 s).
+        self.quote_duration_spin = QDoubleSpinBox()
+        self.quote_duration_spin.setRange(0.5, 5.0)
+        self.quote_duration_spin.setSingleStep(0.1)
+        self.quote_duration_spin.setDecimals(1)
+        self.quote_duration_spin.setSuffix(" sec")
+        self.quote_duration_spin.setValue(2.0)
         self.quote_font_combo = QComboBox()
         for key, label in FONT_OPTIONS:
             self.quote_font_combo.addItem(label, key)
+        from ..quote import QUOTE_STYLES
+        self.quote_style_combo = QComboBox()
+        for spec in QUOTE_STYLES.values():
+            self.quote_style_combo.addItem(spec.label, spec.key)
+            self.quote_style_combo.setItemData(
+                self.quote_style_combo.count() - 1, spec.description, Qt.ToolTipRole
+            )
+        self.quote_font_size_spin = QSpinBox()
+        self.quote_font_size_spin.setRange(60, 160)
+        self.quote_font_size_spin.setSuffix(" %")
+        self.quote_font_size_spin.setValue(100)
+        self.quote_weight_combo = QComboBox()
+        self.quote_weight_combo.addItem("Bold (Standard)", "bold")
+        self.quote_weight_combo.addItem("Regular", "regular")
+        self.quote_text_color_edit = QLineEdit()
+        self.quote_text_color_edit.setPlaceholderText("Style-Standard (z. B. #232019)")
+        self.quote_background_color_edit = QLineEdit()
+        self.quote_background_color_edit.setPlaceholderText("Style-Standard (z. B. #F6F1E7)")
+        self.quote_zoom_spin = QDoubleSpinBox()
+        self.quote_zoom_spin.setRange(0.0, 10.0)
+        self.quote_zoom_spin.setSingleStep(0.5)
+        self.quote_zoom_spin.setDecimals(1)
+        self.quote_zoom_spin.setSuffix(" %")
+        self.quote_zoom_spin.setValue(4.0)
+        self.quote_position_combo = QComboBox()
+        for label, key in (("Center (leicht über der Mitte)", "center"), ("Upper (oberes Drittel)", "upper"), ("Lower (unterer Bereich)", "lower")):
+            self.quote_position_combo.addItem(label, key)
+        self.quote_safe_padding_spin = QDoubleSpinBox()
+        self.quote_safe_padding_spin.setRange(3.0, 15.0)
+        self.quote_safe_padding_spin.setSingleStep(0.5)
+        self.quote_safe_padding_spin.setDecimals(1)
+        self.quote_safe_padding_spin.setSuffix(" %")
+        self.quote_safe_padding_spin.setValue(8.0)
+        self.quote_transition_spin = QDoubleSpinBox()
+        self.quote_transition_spin.setRange(0.0, 3.0)
+        self.quote_transition_spin.setSingleStep(0.1)
+        self.quote_transition_spin.setDecimals(2)
+        self.quote_transition_spin.setSuffix(" sec")
+        self.quote_transition_spin.setValue(0.0)
+        self.quote_transition_spin.setToolTip(
+            "0.00 = die globale Übergangsdauer gilt. Größer 0 = eigene Übergangsdauer "
+            "nur für die Grenzen um die Quote-Karte."
+        )
         self.quote_preview = QuotePreviewCanvas()
         self.quote_preview.setMinimumHeight(180)
         self.quote_check.toggled.connect(self._sync_quote_visibility)
         self.quote_text_edit.textChanged.connect(self._update_quote_preview)
         self.quote_attribution_edit.textChanged.connect(self._update_quote_preview)
-        self.quote_duration_combo.currentIndexChanged.connect(self._update_quote_preview)
+        self.quote_duration_spin.valueChanged.connect(self._update_quote_preview)
         self.quote_font_combo.currentIndexChanged.connect(self._update_quote_preview)
+        for control, signal in (
+            (self.quote_style_combo, "currentIndexChanged"),
+            (self.quote_font_size_spin, "valueChanged"),
+            (self.quote_weight_combo, "currentIndexChanged"),
+            (self.quote_text_color_edit, "textChanged"),
+            (self.quote_background_color_edit, "textChanged"),
+            (self.quote_zoom_spin, "valueChanged"),
+            (self.quote_position_combo, "currentIndexChanged"),
+            (self.quote_safe_padding_spin, "valueChanged"),
+        ):
+            getattr(control, signal).connect(self._update_quote_preview)
         self.final_button = QPushButton("CREATE FINAL VIDEO")
         self.final_button.setObjectName("mergeButton")
         self.final_button.clicked.connect(lambda: self._start("outro"))
@@ -595,13 +695,31 @@ class MainWindow(QMainWindow):
         outro_layout.addWidget(QLabel("Attribution"), 8, 0)
         outro_layout.addWidget(self.quote_attribution_edit, 8, 1, 1, 2)
         row = 9
-        outro_layout.addWidget(QLabel("Quote Duration"), row, 0)
-        outro_layout.addWidget(self.quote_duration_combo, row, 1)
-        outro_layout.addWidget(QLabel("Quote Font"), row + 1, 0)
-        outro_layout.addWidget(self.quote_font_combo, row + 1, 1)
-        outro_layout.addWidget(QLabel("Quote Preview"), row + 2, 0)
-        outro_layout.addWidget(self.quote_preview, row + 2, 1, 1, 2)
-        outro_layout.addWidget(self.final_button, row + 3, 1)
+        outro_layout.addWidget(QLabel("Quote Style"), row, 0)
+        outro_layout.addWidget(self.quote_style_combo, row, 1)
+        outro_layout.addWidget(QLabel("Quote Duration"), row + 1, 0)
+        outro_layout.addWidget(self.quote_duration_spin, row + 1, 1)
+        outro_layout.addWidget(QLabel("Quote Font"), row + 2, 0)
+        outro_layout.addWidget(self.quote_font_combo, row + 2, 1)
+        outro_layout.addWidget(QLabel("Quote Font Size"), row + 3, 0)
+        outro_layout.addWidget(self.quote_font_size_spin, row + 3, 1)
+        outro_layout.addWidget(QLabel("Quote Font Weight"), row + 4, 0)
+        outro_layout.addWidget(self.quote_weight_combo, row + 4, 1)
+        outro_layout.addWidget(QLabel("Quote Text Color"), row + 5, 0)
+        outro_layout.addWidget(self.quote_text_color_edit, row + 5, 1)
+        outro_layout.addWidget(QLabel("Quote Background"), row + 6, 0)
+        outro_layout.addWidget(self.quote_background_color_edit, row + 6, 1)
+        outro_layout.addWidget(QLabel("Quote Zoom"), row + 7, 0)
+        outro_layout.addWidget(self.quote_zoom_spin, row + 7, 1)
+        outro_layout.addWidget(QLabel("Quote Position"), row + 8, 0)
+        outro_layout.addWidget(self.quote_position_combo, row + 8, 1)
+        outro_layout.addWidget(QLabel("Quote Safe-Area Padding"), row + 9, 0)
+        outro_layout.addWidget(self.quote_safe_padding_spin, row + 9, 1)
+        outro_layout.addWidget(QLabel("Quote Transition Duration"), row + 10, 0)
+        outro_layout.addWidget(self.quote_transition_spin, row + 10, 1)
+        outro_layout.addWidget(QLabel("Quote Preview"), row + 11, 0)
+        outro_layout.addWidget(self.quote_preview, row + 11, 1, 1, 2)
+        outro_layout.addWidget(self.final_button, row + 12, 1)
         outer.addWidget(outro_group)
 
         summary_group = QGroupBox("Projekt-Reihenfolge · Videos – natürlich, manuell oder randomisiert (persistent)")
@@ -773,8 +891,25 @@ class MainWindow(QMainWindow):
         self.music_preset_combo.blockSignals(False)
         self.music_volume_slider.setValue(self.saved.music_volume)
         self.ducking_check.setChecked(self.saved.ducking_enabled)
-        pause_index = self.pause_combo.findData(self.saved.final_pause)
-        self.pause_combo.setCurrentIndex(pause_index if pause_index >= 0 else 1)
+        # 1.3.0 Main Video End Padding (freie Eingabe, Standard bleibt 1.0 s).
+        self.end_padding_spin.setValue(float(self.saved.final_pause))
+        # 1.3.0 Duration Fit / Max Stretch / Global Video Speed.
+        fit_index = self.duration_fit_combo.findData(
+            self.saved.duration_fit_mode if self.saved.duration_fit_mode in {"cut", "stretch"} else "cut"
+        )
+        self.duration_fit_combo.setCurrentIndex(fit_index if fit_index >= 0 else 0)
+        stretch_value = max(1.0, min(50.0, float(self.saved.max_stretch_percent)))
+        stretch_index = self.max_stretch_combo.findData(float(stretch_value))
+        if stretch_index >= 0:
+            self.max_stretch_combo.setCurrentIndex(stretch_index)
+        else:
+            self.max_stretch_combo.setCurrentIndex(self.max_stretch_combo.count() - 1)  # Custom
+        self.max_stretch_spin.setValue(stretch_value)
+        speed_index = self.video_speed_combo.findData(
+            max(0.5, min(2.0, round(float(self.saved.video_speed or 1.0) / 0.05) * 0.05))
+        )
+        self.video_speed_combo.setCurrentIndex(speed_index if speed_index >= 0 else 10)
+        self._sync_stretch_controls()
         self.subtitle_check.setChecked(self.saved.subtitle_enabled)
         self.alignment_warning_check.setChecked(self.saved.allow_alignment_warnings)
         self.subtitle_language_combo.setCurrentText(self.saved.subtitle_language)
@@ -788,14 +923,25 @@ class MainWindow(QMainWindow):
         self.duck_attack_spin.setValue(self.saved.ducking_attack_ms)
         self.duck_release_spin.setValue(self.saved.ducking_release_ms)
         self.subtitle_model_combo.setCurrentText(self.saved.subtitle_model)
-        # 1.2.4 Quote Card.
+        # 1.2.4/1.3.0 Quote Card.
         self.quote_check.setChecked(self.saved.quote_enabled)
         self.quote_text_edit.setPlainText(self.saved.quote_text)
         self.quote_attribution_edit.setText(self.saved.quote_attribution)
-        duration_index = self.quote_duration_combo.findData(float(self.saved.quote_duration))
-        self.quote_duration_combo.setCurrentIndex(duration_index if duration_index >= 0 else 2)
+        self.quote_duration_spin.setValue(max(0.5, min(5.0, float(self.saved.quote_duration))))
         font_index = self.quote_font_combo.findData(self.saved.quote_font)
         self.quote_font_combo.setCurrentIndex(font_index if font_index >= 0 else 0)
+        style_index = self.quote_style_combo.findData(self.saved.quote_style)
+        self.quote_style_combo.setCurrentIndex(style_index if style_index >= 0 else 0)
+        self.quote_font_size_spin.setValue(int(self.saved.quote_font_size_percent))
+        weight_index = self.quote_weight_combo.findData(self.saved.quote_font_weight)
+        self.quote_weight_combo.setCurrentIndex(weight_index if weight_index >= 0 else 0)
+        self.quote_text_color_edit.setText(self.saved.quote_text_color)
+        self.quote_background_color_edit.setText(self.saved.quote_background_color)
+        self.quote_zoom_spin.setValue(float(self.saved.quote_zoom_percent))
+        position_index = self.quote_position_combo.findData(self.saved.quote_position)
+        self.quote_position_combo.setCurrentIndex(position_index if position_index >= 0 else 0)
+        self.quote_safe_padding_spin.setValue(float(self.saved.quote_safe_padding_percent))
+        self.quote_transition_spin.setValue(float(self.saved.quote_transition_duration))
         self._sync_quote_visibility()
         self._sync_subtitle_request()
         self._update_subtitle_live_preview()
@@ -841,8 +987,11 @@ class MainWindow(QMainWindow):
             ducking_enabled=self.ducking_check.isChecked(),
             ducking_attack_ms=self.duck_attack_spin.value(),
             ducking_release_ms=self.duck_release_spin.value(),
-            final_pause=float(self.pause_combo.currentData()),
+            final_pause=float(self.end_padding_spin.value()),
             short_video_mode=str(self.short_video_combo.currentData()),
+            duration_fit_mode=str(self.duration_fit_combo.currentData()),
+            max_stretch_percent=self._max_stretch_value(),
+            video_speed=float(self.video_speed_combo.currentData()),
             subtitle_enabled=self.subtitle_check.isChecked(),
             subtitle_language=self.subtitle_language_combo.currentText(),
             subtitle_style=str(self.subtitle_style_combo.currentData()),
@@ -860,13 +1009,37 @@ class MainWindow(QMainWindow):
             watermark_margin=self.watermark_margin_spin.value(),
             watermark_scope=str(self.watermark_scope_combo.currentData()),
             outro_transition_enabled=self.outro_transition_check.isChecked(),
-            # 1.2.4 Quote Card (optional, still, zwischen Intro und MainVideo).
+            # 1.2.4/1.3.0 Quote Card (optional, still, zwischen Intro und
+            # MainVideo) mit vollem Stil-/Gestaltungssystem.
             quote_enabled=self.quote_check.isChecked(),
             quote_text=self.quote_text_edit.toPlainText().strip(),
             quote_attribution=self.quote_attribution_edit.text().strip(),
-            quote_duration=float(self.quote_duration_combo.currentData()),
+            quote_duration=float(self.quote_duration_spin.value()),
             quote_font=str(self.quote_font_combo.currentData()),
+            quote_style=str(self.quote_style_combo.currentData()),
+            quote_font_size_percent=int(self.quote_font_size_spin.value()),
+            quote_font_weight=str(self.quote_weight_combo.currentData()),
+            quote_text_color=self.quote_text_color_edit.text().strip(),
+            quote_background_color=self.quote_background_color_edit.text().strip(),
+            quote_zoom_percent=float(self.quote_zoom_spin.value()),
+            quote_position=str(self.quote_position_combo.currentData()),
+            quote_safe_padding_percent=float(self.quote_safe_padding_spin.value()),
+            quote_transition_duration=float(self.quote_transition_spin.value()),
         )
+
+    def _max_stretch_value(self) -> float:
+        """Aktiver Max-Stretch-Wert (Preset oder Custom-Spinbox)."""
+        data = self.max_stretch_combo.currentData()
+        if data is not None and float(data) > 0:
+            return float(data)
+        return max(1.0, min(50.0, float(self.max_stretch_spin.value())))
+
+    def _sync_stretch_controls(self, *_args) -> None:
+        """Max-Stretch nur in „Stretch Last Clip“ aktivieren."""
+        stretch_active = str(self.duration_fit_combo.currentData()) == "stretch"
+        custom = float(self.max_stretch_combo.currentData() or -1) < 0
+        self.max_stretch_combo.setEnabled(stretch_active)
+        self.max_stretch_spin.setEnabled(stretch_active and custom)
 
     def _update_transition_description(self) -> None:
         if hasattr(self, "transition_description"):
@@ -1006,9 +1179,10 @@ class MainWindow(QMainWindow):
     def _update_quote_preview(self, *_args) -> None:
         """Live-Preview der Quote-Karte mit exakt der Renderer-Layoutlogik.
 
-        preview_cue() und layout_quote() teilen sich Zeilenumbrüche,
-        Font-Metriken, Safe-Area und Vertikal-Position – daher entspricht
-        die GUI-Vorschau dem Final Render (1920×1080 bzw. 1080×1920 Referenz).
+        layout_quote() ist dieselbe Quelle wie der FFmpeg-Filtergraph –
+        Zeilenumbrüche, Font-Metriken, Safe-Area, Position, Stil, Farben und
+        Zoom. 1920×1080 bzw. 1080×1920 als Referenz; bei 4K-Quellen skaliert
+        die Vorschau proportional (dieselbe Geometrie-Formel).
         """
         if not hasattr(self, "quote_preview") or not hasattr(self.quote_preview, "set_state"):
             return
@@ -1022,59 +1196,124 @@ class MainWindow(QMainWindow):
             font_key=str(self.quote_font_combo.currentData()),
             width=width,
             height=height,
+            style_key=str(self.quote_style_combo.currentData()),
+            font_size_percent=float(self.quote_font_size_spin.value()),
+            font_weight=str(self.quote_weight_combo.currentData()),
+            text_color=self.quote_text_color_edit.text().strip(),
+            background_color=self.quote_background_color_edit.text().strip(),
+            zoom_percent=float(self.quote_zoom_spin.value()),
+            position=str(self.quote_position_combo.currentData()),
+            safe_padding_percent=float(self.quote_safe_padding_spin.value()),
         )
 
     def _sync_quote_visibility(self, *_args) -> None:
         enabled = self.quote_check.isChecked()
         for widget in (
             self.quote_text_edit, self.quote_attribution_edit,
-            self.quote_duration_combo, self.quote_font_combo,
+            self.quote_duration_spin, self.quote_font_combo,
+            self.quote_style_combo, self.quote_font_size_spin,
+            self.quote_weight_combo, self.quote_text_color_edit,
+            self.quote_background_color_edit, self.quote_zoom_spin,
+            self.quote_position_combo, self.quote_safe_padding_spin,
+            self.quote_transition_spin,
         ):
             widget.setEnabled(enabled)
         self._update_quote_preview()
 
     def _preview_subtitle_style(self) -> None:
+        """1.3.0: größere Untertitel-Vorschau mit DER Renderer-Logik.
+
+        Kein fake QLabel-Text mehr: der Dialog malt dieselbe Geometrie wie der
+        Burn-In-Renderer (preview_cue + paint_subtitle_layout — identisch zur
+        Live-Vorschau) und erlaubt es, den Wort-Fortschritt der Animation
+        durchzuschalten (beim Render treiben die akustischen Wortzeitstempel
+        genau diese Zustände).
+        """
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
+        from ..subtitle_preview import paint_subtitle_layout, preview_cue, sample_subtitle_text
         from ..subtitle_presets import get_preset
+
         preset = get_preset(str(self.subtitle_style_combo.currentData()))
         dialog = QDialog(self)
         dialog.setWindowTitle("Subtitle Style Preview")
-        dialog.resize(720, 405)
+        dialog.resize(960, 560)
         layout = QVBoxLayout(dialog)
-        canvas = QWidget()
-        canvas.setStyleSheet("background:#172033; border:1px solid #3b4a68;")
-        canvas_layout = QVBoxLayout(canvas)
-        sample = QLabel()
-        sample.setAlignment(Qt.AlignCenter)
-        sample.setWordWrap(True)
-        sample.setTextFormat(Qt.RichText)
-        accent = "#ffd43b"
-        sample.setText(
-            "Das ist ein <span style='color:%s'>präzise synchronisiertes</span> Beispiel" % accent
-        )
-        size = 32 if preset.collection == "long" else 40
-        box = "background:rgba(0,0,0,150); padding:10px;" if preset.box else ""
-        selected_font = resolve_font(str(self.subtitle_font_combo.currentData()))
-        sample.setStyleSheet(
-            f"color:#f7f7f7; font-size:{size}px; font-family:'{selected_font.family}'; "
-            f"font-weight:{700 if preset.bold or selected_font.weight == 'bold' else 500}; {box}"
-        )
+        animation = str(self.subtitle_animation_combo.currentData())
         position = self.subtitle_position_combo.currentText()
-        if position in {"Bottom", "Medium-Low"}:
-            canvas_layout.addStretch(3 if position == "Bottom" else 2)
-            canvas_layout.addWidget(sample)
-            canvas_layout.addStretch(1 if position == "Medium-Low" else 0)
-        elif position == "Top":
-            canvas_layout.addWidget(sample)
-            canvas_layout.addStretch(3)
-        else:
-            canvas_layout.addStretch()
-            canvas_layout.addWidget(sample)
-            canvas_layout.addStretch()
-        layout.addWidget(canvas)
+        font_key = str(self.subtitle_font_combo.currentData())
+        width, height = (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
+        language = self.subtitle_language_combo.currentText()
+        text = sample_subtitle_text(language)
+        if self.subtitle_debug_check.isChecked():
+            text += " [DEBUG Overlay aktiv]"
+
+        class _Canvas(QWidget):
+            def __init__(self, parent, state):
+                super().__init__(parent)
+                self._state = state
+                self.setMinimumHeight(320)
+                self.setStyleSheet("background:#10141c;")
+
+            def set_stage(self, stage: int) -> None:
+                self._state["active"] = stage
+                self.update()
+
+            def paintEvent(self, event) -> None:  # noqa: N802
+                state = self._state
+                layout_obj = state["layout"]
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+                canvas = self.rect()
+                if layout_obj is None:
+                    painter.end()
+                    return
+                scale = min(canvas.width() / layout_obj.width, canvas.height() / layout_obj.height)
+                w = layout_obj.width * scale
+                h = layout_obj.height * scale
+                rect = QRectF((canvas.width() - w) / 2, (canvas.height() - h) / 2, w, h)
+                gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+                gradient.setColorAt(0.0, QColor(38, 46, 60))
+                gradient.setColorAt(0.55, QColor(26, 31, 41))
+                gradient.setColorAt(1.0, QColor(17, 20, 27))
+                painter.fillRect(rect, gradient)
+                painter.setPen(QPen(QColor(255, 255, 255, 28)))
+                painter.drawRect(rect)
+                paint_subtitle_layout(painter, layout_obj, rect, scale, state["animation"], state["active"])
+                painter.end()
+
+        layout_data = preview_cue(
+            text, font_key, preset.key, position, width, height, animation=animation,
+        )
+        state = {"layout": layout_data, "animation": animation, "active": -1}
+        canvas = _Canvas(dialog, state)
+        layout.addWidget(canvas, stretch=1)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Wort-Fortschritt (Animation):"))
+        stage_slider = QSlider(Qt.Horizontal)
+        total_words = sum(len(line) for line in layout_data.lines)
+        stage_slider.setRange(0, max(0, total_words - 1))
+        stage_slider.setValue(max(0, min(total_words - 1, round(total_words * 0.6))))
+        stage_label = QLabel()
+        controls.addWidget(stage_slider, stretch=1)
+        controls.addWidget(stage_label)
+
+        def _stage_changed(value: int) -> None:
+            canvas.set_stage(value)
+            stage_label.setText(f"Wort {value + 1}/{max(1, total_words)}")
+
+        stage_slider.valueChanged.connect(_stage_changed)
+        _stage_changed(stage_slider.value())
+        layout.addLayout(controls)
+
+        selected_font = resolve_font(font_key)
         note = QLabel(
-            f"{selected_font.family} · {self.subtitle_animation_combo.currentText()} · {position}. "
-            "Beim Rendern steuern ausschließlich echte Voiceover-Wortzeitstempel die Anzeige; "
-            "die vollständige Phrase reserviert stabile Geometrie."
+            f"{selected_font.family} · {self.subtitle_animation_combo.currentText()} · {position} · "
+            f"{width}×{height} (Renderer-Geometrie: identische Zeilenumbrüche, Font-Metriken, "
+            "Safe-Area und Farben). Beim Rendern steuern ausschließlich echte Voiceover-"
+            "Wortzeitstempel die Anzeige; die vollständige Phrase reserviert stabile Geometrie."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -1372,7 +1611,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
         try:
-            return total + max(0.0, float(self.pause_combo.currentData()))
+            return total + max(0.0, float(self.end_padding_spin.value()))
         except Exception:
             return total
 
@@ -1400,6 +1639,9 @@ class MainWindow(QMainWindow):
             float(settings.transition_duration),
             max(1.0, float(fps)),
             str(settings.short_video_mode),
+            duration_fit_mode=str(settings.duration_fit_mode),
+            max_stretch_percent=float(settings.max_stretch_percent),
+            playback_rate=float(settings.video_speed),
         )
         self.pool_status_label.setText(status.summary_line)
 
@@ -1581,7 +1823,12 @@ class MainWindow(QMainWindow):
             button.setEnabled(not busy)
         for widget in (
             self.quote_check, self.quote_text_edit, self.quote_attribution_edit,
-            self.quote_duration_combo, self.quote_font_combo, self.quote_preview,
+            self.quote_duration_spin, self.quote_font_combo, self.quote_preview,
+            self.quote_style_combo, self.quote_font_size_spin,
+            self.quote_weight_combo, self.quote_text_color_edit,
+            self.quote_background_color_edit, self.quote_zoom_spin,
+            self.quote_position_combo, self.quote_safe_padding_spin,
+            self.quote_transition_spin,
         ):
             widget.setEnabled(not busy)
 
@@ -1628,6 +1875,8 @@ class MainWindow(QMainWindow):
                     details += f"\n{report.srt}\n{report.vtt}"
                     if getattr(report, "canonical_timeline", None):
                         details += f"\n{report.canonical_timeline}"
+                    if getattr(report, "video_no_subtitles", None):
+                        details += f"\nOhne Untertitel: {report.video_no_subtitles}"
                     frames = getattr(report, "verification_frames", [])
                     if frames:
                         details += "\nVisual verification: " + ", ".join(path.name for path in frames)
@@ -1638,8 +1887,14 @@ class MainWindow(QMainWindow):
                 saved.main_video_path = str(main.video)
                 self.store.save(saved)
                 details += f"\nActual MainVideo handoff: {main.video}"
+                if main.video_no_subtitles:
+                    details += f"\nMainVideo ohne Untertitel: {main.video_no_subtitles}"
                 if main.srt:
                     details += f"\n{main.srt}\n{main.vtt}\n{main.canonical_timeline}"
+                if getattr(report, "final_video_no_subtitles", None):
+                    details += f"\nFinalVideo ohne Untertitel: {report.final_video_no_subtitles}"
+                if getattr(report, "youtube_metadata", None):
+                    details += f"\nYouTube-Metadaten: {report.youtube_metadata}"
             QMessageBox.information(self, "VideoMerger", f"Export completed successfully.\n\n{details}")
         else:
             self.stage_label.setText("Analyse abgeschlossen – bereit zum Export.")

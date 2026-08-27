@@ -1,0 +1,4 @@
+6c7a1124d67d83253a72bcebf0309cf911aab31801aa4d4c9038a69c28d91c89  test_evidence/1.3.0/evidence_summary.json
+ed0ec52c9fe9e7b9b94fa07597b16e3a71280b099ff241d506750de34218f324  test_evidence/1.3.0/extracted_zip_full_tests.txt
+3e4513337677a38712eaa32308393d5952acf772a8d7b846bfc5793531c6c418  test_evidence/1.3.0/full_source_tests.txt
+f37502a5116fd6f086b49b03d65fc6ebc60689649b3365eaffeff83042b07330  test_evidence/1.3.0/release_artifact_sha256.txt

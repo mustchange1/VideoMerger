@@ -34,6 +34,15 @@ class ProgressTracker:
         for index, start in enumerate(self._starts):
             if out_time >= start:
                 clip_index = index
+        # An empty media list (for example the dedicated subtitle burn pass)
+        # must never crash progress reporting.
+        if not self.media:
+            return ProgressEvent(
+                percent=max(0.0, min(99.5, out_time / total * 100.0)),
+                out_time=out_time, total_time=total,
+                elapsed=elapsed, remaining=remaining,
+                stage="Verarbeite Untertitel-Burn-In", current_file="",
+            )
         clip_index = min(clip_index, len(self.media) - 1)
         stage = f"Verarbeite Clip {clip_index + 1}/{len(self.media)}"
         current_file = self.media[clip_index].path.name

@@ -1,10 +1,27 @@
-"""1.2.4: generated Quote Card section (Stage 2 only).
+"""Generated Quote Card section (1.2.4 intro, full style system in 1.3.0).
 
 The quote card is a *synthetic* section: it is rendered entirely by FFmpeg
-filter primitives (color source, subtle vignette, hairline accent,
-resolution-aware ``drawtext`` lines) and is always silent. It never receives
-an ``-i`` input, never enters the voiceover/music/subtitle timeline and must
-therefore not shift the timing of the Main section's captions.
+filter primitives (color source, subtle cinematic vignette, optional hairline
+accent / paper grain, resolution-aware ``drawtext`` lines, optional subtle
+zoom) and is always silent. It never receives an ``-i`` input, never enters
+the voiceover/music/subtitle timeline and must therefore not shift the timing
+of the Main section's captions.
+
+1.3.0 styles (five polished, editorial looks — default is the cleanest and
+most readable one):
+
+* ``clean_editorial`` (DEFAULT): warm white / soft beige background, elegant
+  serif typography, premium editorial layout, generous whitespace, subtle
+  cinematic vignette and a restrained hairline accent.
+* ``warm_cinematic``: deep warm brown-black with vignette + subtle film grain.
+* ``soft_paper``: soft beige paper tone with a delicate grain texture.
+* ``minimal_film``: neutral near-black, maximum reduction, no accent.
+* ``elegant_contrast``: charcoal with warm ivory text and a gold hairline.
+
+Manual controls (all optional, defaults preserve a clean readable card):
+font, font size (%), font weight, text color, background color, style,
+subtle zoom (%), position, safe-area padding (%), duration and transition
+duration.
 
 Layout rules (cinematic / editorial / minimal):
 * single focal point, slightly above the mathematical center (optical lift);
@@ -21,25 +38,121 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .filter_escape import escape_drawtext_text, escape_quoted_value
+from .filter_escape import escape_drawtext_text, filter_file_value
 from .font_manager import resolve_font
+from .paths import project_root
 
-# Dark, neutral, high-contrast default palette. The background is intentionally
-# a neutral near-black rather than pure black; the architecture keeps this as
-# data so a custom background (image/color) can replace it later without
-# touching the layout math.
-BACKGROUND_HEX = "0x0d1117"
-TEXT_HEX = "0xf5f7fa"
-ATTRIBUTION_HEX = "0x9fb0c3"
-HAIRLINE_HEX = "0x46586e"
+# --------------------------------------------------------------------------- #
+# Style system
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteStyleSpec:
+    """Visual identity of one quote card style (colors are 0xRRGGBB)."""
+
+    key: str
+    label: str
+    description: str
+    background_hex: str
+    text_hex: str
+    attribution_hex: str
+    hairline_hex: str | None
+    grain: bool
+    default_font: str
+
+
+QUOTE_STYLES: dict[str, QuoteStyleSpec] = {
+    "clean_editorial": QuoteStyleSpec(
+        key="clean_editorial", label="Clean Editorial",
+        description=(
+            "Warmweißer / weich-beiger Hintergrund, elegante Serifen-Typografie, "
+            "großzügiger Weißraum, dezente Vignette und feine Akzentlinie. "
+            "Das lesbarste, cleanlyste Standard-Design."
+        ),
+        background_hex="0xF6F1E7", text_hex="0x232019", attribution_hex="0x6E6353",
+        hairline_hex="0xB4A488", grain=False, default_font="lora",
+    ),
+    "warm_cinematic": QuoteStyleSpec(
+        key="warm_cinematic", label="Warm Cinematic",
+        description=(
+            "Warmer, tiefer Braun-Schwarzton mit Vignette und feinem Filmkorn – "
+            "ruhig, atmosphärisch, cineastisch."
+        ),
+        background_hex="0x171208", text_hex="0xF3E9D2", attribution_hex="0xB39B74",
+        hairline_hex="0x8A7350", grain=True, default_font="lora",
+    ),
+    "soft_paper": QuoteStyleSpec(
+        key="soft_paper", label="Soft Paper",
+        description=(
+            "Weiches Beige-Papier mit zarter Korn-Textur und warmer, ruhiger "
+            "Typografie – natürlich und zurückhaltend."
+        ),
+        background_hex="0xEFE7DA", text_hex="0x3A342B", attribution_hex="0x7C7263",
+        hairline_hex=None, grain=True, default_font="inter",
+    ),
+    "minimal_film": QuoteStyleSpec(
+        key="minimal_film", label="Minimal Film",
+        description=(
+            "Neutraler Near-Black-Hintergrund, reines Weiß, ohne Akzent und ohne "
+            "Korn – maximale Reduktion, moderner Film-Look."
+        ),
+        background_hex="0x0E1013", text_hex="0xF5F6F8", attribution_hex="0x9AA3AD",
+        hairline_hex=None, grain=False, default_font="manrope",
+    ),
+    "elegant_contrast": QuoteStyleSpec(
+        key="elegant_contrast", label="Elegant Contrast",
+        description=(
+            "Edler Kontrast: Charcoal-Hintergrund, warmes Ivory, goldene "
+            "Akzentlinie und dezente Vignette – präsent und premium."
+        ),
+        background_hex="0x14161B", text_hex="0xF2E9DA", attribution_hex="0xC9B37E",
+        hairline_hex="0xC9B37E", grain=False, default_font="lora",
+    ),
+}
+
+DEFAULT_QUOTE_STYLE = "clean_editorial"
+
+# Backwards-compatible module constants: the 1.2.4 names now describe the
+# default style (Clean Editorial). The renderer itself reads the resolved
+# per-style values from :class:`QuoteLayout`.
+BACKGROUND_HEX = QUOTE_STYLES[DEFAULT_QUOTE_STYLE].background_hex
+TEXT_HEX = QUOTE_STYLES[DEFAULT_QUOTE_STYLE].text_hex
+ATTRIBUTION_HEX = QUOTE_STYLES[DEFAULT_QUOTE_STYLE].attribution_hex
+HAIRLINE_HEX = QUOTE_STYLES[DEFAULT_QUOTE_STYLE].hairline_hex or "0xB4A488"
+
+
+def get_quote_style(key: str) -> QuoteStyleSpec:
+    return QUOTE_STYLES.get((key or "").strip(), QUOTE_STYLES[DEFAULT_QUOTE_STYLE])
+
+
+def normalize_color(value: str, fallback: str) -> str:
+    """Normalize a user color (``#RRGGBB`` / ``0xRRGGBB``) to ``0xRRGGBB``."""
+    text = (value or "").strip()
+    if not text:
+        return fallback
+    if text.startswith("#"):
+        text = "0x" + text[1:]
+    if not text.lower().startswith("0x"):
+        text = "0x" + text
+    digits = text[2:]
+    if len(digits) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in digits):
+        return fallback
+    return "0x" + digits.upper()
+
 
 QUOTE_FONT_SIZE_RATIO = 0.052      # of min(width, height)
 QUOTE_FONT_SIZE_MIN = 28
 QUOTE_FONT_SIZE_MAX = 170
 QUOTE_FONT_SIZE_FLOOR = 24         # when shrinking to keep at most 4 lines
 MAX_QUOTE_LINES = 4
-QUOTE_MAX_LINE_RATIO_LANDSCAPE = 0.72
-QUOTE_MAX_LINE_RATIO_PORTRAIT = 0.80
+# Safe-area padding (default 8 % of each edge) keeps the 1.2.4 default usable
+# line widths: (1 - 2*0.08) * 6/7 = 0.72 landscape, * 20/21 = 0.80 portrait.
+QUOTE_SAFE_PADDING_DEFAULT = 8.0
+_LINE_RATIO_LANDSCAPE = 6.0 / 7.0
+_LINE_RATIO_PORTRAIT = 20.0 / 21.0
+QUOTE_MAX_LINE_RATIO_LANDSCAPE = (1.0 - 2 * QUOTE_SAFE_PADDING_DEFAULT / 100.0) * _LINE_RATIO_LANDSCAPE
+QUOTE_MAX_LINE_RATIO_PORTRAIT = (1.0 - 2 * QUOTE_SAFE_PADDING_DEFAULT / 100.0) * _LINE_RATIO_PORTRAIT
 QUOTE_OPTICAL_LIFT = 0.02          # fraction of height lifted above center
 QUOTE_LINE_LEADING = 1.38
 
@@ -83,6 +196,15 @@ class QuoteLayout:
     attribution_y: int | None
     width: int
     height: int
+    # 1.3.0 style/visual resolution (renderer + preview read these).
+    style_key: str = DEFAULT_QUOTE_STYLE
+    background_hex: str = BACKGROUND_HEX
+    text_hex: str = TEXT_HEX
+    attribution_hex: str = ATTRIBUTION_HEX
+    hairline_hex: str | None = HAIRLINE_HEX
+    grain: bool = False
+    zoom_percent: float = 0.0
+    safe_padding_percent: float = QUOTE_SAFE_PADDING_DEFAULT
 
     @property
     def total_block_height(self) -> int:
@@ -179,27 +301,40 @@ def layout_quote(
     font_key: str,
     width: int,
     height: int,
+    *,
+    style_key: str = DEFAULT_QUOTE_STYLE,
+    font_size_percent: float = 100.0,
+    font_weight: str = "bold",
+    text_color: str = "",
+    background_color: str = "",
+    zoom_percent: float = 0.0,
+    position: str = "center",
+    safe_padding_percent: float = QUOTE_SAFE_PADDING_DEFAULT,
 ) -> QuoteLayout:
     """Compute the quote card layout for one target resolution.
 
     Uses the *same* font-metric measurement (real glyph advances from the
     bundled font file) as the subtitle renderer, so the GUI preview and the
-    burned-in result share one source of truth.
+    burned-in result share one source of truth.  All 1.3.0 style controls are
+    keyword-only with geometry-preserving defaults.
     """
+    style = get_quote_style(style_key)
     words = " ".join((text or "").split())
     attribution = " ".join((attribution or "").split())
-    font = resolve_font(font_key or "inter", bold=True)
-    landscape = width >= height
+    font = resolve_font(font_key or style.default_font, bold=(font_weight != "regular"))
 
-    size = int(_clamp(round(min(width, height) * QUOTE_FONT_SIZE_RATIO),
+    size = int(_clamp(round(min(width, height) * QUOTE_FONT_SIZE_RATIO
+                             * _clamp(float(font_size_percent), 60.0, 160.0) / 100.0),
                       QUOTE_FONT_SIZE_MIN, QUOTE_FONT_SIZE_MAX))
-    max_line_w = width * (QUOTE_MAX_LINE_RATIO_LANDSCAPE if landscape
-                          else QUOTE_MAX_LINE_RATIO_PORTRAIT)
+    landscape = width >= height
+    padding = _clamp(float(safe_padding_percent), 3.0, 15.0)
+    usable = 1.0 - 2.0 * padding / 100.0
+    max_line_w = width * usable * (_LINE_RATIO_LANDSCAPE if landscape else _LINE_RATIO_PORTRAIT)
 
     def balanced(at_size: int) -> list[str]:
         return _balanced_lines(
             words.split(" "),
-            lambda text: font.text_width(text, at_size),
+            lambda line_text: font.text_width(line_text, at_size),
             max_line_w,
             MAX_QUOTE_LINES,
         )
@@ -229,7 +364,18 @@ def layout_quote(
     attr_size = int(_clamp(round(size * 0.42), 14, 96)) if attribution else 0
     attr_gap = round(size * 0.45) if attribution else 0
     total_h = block_h + attr_gap + attr_size
-    block_top = round((height - total_h) / 2) - round(height * QUOTE_OPTICAL_LIFT)
+
+    # Position: center (default; optical lift above the mathematical center),
+    # upper (relaxed upper third) or lower (calm lower area). All positions
+    # stay inside the safe area.
+    pos = position if position in {"center", "upper", "lower"} else "center"
+    if pos == "upper":
+        block_top = round(height * 0.30) - round(height * QUOTE_OPTICAL_LIFT)
+    elif pos == "lower":
+        block_top = round(height * 0.62) - round(height * QUOTE_OPTICAL_LIFT)
+    else:
+        block_top = round((height - total_h) / 2) - round(height * QUOTE_OPTICAL_LIFT)
+    block_top = max(round(height * padding / 100.0), block_top)
 
     hairline_width = max(24, round(width * 0.035))
     hairline_height = max(2, round(min(width, height) * 0.0018))
@@ -240,7 +386,7 @@ def layout_quote(
     return QuoteLayout(
         text=words,
         attribution=attribution,
-        font_key=(font.key or font_key or "inter"),
+        font_key=(font.key or font_key or style.default_font),
         font_family=font.family,
         font_path=font.path,
         font_size=size,
@@ -256,6 +402,14 @@ def layout_quote(
         attribution_y=block_top + block_h + attr_gap if attribution else None,
         width=width,
         height=height,
+        style_key=style.key,
+        background_hex=normalize_color(background_color, style.background_hex),
+        text_hex=normalize_color(text_color, style.text_hex),
+        attribution_hex=style.attribution_hex,
+        hairline_hex=style.hairline_hex,
+        grain=style.grain,
+        zoom_percent=_clamp(float(zoom_percent), 0.0, 10.0),
+        safe_padding_percent=padding,
     )
 
 
@@ -269,7 +423,7 @@ def _drawtext(
 ) -> str:
     pieces: list[str] = []
     if font_path and font_path.is_file():
-        pieces.append(f"fontfile='{_filter_path_for(font_path)}'")
+        pieces.append(f"fontfile={_filter_path_for(font_path)}")
     pieces.extend([
         f"text={_drawtext_escape(text)}",
         # IMPORTANT: expansion=none keeps the text byte-for-byte literal.
@@ -289,48 +443,72 @@ def _drawtext(
 
 
 def _filter_path_for(path: Path) -> str:
-    """Escape a path for a *quoted* filter option value (single level).
+    """Filter value for the quote-card font file.
 
-    The surrounding single quotes protect spaces; the inner escapes protect
-    a Windows drive colon (``C:``).  A quoted span is copied verbatim by
-    pass 1 and escaped only by pass 2, so single-level escaping is correct
-    here — unlike the unquoted drawtext ``text`` value.
+    1.3.0: same Windows-proof strategy as the subtitles filter — the bundled
+    font lies under the project root (the FFmpeg working directory), so the
+    graph receives a plain relative ASCII path (``tools/fonts/Lora-Bold.ttf``);
+    absolute fallbacks are unquoted + two-level escaped (apostrophe-safe).
     """
-    normalized = str(path.expanduser().resolve()).replace("\\", "/")
-    return escape_quoted_value(normalized)
+    return filter_file_value(path, project_root())
 
 
 def quote_video_chain(layout: QuoteLayout, width: int, height: int,
-                      fps: int, duration: float, label: str) -> list[str]:
+                      fps: float, duration: float, label: str) -> list[str]:
     """Build the single filter chain rendering the generated quote card.
 
     The chain starts at a ``color`` source (no ``-i`` input) and ends at the
     requested output label (``base{index}``), so the caller can reuse the
     normal transition handling. Audio is produced separately by the caller's
     standard silence branch (``anullsrc``).
+
+    1.3.0: the composed card receives the style's cinematic treatment
+    (subtle vignette on every style, optional paper/film grain) and an
+    optional subtle zoom (``zoompan``, one output frame per input frame so
+    the section duration is preserved exactly).
     """
+    rate = _number(max(1.0, float(fps or 30.0)))
     parts: list[str] = [
-        f"color=c={BACKGROUND_HEX}:s={width}x{height}:r={int(max(1, fps))}:"
+        f"color=c={layout.background_hex}:s={width}x{height}:r={rate}:"
         f"d={_number(duration)}",
         "format=yuv420p,setsar=1",
         # Subtle cinematic vignette (45° angle keeps the edges only lightly
-        # darkened; mode=forward darkens outward from the center).
+        # darkened; mode=forward darkens outward from the center). Present
+        # in every style — on the light editorial cards it reads as gentle
+        # paper shading rather than a dark frame.
         "vignette=PI/4:mode=forward",
     ]
-    if layout.hairline_y is not None:
+    if layout.grain:
+        # Deliberately faint texture (film grain / paper). allf=t+u keeps it
+        # temporal (living) instead of a static pattern.
+        parts.append("noise=alls=5:allf=t+u")
+    if layout.hairline_y is not None and layout.hairline_hex:
         parts.append(
             f"drawbox=x={layout.hairline_x}:y={layout.hairline_y}:"
             f"w={layout.hairline_width}:h={layout.hairline_height}:"
-            f"c={HAIRLINE_HEX}:t=fill"
+            f"c={layout.hairline_hex}:t=fill"
         )
     for offset, line_text in enumerate(layout.lines):
         y = layout.line_top + offset * layout.line_height
         parts.append(_drawtext(line_text, layout.font_path, layout.font_size,
-                               "(w-text_w)/2", y, TEXT_HEX))
+                               "(w-text_w)/2", y, layout.text_hex))
     if layout.attribution and layout.attribution_y is not None:
         parts.append(_drawtext(layout.attribution, layout.font_path,
                                layout.attribution_size, "(w-text_w)/2",
-                               layout.attribution_y, ATTRIBUTION_HEX))
+                               layout.attribution_y, layout.attribution_hex))
+    zoom_percent = _clamp(float(layout.zoom_percent or 0.0), 0.0, 10.0)
+    if zoom_percent > 0.05:
+        # Subtle cinematic zoom: 1.0 -> 1+zoom% across the whole card, center
+        # anchored. d=1 keeps one output frame per input frame and fps pins
+        # the output cadence, so the section duration is bit-exact.
+        frames = max(1, round(float(fps or 30.0) * max(0.1, float(duration))))
+        target = 1.0 + zoom_percent / 100.0
+        step = (target - 1.0) / frames
+        parts.append(
+            f"zoompan=z='min(zoom+{_number(step)},{_number(target)})':"
+            f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            f"d=1:fps={rate}:s={width}x{height},format=yuv420p,setsar=1"
+        )
     parts[-1] += f"[{label}]"
     return [",".join(parts)]
 

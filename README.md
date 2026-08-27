@@ -1,6 +1,50 @@
-# VideoMerger 1.2.4 for Windows
+# VideoMerger 1.3.0 for Windows
 
-VideoMerger 1.2.4 is an additive local release built directly from the tested 1.2.3 application. Existing Basic Merge, separate Stage 1/Stage 2, active manual ordering, four transitions, audio modes, watermarking, validation, hardware selection, non-overwriting exports and Windows setup remain available.
+## New in 1.3.0
+
+### Windows subtitle filtergraph fix (root cause)
+
+FFmpeg now always runs with the project root as its working directory and every render-time file the filtergraph references (the staged ASS subtitle file, the bundled `tools/fonts` directory, the quote-card font) is app-staged under that root with ASCII names — the `subtitles=`/`fontsdir=`/`fontfile=` values become plain relative POSIX paths (`temp/MainVideo_16x9_burn.ass`, `tools/fonts`). No drive-letter colon, backslash, space or umlaut can appear in the value on ANY Windows machine, whatever the unpack path (`C:\Users\Jürgen Müller\Downloads\…` works). Paths outside the anchor are emitted UNQUOTED with forward slashes and the verified two-level escape table — the old quoted form could not represent an apostrophe at all (`C:/Users/O'Brien/…` aborted the render) and fed absolute Windows paths through both parser passes and the libass code-page `fopen`. Works with all subtitle fonts/animations/positions at 16:9, 9:16, 1080p and 4K; covered by real libass burn regression tests over hostile paths (umlauts, spaces, apostrophes) and a non-ASCII working directory.
+
+### Smart Last-Clip Stretch (Duration Fit Mode)
+
+New **Duration Fit Mode**: `Cut Last Clip` (default, exactly the proven behavior) or `Stretch Last Clip`. In stretch mode only the final selected clip is slowed as much as necessary so its complete content fills the voiceover target — often one clip fewer is rendered (no short sliver clip). The maximum stretch is configurable: `5 % / 10 % (default) / 15 % / 20 % / Custom`. Transitions, order and visual continuity are preserved; a required stretch beyond the limit falls back to the normal last-clip trimming — never to Hold Last Frame.
+
+### Global Video Speed
+
+**Main Video Speed** 0.50x–2.00x (default 1.00x). The voiceover remains the timing authority: subtitle timing, voiceover and music behavior are unchanged; clip playback rate (setpts/atempo) and the required clip selection adapt. Verified by byte-identical SRT output at 1.00x and 1.50x.
+
+### Main Video End Padding (manual)
+
+The short visual gap after the voiceover is now a free manual setting (0.0–5.0 s). The existing default of ~1 second is preserved exactly.
+
+### Quote Card system (fixed and completed)
+
+The optional silent section `Intro → transition → Quote → transition → Main → transition → Outro` now reliably renders a real visual card at native resolution (1080p/4K, 16:9/9:16). Five polished styles — **Clean Editorial** (default: warm white/soft beige, elegant serif typography, generous whitespace, hairline accent, subtle vignette), **Warm Cinematic** (deep warm tone + film grain), **Soft Paper** (beige paper + delicate grain), **Minimal Film** (neutral near-black reduction), **Elegant Contrast** (charcoal + ivory + gold hairline). Manual controls: text, attribution, font, font size (60–160 %), weight, text color, background color, zoom (0–10 % subtle cinematic zoompan), position, safe-area padding (3–15 %), duration (free 0.5–5.0 s, default 2.0 s) and an optional dedicated transition duration around the card. The card stays completely silent (acoustically verified ≤ −60 dB) and never receives main voiceover, main subtitles or unrelated audio.
+
+### Cleaner subtitle segmentation + larger preview
+
+Long-Form cues are preferably 1–2 measured lines of natural phrases; one/two-word captions are merged/rebalanced into neighbors (word-level timing untouched). The live preview and the new larger preview dialog paint through the SAME renderer geometry routine (font, size, wrapping, style, position, safe area, colors/highlights, animation staging with a word-progress slider).
+
+### Clean Output directory + dual subtitle outputs
+
+The Output folder now contains only useful user-facing files. Whenever subtitles are generated you get BOTH the primary video WITH burned-in subtitles and an additional `_no_subtitles` variant (`FinalVideo_16x9.mp4` + `FinalVideo_16x9_no_subtitles.mp4`, likewise for explicitly rendered `MainVideo_16x9`). The subtitled version stays primary. SRT and VTT are written next to them; verification PNGs and the subtitle timeline JSON live under `temp/` (internal evidence/cache) instead of Output.
+
+### Automatic local YouTube title + description (free, local, unlimited)
+
+Every successful one-click final video automatically produces `FinalVideo_16x9_YouTube.txt` (`TITLE:` / `DESCRIPTION:` / `LANGUAGE:`) generated from the authoritative voiceover transcript: strong opening, useful summary in the author's own words, important themes as verbatim key phrases, one natural channel-follow CTA (philosophical/spiritual/modern), German content → German metadata, English → English. The generator is deterministic pure Python (always available offline, nothing invented, no keyword stuffing); an optional locally running Ollama may polish it under strict validation. No OpenAI/Claude/Gemini/paid API, no subscription, no per-video credits. Metadata problems never block rendering and are reported clearly; without an authoritative transcript no metadata is invented.
+
+### One-Click workflow (Video Pool + everything)
+
+`CREATE FINAL VIDEO – ONE CLICK` produces Video Pool + Voiceover(s) + Script(s) + Background Music + Subtitles + Watermark + Intro + optional Quote + Main Video + Outro = **FinalVideo** in one click; the rendered Main Video flows into Stage 2 automatically (no manual Stage-1→Stage-2 selection). Stage 1 and Stage 2 remain separately usable.
+
+### Preserved defaults
+
+Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static Phrase · YouTube Landscape · Maximum Quality · End Padding ≈ 1 s · Quote disabled unless enabled (2.0 s, Clean Editorial) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Global Speed = 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; 327 tests (95 new) pass with zero unexpected failures.
+
+# VideoMerger 1.3.0 for Windows
+
+VideoMerger 1.3.0 is an additive local release built directly from the tested 1.2.4 application. Everything below the 1.3.0 section documents the preserved earlier releases. Existing Basic Merge, separate Stage 1/Stage 2, active manual ordering, four transitions, audio modes, watermarking, validation, hardware selection, non-overwriting exports and Windows setup remain available.
 
 ## New in 1.2.4
 
@@ -117,11 +161,11 @@ SUBTITLE GENERATION FAILED [actual stage]: actual error
 
 No cloud API or remote renderer is required. Initial setup creates the project-local `.venv`, installs dependencies, downloads the local `small` model and obtains project-local FFmpeg/FFprobe. It requires no administrator account, global PATH edit, manual virtual-environment activation or manual FFmpeg relocation.
 
-Save `VideoMerger_Final_1.2.4.zip` in Downloads and run Windows PowerShell:
+Save `VideoMerger_Final_1.3.0.zip` in Downloads and run Windows PowerShell:
 
 ```powershell
-$Zip = Join-Path $HOME "Downloads\VideoMerger_Final_1.2.4.zip"
-$ProjectRoot = Join-Path $HOME "Downloads\VideoMerger_Final_1.2.4"
+$Zip = Join-Path $HOME "Downloads\VideoMerger_Final_1.3.0.zip"
+$ProjectRoot = Join-Path $HOME "Downloads\VideoMerger_Final_1.3.0"
 if (Test-Path -LiteralPath $ProjectRoot) { Remove-Item -LiteralPath $ProjectRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $ProjectRoot -Force | Out-Null
 Expand-Archive -LiteralPath $Zip -DestinationPath $ProjectRoot -Force

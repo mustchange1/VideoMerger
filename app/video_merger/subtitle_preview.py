@@ -73,6 +73,10 @@ class SubtitlePreviewLayout:
     accent: tuple[int, int, int]
     outline: float
     truncated: bool = False
+    # 1.3.0: staged animation state for the live preview and the larger
+    # dialog (both paint through the same renderer-geometry logic).
+    animation: str = "static_phrase"
+    active_word: int = -1  # -1 = deterministic demo progress
 
 
 def preview_cue(
@@ -82,6 +86,9 @@ def preview_cue(
     position: str,
     width: int,
     height: int,
+    *,
+    animation: str = "static_phrase",
+    active_word: int = -1,
 ) -> SubtitlePreviewLayout:
     """Baut eine repräsentative Demo-Cue mit der echten Renderer-Logik.
 
@@ -133,6 +140,7 @@ def preview_cue(
         lines=lines, preset_key=preset_key, preset_label=preset.label,
         collection=preset.collection, bold=bool(preset.bold), box=bool(preset.box),
         accent=(r, g, b), outline=outline, truncated=truncated,
+        animation=animation, active_word=active_word,
     )
 
 
@@ -149,6 +157,7 @@ def quote_layout_for_preview(
 
 try:  # pragma: no cover - Plattformabhängigkeit
     from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtCore import QPointF, QRectF, Qt
     from PySide6.QtGui import (
         QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath,
         QPen, QRadialGradient,
@@ -170,25 +179,40 @@ def _demo_progress_index(animation: str, total: int) -> int:
     return max(0, min(total, round(total * 0.6)))
 
 
+def word_style_for(
+    layout: "SubtitlePreviewLayout", animation: str, index: int, total: int,
+    active_word: int = -1,
+) -> tuple[tuple[int, int, int], bool, bool]:
+    """(Farbe, transparent?, Akzent-Outline?) für Wort `index`.
+
+    Shared by the live canvas, the larger preview dialog and tests: identical
+    semantics to the ASS renderer's per-word tags for the given animation and
+    the active word (the canonical acoustic timeline drives it at render
+    time; the preview stages a representative frame).
+    """
+    white = (247, 247, 247)
+    accent = layout.accent
+    active = (
+        active_word if active_word >= 0
+        else _demo_progress_index(animation, total)
+    )
+    active = max(0, min(total - 1 if animation in {"word_highlight", "outline_highlight"} else total, active))
+    if animation == "word_highlight":
+        return (accent, False, False) if index == active else (white, False, False)
+    if animation == "color_change":
+        return (accent, False, False) if index <= active else (white, False, False)
+    if animation == "outline_highlight":
+        return (white, False, index == active)
+    if animation == "type_reveal":
+        return (white, False, False) if index <= active else (white, True, False)
+    return (white, False, False)  # static_phrase
+
+
 def _word_style(
     layout: SubtitlePreviewLayout, animation: str, index: int, total: int,
 ) -> tuple[tuple[int, int, int], bool, bool]:
     """(Farbe, transparent?, Akzent-Outline?) für ein Wort im Demo-Fortschritt."""
-    white = (247, 247, 247)
-    accent = layout.accent
-    if animation == "word_highlight":
-        active = _demo_progress_index(animation, total)
-        return (accent, False, False) if index == active else (white, False, False)
-    if animation == "color_change":
-        cut = _demo_progress_index(animation, total)
-        return (accent, False, False) if index < cut else (white, False, False)
-    if animation == "outline_highlight":
-        active = _demo_progress_index(animation, total)
-        return (white, False, index == active)
-    if animation == "type_reveal":
-        cut = _demo_progress_index(animation, total)
-        return (white, False, False) if index < cut else (white, True, False)
-    return (white, False, False)  # static_phrase
+    return word_style_for(layout, animation, index, total)
 
 
 class _PreviewCanvasBase(QWidget):
@@ -227,6 +251,105 @@ class _PreviewCanvasBase(QWidget):
 
 if _QIMPORTS_OK:
 
+    def paint_subtitle_layout(painter: "QPainter", layout: SubtitlePreviewLayout,
+                              rect, scale: float, animation: str,
+                              active_word: int = -1) -> None:
+        """Paint one preview cue in exact renderer geometry.
+
+        1.3.0: this is THE shared painting routine — the live canvas and the
+        larger preview dialog both call it, so font, size, line wrapping,
+        style, position, safe area, colors/highlights and the staged
+        animation are identical everywhere (Preview ≈ Final Render).
+        """
+        font = QFont(layout.font_family)
+        font.setPixelSize(max(2, round(layout.font_size * scale)))
+        font.setBold(layout.bold)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        line_height = max(1.0, metrics.height() * 1.02)
+        block_height = line_height * len(layout.lines)
+
+        # Vertikale Position identisch zu subtitles._position:
+        # 2 = Bottom/Medium-Low (margin_v von unten), 5 = Middle, 8 = Top.
+        if layout.alignment == 5:
+            block_top = rect.top() + (rect.height() - block_height) / 2
+        elif layout.alignment == 8:
+            block_top = rect.top() + layout.margin_v * scale
+        else:
+            block_top = rect.bottom() - layout.margin_v * scale - block_height
+
+        # Dezent gestrichelte Safe-Area
+        safe_pen = QPen(QColor(255, 255, 255, 34), 1, Qt.PenStyle.DashLine)
+        painter.setPen(safe_pen)
+        painter.drawRect(
+            rect.adjusted(
+                layout.margin_h * scale, layout.margin_v * scale,
+                -layout.margin_h * scale, -layout.margin_v * scale,
+            )
+        )
+
+        font_metrics = resolve_font(layout.font_key)
+        space_w = font_metrics.text_width(" ", layout.font_size)
+        white = QColor(247, 247, 247)
+        accent = QColor(*layout.accent)
+        outline_color = QColor(16, 16, 16)
+        total_words = sum(len(line) for line in layout.lines)
+        flat_index = 0
+        cursor_top = block_top
+
+        for line in layout.lines:
+            widths = [font_metrics.text_width(word, layout.font_size) for word in line]
+            line_w = sum(widths) + (len(line) - 1) * space_w if line else 0.0
+            x = rect.center().x() - line_w * scale / 2
+            x = max(x, rect.left() + layout.margin_h * scale)
+            if x + line_w * scale > rect.right() - layout.margin_h * scale:
+                x = rect.right() - layout.margin_h * scale - line_w * scale
+            if layout.box:
+                box = QRectF(
+                    x - 10 * scale, cursor_top - 4 * scale,
+                    line_w * scale + 20 * scale, line_height * scale + 8 * scale,
+                )
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(QColor(0, 0, 0, 120)))
+                painter.drawRoundedRect(box, 6 * scale, 6 * scale)
+            for index, word in enumerate(line):
+                color, transparent, emphasis = word_style_for(
+                    layout, animation, flat_index, total_words, active_word,
+                )
+                x0 = x + sum(widths[:index]) * scale + index * space_w * scale
+                w = widths[index] * scale
+                word_rect = QRectF(x0, cursor_top, max(1.0, w), line_height)
+                baseline_y = word_rect.top() + (line_height + metrics.ascent() - metrics.descent()) / 2
+                if animation == "outline_highlight" and emphasis:
+                    path = QPainterPath()
+                    path.addText(word_rect.left(), baseline_y, font, word)
+                    painter.setPen(QPen(accent, max(1.0, layout.outline * scale * 1.8)))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawPath(path)
+                else:
+                    fill = QColor(*color)
+                    if transparent:
+                        fill.setAlpha(96)
+                    if layout.box:
+                        # Im Box-Preset zeichnet libass ohne starken
+                        # Outline-Stroke; die Vorschau entspricht dem.
+                        painter.setPen(QPen(fill))
+                    else:
+                        if layout.outline > 0:
+                            path = QPainterPath()
+                            path.addText(word_rect.left(), baseline_y, font, word)
+                            painter.setPen(QPen(outline_color, max(0.8, layout.outline * 1.9 * scale)))
+                            painter.setBrush(Qt.BrushStyle.NoBrush)
+                            painter.drawPath(path)
+                        painter.setPen(QPen(fill))
+                    painter.drawText(
+                        word_rect,
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                        word,
+                    )
+                flat_index += 1
+            cursor_top += line_height
+
     class SubtitlePreviewCanvas(_PreviewCanvasBase):
         """Zeigt die Demo-Cue in echter Renderer-Geometrie, skaliert auf den Canvas."""
 
@@ -234,6 +357,7 @@ if _QIMPORTS_OK:
             super().__init__(parent)
             self._layout: SubtitlePreviewLayout | None = None
             self._animation = "static_phrase"
+            self._active_word = -1
 
         def set_state(
             self,
@@ -244,9 +368,21 @@ if _QIMPORTS_OK:
             text: str,
             width: int,
             height: int,
+            active_word: int = -1,
         ) -> None:
-            self._layout = preview_cue(text, font_key, preset_key, position, width, height)
+            self._layout = preview_cue(
+                text, font_key, preset_key, position, width, height,
+                animation=animation, active_word=active_word,
+            )
             self._animation = animation
+            self._active_word = active_word
+            self.update()
+
+        def set_active_word(self, active_word: int) -> None:
+            """Stage a different word without recomputing the layout."""
+            self._active_word = active_word
+            if self._layout is not None:
+                self._layout.active_word = active_word
             self.update()
 
         def current_layout(self) -> SubtitlePreviewLayout | None:
@@ -266,107 +402,52 @@ if _QIMPORTS_OK:
                 return
             rect, scale = video
             self._paint_backdrop(painter, rect)
-
-            font = QFont(layout.font_family)
-            font.setPixelSize(max(2, round(layout.font_size * scale)))
-            font.setBold(layout.bold)
-            painter.setFont(font)
-            metrics = QFontMetrics(font)
-            line_height = max(1.0, metrics.height() * 1.02)
-            block_height = line_height * len(layout.lines)
-
-            # Vertikale Position identisch zu subtitles._position:
-            # 2 = Bottom/Medium-Low (margin_v von unten), 5 = Middle, 8 = Top.
-            if layout.alignment == 5:
-                block_top = rect.top() + (rect.height() - block_height) / 2
-            elif layout.alignment == 8:
-                block_top = rect.top() + layout.margin_v * scale
-            else:
-                block_top = rect.bottom() - layout.margin_v * scale - block_height
-
-            # Dezent gestrichelte Safe-Area
-            safe_pen = QPen(QColor(255, 255, 255, 34), 1, Qt.PenStyle.DashLine)
-            painter.setPen(safe_pen)
-            painter.drawRect(
-                rect.adjusted(
-                    layout.margin_h * scale, layout.margin_v * scale,
-                    -layout.margin_h * scale, -layout.margin_v * scale,
-                )
+            paint_subtitle_layout(
+                painter, layout, rect, scale, self._animation, self._active_word,
             )
-
-            font_metrics = resolve_font(layout.font_key)
-            space_w = font_metrics.text_width(" ", layout.font_size)
-            white = QColor(247, 247, 247)
-            accent = QColor(*layout.accent)
-            outline_color = QColor(16, 16, 16)
-            total_words = sum(len(line) for line in layout.lines)
-            flat_index = 0
-
-            for line in layout.lines:
-                widths = [font_metrics.text_width(word, layout.font_size) for word in line]
-                line_w = sum(widths) + (len(line) - 1) * space_w if line else 0.0
-                x = rect.center().x() - line_w * scale / 2
-                x = max(x, rect.left() + layout.margin_h * scale)
-                if x + line_w * scale > rect.right() - layout.margin_h * scale:
-                    x = rect.right() - layout.margin_h * scale - line_w * scale
-                if layout.box:
-                    box = QRectF(
-                        x - 10 * scale, block_top - 4 * scale,
-                        line_w * scale + 20 * scale, line_height * scale + 8 * scale,
-                    )
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(QColor(0, 0, 0, 120)))
-                    painter.drawRoundedRect(box, 6 * scale, 6 * scale)
-                for index, word in enumerate(line):
-                    color, transparent, emphasis = _word_style(
-                        layout, self._animation, flat_index, total_words
-                    )
-                    x0 = x + sum(widths[:index]) * scale + index * space_w * scale
-                    w = widths[index] * scale
-                    word_rect = QRectF(x0, block_top, max(1.0, w), line_height)
-                    baseline_y = word_rect.top() + (line_height + metrics.ascent() - metrics.descent()) / 2
-                    if self._animation == "outline_highlight" and emphasis:
-                        path = QPainterPath()
-                        path.addText(word_rect.left(), baseline_y, font, word)
-                        painter.setPen(QPen(accent, max(1.0, layout.outline * scale * 1.8)))
-                        painter.setBrush(Qt.BrushStyle.NoBrush)
-                        painter.drawPath(path)
-                    else:
-                        fill = QColor(*color)
-                        if transparent:
-                            fill.setAlpha(96)
-                        if layout.box:
-                            # Im Box-Preset zeichnet libass ohne starken
-                            # Outline-Stroke; die Vorschau entspricht dem.
-                            painter.setPen(QPen(fill))
-                        else:
-                            if layout.outline > 0:
-                                path = QPainterPath()
-                                path.addText(word_rect.left(), baseline_y, font, word)
-                                painter.setPen(QPen(outline_color, max(0.8, layout.outline * 1.9 * scale)))
-                                painter.setBrush(Qt.BrushStyle.NoBrush)
-                                painter.drawPath(path)
-                            painter.setPen(QPen(fill))
-                        painter.drawText(
-                            word_rect,
-                            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                            word,
-                        )
-                    flat_index += 1
-                block_top += line_height
             painter.end()
 
     class QuotePreviewCanvas(_PreviewCanvasBase):
-        """Zeigt die Quote-Karte exakt wie :func:`quote.layout_quote` sie rendert."""
+        """Zeigt die Quote-Karte exakt wie :func:`quote.layout_quote` sie rendert.
+
+        1.3.0: volle Stil-Unterstützung (fünf Styles, Farben, Korn, Hairline,
+        Zoom, Position, Safe-Area) — dieselbe Geometrie-Quelle wie der
+        FFmpeg-Filtergraph.
+        """
 
         def __init__(self, parent=None) -> None:
             super().__init__(parent)
             self._layout: QuoteLayout | None = None
 
         def set_state(
-            self, text: str, attribution: str, font_key: str, width: int, height: int,
+            self,
+            text: str,
+            attribution: str,
+            font_key: str,
+            width: int,
+            height: int,
+            *,
+            style_key: str | None = None,
+            font_size_percent: float = 100.0,
+            font_weight: str = "bold",
+            text_color: str = "",
+            background_color: str = "",
+            zoom_percent: float = 0.0,
+            position: str = "center",
+            safe_padding_percent: float = 8.0,
         ) -> None:
-            self._layout = quote_layout_for_preview(text, attribution, font_key, width, height)
+            from .quote import DEFAULT_QUOTE_STYLE
+            self._layout = layout_quote(
+                text, attribution, font_key, width, height,
+                style_key=style_key or DEFAULT_QUOTE_STYLE,
+                font_size_percent=font_size_percent,
+                font_weight=font_weight,
+                text_color=text_color,
+                background_color=background_color,
+                zoom_percent=zoom_percent,
+                position=position,
+                safe_padding_percent=safe_padding_percent,
+            )
             self.update()
 
         def current_layout(self) -> QuoteLayout | None:
@@ -386,16 +467,35 @@ if _QIMPORTS_OK:
                 return
             rect, scale = video
 
-            # Kartenfläche (Background + Vignette wie im Filtergraph)
-            bg = _hex_rgb(BACKGROUND_HEX)
+            # Stilfläche (Background + Vignette + Korn-Andeutung wie im Graph)
+            bg = _hex_rgb(layout.background_hex)
             painter.fillRect(rect, QColor(*bg))
             gradient = QRadialGradient(rect.center(), max(rect.width(), rect.height()) * 0.62)
             gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
             gradient.setColorAt(1.0, QColor(0, 0, 0, 74))
             painter.fillRect(rect, gradient)
+            if layout.grain:
+                painter.setPen(QPen(QColor(0, 0, 0, 14), 1))
+                step = max(6.0, 9 * scale)
+                y = rect.top()
+                while y < rect.bottom():
+                    x = rect.left() + ((y / step) % 2) * step / 2
+                    while x < rect.right():
+                        painter.drawPoint(QPointF(x, y))
+                        x += step
+                    y += step
 
-            if layout.hairline_x is not None and layout.hairline_y is not None:
-                hair = _hex_rgb(HAIRLINE_HEX)
+            zoom_mid = 1.0 + float(layout.zoom_percent or 0.0) / 100.0 / 2.0
+            if zoom_mid > 1.001:
+                # Subtiler Zoom: die Vorschau zeigt den Zustand zur Mitte der
+                # Karte (der Render zoompt kontinuierlich 1.0 → 1+zoom%).
+                painter.save()
+                painter.translate(rect.center())
+                painter.scale(zoom_mid, zoom_mid)
+                painter.translate(-rect.center())
+
+            if layout.hairline_x is not None and layout.hairline_y is not None and layout.hairline_hex:
+                hair = _hex_rgb(layout.hairline_hex)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor(*hair))
                 painter.drawRect(QRectF(
@@ -408,7 +508,7 @@ if _QIMPORTS_OK:
             font = QFont(layout.font_family)
             font.setPixelSize(max(2, round(layout.font_size * scale)))
             font.setBold(True)
-            text_color = QColor(*_hex_rgb(TEXT_HEX))
+            text_color = QColor(*_hex_rgb(layout.text_hex))
             metrics = QFontMetrics(font)
             for offset, line in enumerate(layout.lines):
                 w = metrics.horizontalAdvance(line)
@@ -428,7 +528,7 @@ if _QIMPORTS_OK:
                 painter.setFont(attr_font)
                 am = QFontMetrics(attr_font)
                 w = am.horizontalAdvance(layout.attribution)
-                painter.setPen(QPen(QColor(*_hex_rgb(ATTRIBUTION_HEX))))
+                painter.setPen(QPen(QColor(*_hex_rgb(layout.attribution_hex))))
                 painter.drawText(
                     QRectF(
                         rect.center().x() - w / 2,
@@ -438,7 +538,10 @@ if _QIMPORTS_OK:
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                     layout.attribution,
                 )
+            if zoom_mid > 1.001:
+                painter.restore()
             painter.end()
+
 
 else:  # pragma: no cover - PySide6 fehlt
 

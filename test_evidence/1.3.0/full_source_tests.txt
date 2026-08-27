@@ -1,0 +1,54 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/user/VideoMerger
+configfile: pytest.ini
+collected 336 items
+
+tests/test_121_benchmark_2min.py s                                       [  0%]
+tests/test_121_cache_performance.py .....                                [  1%]
+tests/test_121_loop_behavior.py ...                                      [  2%]
+tests/test_121_subtitle_workflow.py ..s                                  [  3%]
+tests/test_122_complete_workflow.py .                                    [  3%]
+tests/test_122_professional_subtitles.py ..................              [  9%]
+tests/test_123_intro_e2e.py ..                                           [  9%]
+tests/test_123_release_features.py .................                     [ 14%]
+tests/test_124_defaults_fonts_preview.py .................               [ 19%]
+tests/test_124_quote.py ............................                     [ 28%]
+tests/test_124_video_pool.py ...............                             [ 32%]
+tests/test_130_defaults.py ........                                      [ 35%]
+tests/test_130_outputs_and_metadata.py ............                      [ 38%]
+tests/test_130_pool_optimization.py .....                                [ 40%]
+tests/test_130_quote_styles.py ......................................... [ 52%]
+                                                                         [ 52%]
+tests/test_130_stretch_speed_padding.py ............                     [ 55%]
+tests/test_130_subtitle_quality.py .............                         [ 59%]
+tests/test_130_windows_subtitle_paths.py .........                       [ 62%]
+tests/test_4k_quality_e2e.py .                                           [ 62%]
+tests/test_alignment_subtitles.py ..................ss                   [ 68%]
+tests/test_audio_formats_e2e.py .....                                    [ 70%]
+tests/test_command_builder.py ....                                       [ 71%]
+tests/test_e2e_matrix.py ............                                    [ 75%]
+tests/test_file_stability.py ..                                          [ 75%]
+tests/test_gui_controls.py ...                                           [ 76%]
+tests/test_hardware.py ...                                               [ 77%]
+tests/test_main_workflow_e2e.py ....                                     [ 78%]
+tests/test_manual_ordering.py ...                                        [ 79%]
+tests/test_media_analyzer.py ....                                        [ 80%]
+tests/test_output_manager.py ...                                         [ 81%]
+tests/test_outro_modes_e2e.py .                                          [ 81%]
+tests/test_project_structure.py ....                                     [ 83%]
+tests/test_sorting_discovery.py ......                                   [ 84%]
+tests/test_stage12_graphs.py ..............                              [ 88%]
+tests/test_target.py ......                                              [ 90%]
+tests/test_transition_effects.py ............                            [ 94%]
+tests/test_transition_renders.py .....                                   [ 95%]
+tests/test_visual_effects.py ..                                          [ 96%]
+tests/test_watermark_e2e.py ........                                     [ 98%]
+tests/test_windows_setup_assets.py ....                                  [100%]
+
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_121_benchmark_2min.py:72: set VIDEOMERGER_RUN_2MIN_BENCHMARK=1 for measured two-minute benchmark
+SKIPPED [1] tests/test_121_subtitle_workflow.py:143: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for the real acoustic E2E
+SKIPPED [1] tests/test_alignment_subtitles.py:157: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for downloaded local model test
+SKIPPED [1] tests/test_alignment_subtitles.py:181: set VIDEOMERGER_TEST_REAL_ALIGNMENT=1 for downloaded local model test
+================== 332 passed, 4 skipped in 129.36s (0:02:09) ==================

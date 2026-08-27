@@ -141,6 +141,34 @@ def build_cues(
                 # than losing or fabricating authoritative script text.
                 index += 1
 
+        # 1.3.0 Long-Form YouTube readability: preferably 1–2 caption lines
+        # showing natural phrases — avoid constant one/two-word captions. Very
+        # small groups are merged into the better-fitting neighbor while the
+        # measured two-line geometry and the word-budget guard still hold; if
+        # a direct merge does not fit, one word is rebalanced from the larger
+        # neighbor instead. Word-level timing is never changed (cue boundaries
+        # follow the canonical acoustic word timeline).
+        index = 0
+        while index < len(groups):
+            if len(groups[index]) >= 3 or len(groups) < 2:
+                index += 1
+                continue
+            merged = False
+            if index > 0 and fits(groups[index - 1] + groups[index]):
+                groups[index - 1].extend(groups.pop(index))
+                merged = True
+            elif index + 1 < len(groups) and fits(groups[index] + groups[index + 1]):
+                groups[index].extend(groups.pop(index + 1))
+                merged = True
+            elif index > 0 and len(groups[index - 1]) >= 4:
+                groups[index].insert(0, groups[index - 1].pop())
+                merged = fits(groups[index - 1]) and fits(groups[index])
+            elif index + 1 < len(groups) and len(groups[index + 1]) >= 4:
+                groups[index].append(groups[index + 1].pop(0))
+                merged = fits(groups[index]) and fits(groups[index + 1])
+            if not merged:
+                index += 1
+
     cues: list[SubtitleCue] = []
     for index, group in enumerate(groups, start=1):
         valid, split = _layout_words(group, font_key, size, available_width)

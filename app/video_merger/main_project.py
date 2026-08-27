@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from .subtitles import (
 )
 from .target import choose_fps
 from .timeline import fit_media_to_duration
+from .youtube_metadata import generate_youtube_metadata_file
 
 
 def voiceover_paths(settings: ExportSettings) -> list[Path]:
@@ -103,6 +105,24 @@ def _available_bundle(output_dir: Path, stem: str, suffixes: tuple[str, ...]) ->
         paths = {suffix: output_dir / f"{actual}.{suffix}" for suffix in suffixes}
         if not any(path.exists() for path in paths.values()):
             return paths
+        index += 1
+
+
+def _available_dual_video_bundle(output_dir: Path, stem: str) -> tuple[Path, Path, Path]:
+    """Reserve the primary (subtitled) + clean (no-subtitles) + metadata names.
+
+    1.3.0: whenever subtitles are generated both user-facing variants must
+    exist with deterministic, never-overwriting names.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while True:
+        actual = stem if index == 1 else f"{stem}_{index}"
+        primary = output_dir / f"{actual}.mp4"
+        clean = output_dir / f"{actual}_no_subtitles.mp4"
+        metadata = output_dir / f"{actual}_YouTube.txt"
+        if not any(path.exists() for path in (primary, clean, metadata)):
+            return primary, clean, metadata
         index += 1
 
 
@@ -201,10 +221,22 @@ class MainProjectEngine:
         fps, _fps_expr = choose_fps(media, settings.fps_choice)
         warnings: list[str] = []
         render_media = list(media)
+        # 1.3.0 Global Video Speed: 0.50x–2.00x, 1.00x default. The voiceover
+        # remains the timing authority — the target duration, subtitle
+        # timeline, voiceover and music behavior never change; only the clip
+        # playback rate (and therefore how much material is required).
+        video_speed = max(0.5, min(2.0, float(getattr(settings, "video_speed", 1.0) or 1.0)))
+        if abs(video_speed - 1.0) > 1e-6:
+            log(f"Global Video Speed: {video_speed:.2f}x – Voiceover, Untertitel und Musik bleiben unverändert.")
+        duration_fit_mode = settings.duration_fit_mode if settings.duration_fit_mode in {"cut", "stretch"} else "cut"
+        max_stretch = max(1.0, min(50.0, float(getattr(settings, "max_stretch_percent", 10.0) or 10.0)))
         if voice_assets:
             target = voice_total + max(0.0, settings.final_pause)
             render_media, timing_warnings = fit_media_to_duration(
-                media, target, settings.transition_duration, fps, settings.short_video_mode
+                media, target, settings.transition_duration, fps, settings.short_video_mode,
+                duration_fit_mode=duration_fit_mode,
+                max_stretch_percent=max_stretch,
+                playback_rate=video_speed,
             )
             warnings.extend(timing_warnings)
             program_duration = voice_total
@@ -233,22 +265,37 @@ class MainProjectEngine:
                 f"Zielabweichung nach Frame-Rundung: {resolved.expected_duration - target:+.3f} s."
             )
 
-        suffixes = ["mp4"]
-        if subtitle_requested:
-            suffixes += [
-                "srt", "vtt", "subtitle_timeline.json",
-                "subtitle_first.png", "subtitle_middle.png", "subtitle_final.png",
-            ]
-        bundle = _available_bundle(
-            output_dir, f"MainVideo_{_aspect_token(settings.aspect)}", tuple(suffixes)
-        )
-        output_video = bundle["mp4"]
+        # 1.3.0 Clean Output Directory: the user-facing folder receives only
+        # useful artifacts (MainVideo.mp4, MainVideo_no_subtitles.mp4 when
+        # subtitles exist, SRT, VTT). Internal evidence (verification PNGs,
+        # canonical timeline JSON, staged ASS) lives under temp/ and never
+        # clutters the Output folder.
+        output_dir.mkdir(parents=True, exist_ok=True)
+        base_stem = f"MainVideo_{_aspect_token(settings.aspect)}"
+        name_index = 1
+        while True:
+            actual = base_stem if name_index == 1 else f"{base_stem}_{name_index}"
+            output_video = output_dir / f"{actual}.mp4"                    # primary (burned subtitles)
+            output_video_clean = output_dir / f"{actual}_no_subtitles.mp4"  # additional clean variant
+            srt_candidate = output_dir / f"{actual}.srt"
+            vtt_candidate = output_dir / f"{actual}.vtt"
+            reserved: list[Path] = [output_video, output_video_clean]
+            if subtitle_requested:
+                reserved += [srt_candidate, vtt_candidate]
+            if not any(path.exists() for path in reserved):
+                break
+            name_index += 1
         srt_path: Path | None = None
         vtt_path: Path | None = None
         timeline_path: Path | None = None
         alignment = None
         ass_path: Path | None = None
         verification_frames: list[Path] = []
+        temp_dir = project_root() / "temp"
+        if subtitle_requested:
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            srt_path, vtt_path = srt_candidate, vtt_candidate
+            timeline_path = temp_dir / f"{output_video.stem}.subtitle_timeline.json"
 
         log("Stage 1 – Create Main Video")
         log("Aktive Clip-Reihenfolge: " + " → ".join(item.path.name for item in render_media))
@@ -425,8 +472,8 @@ class MainProjectEngine:
                         combined_script, alignment, settings.subtitle_style, program_end=voice_total,
                         width=resolved.width, height=resolved.height, font_key=settings.subtitle_font,
                     )
-                    srt_path, vtt_path = bundle["srt"], bundle["vtt"]
-                    timeline_path = bundle["subtitle_timeline.json"]
+                    srt_path, vtt_path = srt_candidate, vtt_candidate
+                    timeline_path = temp_dir / f"{output_video.stem}.subtitle_timeline.json"
                     write_srt(cues, srt_path)
                     write_vtt(cues, vtt_path)
                     write_canonical_timeline(combined_script, alignment, cues, timeline_path)
@@ -459,11 +506,35 @@ class MainProjectEngine:
             for warning in warnings:
                 log("WARNUNG: " + warning)
             render_started = time.perf_counter()
+            clean_report: ValidationReport | None = None
             try:
-                report = self.engine.export(
-                    render_media, render_settings, resolved, output_video,
-                    progress=progress, log=log, cancel_event=cancel_event,
-                )
+                if subtitle_requested:
+                    # 1.3.0 dual output: render the CLEAN master first (no
+                    # burn-in in the graph), then burn the ASS into the
+                    # primary variant in a dedicated libass pass. Both files
+                    # share the same timeline, encoder settings and color
+                    # tags; audio is stream-copied in the burn pass.
+                    render_settings = replace(render_settings, subtitle_enabled=False)
+                    clean_report = self.engine.export(
+                        render_media, render_settings, resolved, output_video_clean,
+                        progress=progress, log=log, cancel_event=cancel_event,
+                    )
+                    render_settings = replace(render_settings, subtitle_enabled=True)
+                    burn_started = time.perf_counter()
+                    try:
+                        report = self.engine.burn_subtitles(
+                            output_video_clean, ass_path, render_settings.subtitle_fonts_dir,
+                            output_video, resolved, render_media,
+                            progress=progress, log=log, cancel_event=cancel_event,
+                        )
+                    except Exception as exc:
+                        raise _subtitle_failure("subtitle burn-in pass", exc) from exc
+                    timings["subtitle_burn_seconds"] = time.perf_counter() - burn_started
+                else:
+                    report = self.engine.export(
+                        render_media, render_settings, resolved, output_video,
+                        progress=progress, log=log, cancel_event=cancel_event,
+                    )
             except Exception as exc:
                 if subtitle_requested:
                     raise _subtitle_failure("single-pass FFmpeg burn-in render", exc) from exc
@@ -473,13 +544,17 @@ class MainProjectEngine:
             finalization_started = time.perf_counter()
             if subtitle_requested:
                 try:
+                    # Internal test evidence only (1.3.0 Clean Output): the
+                    # verification frames live under temp/ — they never
+                    # clutter the user-facing Output folder (explicitly
+                    # allowed as internal evidence) and remain available for
+                    # decoding checks after the render.
+                    frame_paths = {
+                        label: temp_dir / f"{output_video.stem}.subtitle_{label}.png"
+                        for label in ("first", "middle", "final")
+                    }
                     verification_frames = create_visual_verification_frames(
-                        self.engine.ffmpeg_path, output_video, alignment,
-                        {
-                            "first": bundle["subtitle_first.png"],
-                            "middle": bundle["subtitle_middle.png"],
-                            "final": bundle["subtitle_final.png"],
-                        },
+                        self.engine.ffmpeg_path, output_video, alignment, frame_paths,
                     )
                     required = [srt_path, vtt_path, timeline_path, *verification_frames]
                     if not all(path and path.is_file() and path.stat().st_size > 0 for path in required):
@@ -489,8 +564,12 @@ class MainProjectEngine:
                         "Burned-In Subtitles: PASS"
                     )
                     log(
-                        "Visual verification frames (decoded from final MP4): "
+                        "Visual verification frames (decoded from final MP4, internal evidence): "
                         + ", ".join(path.name for path in verification_frames)
+                    )
+                    log(
+                        "Dual subtitle output: " + output_video.name + " (burned, primary) + "
+                        + output_video_clean.name + " (no subtitles)"
                     )
                 except Exception as exc:
                     raise _subtitle_failure("first/middle/final visual verification", exc) from exc
@@ -499,20 +578,26 @@ class MainProjectEngine:
             for key in (
                 "voiceover_processing_seconds", "music_processing_seconds", "asr_seconds",
                 "alignment_seconds", "subtitle_creation_seconds", "ffmpeg_rendering_seconds",
-                "finalization_seconds", "total_pipeline_seconds",
+                "subtitle_burn_seconds", "finalization_seconds", "total_pipeline_seconds",
             ):
                 if key in timings:
                     log(f"PERFORMANCE {key}={float(timings[key]):.3f}")
-            return MainVideoResult(
+            result = MainVideoResult(
                 output_video, srt_path, vtt_path, report, alignment, warnings,
                 canonical_timeline=timeline_path,
                 verification_frames=verification_frames,
                 timings=timings,
+                video_no_subtitles=output_video_clean if subtitle_requested else None,
             )
+            return result
         except Exception:
             # Never leave a captionless/partial bundle looking successful.
-            for path in bundle.values():
-                path.unlink(missing_ok=True)
+            output_video.unlink(missing_ok=True)
+            output_video_clean.unlink(missing_ok=True)
+            if srt_path is not None:
+                srt_path.unlink(missing_ok=True)
+            if vtt_path is not None:
+                vtt_path.unlink(missing_ok=True)
             raise
         finally:
             if ass_path and output_video.exists():
@@ -528,26 +613,46 @@ class MainProjectEngine:
         cancel_event=None,
         aligner: LocalWordAligner | None = None,
     ) -> CompleteWorkflowResult:
-        """Execute actual Stage 1, then hand its exact MP4 to existing Stage 2."""
-        # 1.2.4: Eine aktivierte Quote-Karte (mit Text) ist ein gültiger
-        # Grund für Stage 2, auch ohne Intro und ohne Outro.
+        """Execute actual Stage 1, then hand its exact MP4 to existing Stage 2.
+
+        1.3.0: the primary output of the one-click workflow is always the
+        FINAL video. When subtitles were generated, a second final variant
+        WITHOUT burned-in subtitles is composed from the clean Main Video,
+        and the YouTube metadata file is created from the authoritative
+        voiceover transcript.
+        1.2.4: Eine aktivierte Quote-Karte (mit Text) ist ein gültiger
+        Grund für Stage 2, auch ohne Intro und ohne Outro.
+        """
         quote_active = bool(settings.quote_enabled and (settings.quote_text or "").strip())
         if not optional_path(settings.intro_path) and not optional_path(settings.outro_path) and not quote_active:
             raise VideoMergerError("One-Click benötigt eine zugewiesene Intro- und/oder Outro-Datei.")
 
-        def stage_progress(part: int, event: ProgressEvent) -> None:
-            base = 0.0 if part == 1 else 50.0
+        # Same subtitle-expectation rule as create_main: voiceover + script
+        # always produce subtitles (a checked box alone does not when no
+        # voiceover exists). Decides whether a third (no-subtitle) pass runs.
+        unit_probe = list(settings.voiceover_paths) or (
+            [settings.voiceover_path] if settings.voiceover_path.strip() else []
+        )
+        script_probe = list(settings.script_paths) or (
+            [settings.script_path] if settings.script_path.strip() else []
+        )
+        subtitle_expected = bool(settings.subtitle_enabled or (unit_probe and script_probe))
+        parts = 3 if subtitle_expected else 2
+
+        def stage_progress(part: int, parts: int, event: ProgressEvent) -> None:
+            span = 100.0 / parts
+            base = (part - 1) * span
             progress(ProgressEvent(
-                percent=base + max(0.0, min(100.0, event.percent)) * .5,
+                percent=base + max(0.0, min(100.0, event.percent)) * span / 100.0,
                 out_time=event.out_time, total_time=event.total_time,
                 elapsed=event.elapsed, remaining=event.remaining,
-                stage=f"One-Click {part}/2 – {event.stage}", current_file=event.current_file,
+                stage=f"One-Click {part}/{parts} – {event.stage}", current_file=event.current_file,
             ))
 
         log("ONE-CLICK COMPLETE WORKFLOW – START")
         main = self.create_main(
             media, settings, output_dir,
-            progress=lambda event: stage_progress(1, event), log=log,
+            progress=lambda event: stage_progress(1, parts, event), log=log,
             cancel_event=cancel_event, aligner=aligner,
         )
         if not main.video.is_file() or not main.report.ok:
@@ -556,16 +661,65 @@ class MainProjectEngine:
         log(f"actual MainVideo input = {actual_main}")
         stage2_settings = replace(settings, main_video_path=str(actual_main))
         log(f"Actual Stage 1 input used by Stage 2: {actual_main}")
+        # 1.3.0: reserve BOTH final names up front so the subtitled primary
+        # and the no-subtitles variant belong to the same bundle index.
+        output_dir.mkdir(parents=True, exist_ok=True)
+        final_primary, final_clean, metadata_path = _available_dual_video_bundle(
+            output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}"
+        )
         final_video, final_report = self.add_outro(
             stage2_settings, output_dir,
-            progress=lambda event: stage_progress(2, event), log=log,
-            cancel_event=cancel_event,
+            progress=lambda event: stage_progress(2, parts, event), log=log,
+            cancel_event=cancel_event, output_path=final_primary,
         )
         if not final_video.is_file() or not final_report.ok:
             raise VideoMergerError("One-Click Stage 2 lieferte keine validierte FinalVideo-Datei.")
-        progress(ProgressEvent(100.0, final_report.duration, final_report.duration, 0.0, 0.0, "One-Click 2/2 – Complete", final_video.name))
+        final_clean_video: Path | None = None
+        if main.video_no_subtitles is not None:
+            # Second Stage-2 pass with the CLEAN main video → FinalVideo
+            # without burned-in subtitles (subtitles remain available as the
+            # SRT/VTT sidecar files).
+            clean_settings = replace(stage2_settings, main_video_path=str(main.video_no_subtitles.resolve()))
+            log(f"Clean-variant Stage 2 input: {clean_settings.main_video_path}")
+            final_clean_video, clean_report = self.add_outro(
+                clean_settings, output_dir,
+                progress=lambda event: stage_progress(3, parts, event), log=log,
+                cancel_event=cancel_event, output_path=final_clean,
+            )
+            if not final_clean_video.is_file() or not clean_report.ok:
+                raise VideoMergerError("One-Click Stage 2 (no-subtitle variant) lieferte keine validierte FinalVideo-Datei.")
+            log("Dual final output: " + final_video.name + " (burned subtitles, primary) + " + final_clean_video.name)
+
+        # 1.3.0 Automatic YouTube title + description from the authoritative
+        # voiceover transcript/script. Local + free + unlimited; a metadata
+        # problem NEVER blocks the video — it is reported clearly instead.
+        youtube_metadata_path: Path | None = None
+        try:
+            transcript = ""
+            if main.canonical_timeline is not None and main.canonical_timeline.is_file():
+                payload = json.loads(main.canonical_timeline.read_text(encoding="utf-8"))
+                transcript = str(payload.get("authoritative_script", ""))
+            if transcript.strip():
+                youtube_metadata_path = generate_youtube_metadata_file(
+                    transcript, metadata_path,
+                    language_preference=settings.subtitle_language, log=log,
+                )
+            else:
+                log(
+                    "YouTube metadata: kein autoritatives Voiceover-Transkript vorhanden – "
+                    "es werden keine Metadaten erfunden und keine Datei geschrieben."
+                )
+        except Exception as exc:
+            youtube_metadata_path = None
+            log(f"YOUTUBE METADATA GENERATION FAILED: {exc} – das fertige Video ist davon unberührt.")
+
+        progress(ProgressEvent(100.0, final_report.duration, final_report.duration, 0.0, 0.0, "One-Click – Complete", final_video.name))
         log("ONE-CLICK COMPLETE WORKFLOW – PASS")
-        return CompleteWorkflowResult(main, final_video, final_report)
+        return CompleteWorkflowResult(
+            main, final_video, final_report,
+            final_video_no_subtitles=final_clean_video,
+            youtube_metadata=youtube_metadata_path,
+        )
 
     def add_outro(
         self,
@@ -574,6 +728,7 @@ class MainProjectEngine:
         progress: ProgressCallback = lambda _event: None,
         log: LogCallback = lambda _message: None,
         cancel_event=None,
+        output_path: Path | None = None,
     ) -> tuple[Path, ValidationReport]:
         """Stage 2: compose Intro (optional) → MainVideo → Outro (optional).
 
@@ -606,9 +761,10 @@ class MainProjectEngine:
             quote_text = (settings.quote_text or "").strip()
             if not quote_text:
                 raise VideoMergerError("Die Quote-Karte ist aktiv, aber der Quote-Text ist leer.")
-            if settings.quote_duration not in (1.0, 1.5, 2.0, 2.5, 3.0):
+            quote_duration = float(settings.quote_duration)
+            if not (0.5 - 1e-9 <= quote_duration <= 5.0 + 1e-9):
                 raise VideoMergerError(
-                    f"Ungültige Quote-Dauer: {settings.quote_duration}; erlaubt: 1.0 / 1.5 / 2.0 / 2.5 / 3.0 s"
+                    f"Ungültige Quote-Dauer: {settings.quote_duration}; erlaubt: 0.5–5.0 s"
                 )
             quote_index = 1 if intro_path else 0
             reference = media[quote_index]
@@ -633,7 +789,8 @@ class MainProjectEngine:
             media.insert(quote_index, quote_item)
             quote_position = quote_index
             log(
-                f"Quote Card aktiv: {settings.quote_duration:.1f} s, Font {settings.quote_font}, "
+                f"Quote Card aktiv: {quote_duration:.1f} s, Stil {settings.quote_style}, "
+                f"Font {settings.quote_font}, "
                 f"Position zwischen {'Intro und MainVideo' if intro_path else '(Start) und MainVideo'}; Audio: stumm"
             )
 
@@ -668,9 +825,28 @@ class MainProjectEngine:
             ),
         )
         resolved = self.engine.make_plan(media, outro_settings, log)
-        output = _available_bundle(
-            output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4",)
-        )["mp4"]
+        # 1.3.0: optional dedicated transition duration around the quote card
+        # (0.0 = the global transition duration applies). The clamp mirrors
+        # target.safe_transition_durations so the boundaries around the card
+        # can never exceed 45 % of either neighboring section.
+        quote_transition = float(getattr(settings, "quote_transition_duration", 0.0) or 0.0)
+        if quote_position is not None and quote_transition > 0.01:
+            for boundary in (quote_position - 1, quote_position):
+                if 0 <= boundary < len(resolved.transitions):
+                    left = resolved.effective_durations[boundary]
+                    right = resolved.effective_durations[boundary + 1]
+                    value = max(0.01, round(min(quote_transition, left * 0.45, right * 0.45), 6))
+                    resolved.transitions[boundary] = value
+            resolved.expected_duration = max(
+                0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
+            )
+            log(f"Quote transition duration: {quote_transition:.2f} s (nur um die Quote-Karte).")
+        if output_path is not None:
+            output = Path(output_path).expanduser().resolve()
+        else:
+            output = _available_bundle(
+                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4",)
+            )["mp4"]
         if intro_path:
             log("Stage 2 – Add Intro / Main / Outro")
             log(

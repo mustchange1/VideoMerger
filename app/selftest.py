@@ -75,9 +75,11 @@ def main() -> int:
         )
         subtitle_files = [
             subtitle_result.video, subtitle_result.srt, subtitle_result.vtt,
-            subtitle_result.canonical_timeline, *subtitle_result.verification_frames,
+            subtitle_result.canonical_timeline,
+            subtitle_result.video_no_subtitles,
+            *subtitle_result.verification_frames,
         ]
-        if not all(path and path.is_file() for path in subtitle_files):
+        if not all(path and Path(path).is_file() for path in subtitle_files):
             print("  [FAIL] SUBTITLE GENERATION FAILED: output artifact missing")
             return 1
         if "subtitles=filename=" not in engine.last_filter_graph:
@@ -85,7 +87,7 @@ def main() -> int:
             return 1
         print(
             "  [OK] Subtitle End-to-End: local word timing, SRT, VTT, canonical timeline, "
-            "burned final MP4 and first/middle/final frames"
+            "burned final MP4, no-subtitles variant and first/middle/final frames"
         )
     print("All systems ready.")
     return 0

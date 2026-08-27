@@ -1,4 +1,19 @@
-# VideoMerger 1.2.4 – lokale Windows-App
+# VideoMerger 1.3.0 für Windows
+
+## Neu in 1.3.0
+
+- **Windows-Untertitel-Fix (Ursache behoben):** FFmpeg läuft immer mit dem Projekt-Root als Arbeitsverzeichnis; alle Render-Dateien im Filtergraph (ASS, Fonts-Ordner, Quote-Font) liegen dort mit ASCII-Namen. Die Filter-Werte sind reine relative POSIX-Pfade — Laufwerks-Doppelpunkt, Backslashes, Leerzeichen und Umlaute können auf keinem Windows-Rechner mehr im Wert auftauchen (auch nicht bei `C:\\Users\\Jürgen Müller\\Downloads\\…`). Pfade außerhalb des Ankers werden UNQUOTED mit Vorwärts-Slashes und der verifizierten Zwei-Stufen-Escapetabelle ausgegeben (Apostrophe wie `O'Brien` sind darstellbar; die alte Quoting-Form brach dort ab). Echte Libass-Burn-Regressionstests über feindliche Pfade laufen in der Suite.
+- **Smart Last-Clip Stretch:** Dauer-Fit-Modus `Cut Last Clip` (Standard) oder `Stretch Last Clip` — nur der letzte ausgewählte Clip läuft minimal langsamer (Limit 5/10 (Standard)/15/20/Custom %). Transitions und Kontinuität bleiben erhalten; über dem Limit gilt das normale Kürzen, niemals Hold Last Frame.
+- **Globale Video-Geschwindigkeit:** 0,50x–2,00x (Standard 1,00x). Voiceover bleibt die Timing-Autorität — Untertitel, Voiceover und Musik ändern sich nicht (SRT byte-identisch nachgewiesen).
+- **Main Video End Padding:** freie manuelle Einstellung 0,0–5,0 s; der bestehende Standard von ca. 1 Sekunde bleibt exakt erhalten.
+- **Quote-Karten-System (komplett repariert):** `Intro → Quote → Main → Outro` rendert jetzt eine echte visuelle Karte in nativer Auflösung (1080p/4K, 16:9/9:16). Fünf polierte Stile: **Clean Editorial** (Standard: warmweiß/weich-beige, elegante Serifen, Haarlinie, subtile Vignette), **Warm Cinematic** (warm + Filmkorn), **Soft Paper**, **Minimal Film**, **Elegant Contrast**. Manuelle Regler: Text, Attribution, Font, Größe, Gewicht, Farben, Zoom (0–10 %), Position, Safe-Area, Dauer (frei 0,5–5,0 s, Standard 2,0 s), eigene Übergangsdauer um die Karte. Die Karte bleibt stumm (≤ −60 dB gemessen) und erhält niemals Voiceover, Untertitel oder fremdes Audio.
+- **Bessere Untertitel-Segmentierung:** Long-Form bevorzugt 1–2 Zeilen natürlicher Phrasen; Ein-/Zwei-Wort-Captions werden zusammengeführt (Wort-Timing unangetastet). Live-Vorschau UND der neue große Vorschau-Dialog malen mit derselben Renderer-Geometrie (inkl. Animations-Wortfortschritt).
+- **Sauberer Output-Ordner + doppelte Untertitel-Ausgaben:** Bei Untertiteln entstehen IMMER beide Varianten — `FinalVideo_16x9.mp4` (mit gebrannten Untertiteln, primär) und `FinalVideo_16x9_no_subtitles.mp4`; ebenso beim expliziten Main-Video. SRT/VTT liegen daneben; Verifikations-PNGs und Timeline-JSON bleiben intern unter `temp/`.
+- **Automatische YouTube-Metadaten (lokal, gratis, unbegrenzt):** Nach jedem erfolgreichen One-Click-Finalvideo entsteht `FinalVideo_16x9_YouTube.txt` (TITLE/DESCRIPTION/LANGUAGE) aus dem autoritativen Voiceover-Transkript: starker Einstieg, nützliche Zusammenfassung in den eigenen Worten, Themen als wörtliche Schlüsselphrasen, natürlicher Kanal-CTA; deutsch → deutsch, englisch → englisch. Deterministischer Pure-Python-Generator (immer offline verfügbar, nichts wird erfunden); ein optional vorhandenes lokales Ollama kann unter strenger Validierung polieren. Keine OpenAI-/Claude-/Gemini-/Bezahl-API. Metadaten-Probleme blockieren nie das Rendern.
+- **One-Click:** Video-Pool + Voiceover(s) + Script(s) + Musik + Untertitel + Watermark + Intro + optionale Quote + Main + Outro = FinalVideo mit einem Klick; das gerenderte MainVideo fließt automatisch in Stage 2.
+- **Alle Defaults bleiben:** Original Audio, Static Phrase, YouTube Landscape, Maximum Quality, End-Padding ≈ 1 s, Quote aus (2,0 s, Clean Editorial), Cut Last Clip, 10 % Stretch, 1,00x Speed. 327 Tests (95 neu) ohne unerwartete Fehler.
+
+# VideoMerger 1.3.0 für Windows
 
 VideoMerger 1.2.4 ist ein additives Release auf Basis des exakt getesteten 1.2.3-Artefakts. Basic Merge, getrennte Stage-1-/Stage-2-Flows, aktive manuelle Reihenfolge, vier Übergänge, Audio, Watermark, Validierung, Hardwareauswahl und nicht überschreibende Exporte bleiben erhalten.
 

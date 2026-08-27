@@ -7,9 +7,16 @@ bedecken. Sobald das Ziel abgedeckt ist, stoppt die Auswahl – der Rest bleibt
 unangetastet (kein Decode, kein Filter, kein Übergang, kein Encode).
 
 Die Auswahl-Mathematik ist identisch mit der echten Render-Timeline
-(:mod:`timeline` / :func:`fit_media_to_duration`): derselbe
+(:mod:`timeline` / :func:`timeline.fit_media_to_duration`): derselbe
 Transition-Clamp-Algorithmus, dasselbe kürzeste-geordneter-Präfix-Prinzip.
-Damit entspricht "Benötigt" in der GUI exakt dem, was der Export rendert.
+1.3.0: Duration-Fit-Modus (Cut/Stretch) und die globale Video-Geschwindigkeit
+fließen in dieselbe Entscheidung ein, damit GUI-Status und Render-Timeline
+identisch entscheiden.
+
+1.3.0 Effizienz: :func:`prefix_durations` berechnet alle Präfix-Summen in
+einem einzigen O(n)-Durchlauf (ein einziger ``safe_transition_durations``
+Aufruf); :func:`compute_pool_status` leitet „benötigt“ aus genau dieser
+einen Liste ab statt sie doppelt zu berechnen.
 """
 
 from __future__ import annotations
@@ -116,12 +123,63 @@ def required_prefix_length(
     return len(durations)
 
 
+def required_selection_length(
+    durations: list[float],
+    target_duration: float,
+    transition_duration: float,
+    fps: float,
+    duration_fit_mode: str = "cut",
+    max_stretch_percent: float = 10.0,
+    prefixes: list[float] | None = None,
+) -> int:
+    """1.3.0: ausgewählte Clip-Anzahl inkl. Smart Stretch — reine Dauer-Mathematik.
+
+    Spiegelt exakt die Präfix-Auswahl von
+    :func:`timeline.fit_media_to_duration` für den Material-reicht-Fall: bei
+    ``stretch`` kann der finale Clip des Präfixes minimal gedehnt werden —
+    dann genügt eventuell ein Clip weniger (kürzeste zusammenhängende
+    Auswahl, keine Sliver-Clips). Liegt die nötige Dehnung über dem Limit,
+    gilt wie im Render das normale Kürzen (gleiche Anzahl wie ``cut``).
+    ``prefixes`` erlaubt das Wiederverwenden einer bereits berechneten
+    Präfix-Liste (keine erneute O(n)-Transition-Berechnung).
+    """
+    if not durations:
+        return 0
+    if target_duration <= 0:
+        return len(durations)
+    minimum = max(0.12, 3.0 / max(fps, 1.0))
+    clamped = [max(value, minimum) for value in durations]
+    if prefixes is None or len(prefixes) != len(clamped):
+        prefixes = prefix_durations(clamped, transition_duration, fps)
+    covered = next(
+        (index + 1 for index, value in enumerate(prefixes) if value >= target_duration - 1e-6),
+        len(clamped),
+    )
+    if duration_fit_mode != "stretch" or covered <= 1:
+        return covered
+    limit = max(0.0, min(50.0, float(max_stretch_percent))) / 100.0
+    shorter_count = covered - 1
+    deficit = target_duration - prefixes[shorter_count - 1]
+    if deficit <= 0:
+        return covered
+    # Spiegelt timeline.fit_media_to_duration: natural_last ist die
+    # geschwindigkeitsskalierte Timeline-Dauer des letzten Clips des
+    # kürzeren Präfixes; die Dehnung wird relativ dazu begrenzt.
+    natural_last = clamped[shorter_count - 1]
+    if deficit / max(natural_last, 1e-9) <= limit + 1e-9:
+        return shorter_count
+    return covered
+
+
 def compute_pool_status(
     media: list[MediaInfo],
     target_duration: float,
     transition_duration: float,
     fps: float,
     short_video_mode: str = "hold",
+    duration_fit_mode: str = "cut",
+    max_stretch_percent: float = 10.0,
+    playback_rate: float = 1.0,
 ) -> PoolStatus:
     """Berechnet Required / Selected / Not-Used für die aktuelle aktive Reihenfolge.
 
@@ -133,6 +191,10 @@ def compute_pool_status(
     * Deckt nichts das Ziel, werden alle Clips gebraucht und Hold Last Frame
       bzw. Full-Timeline Loop ergänzt die fehlende Zeit (wie in
       :mod:`timeline`) – es gibt dann keine ungenutzten Clips.
+
+    1.3.0: ``playback_rate`` skaliert die Timeline-Dauern wie der Render
+    (Global Video Speed); ``duration_fit_mode``/``max_stretch_percent``
+    spiegeln die Smart-Stretch-Auswahl.
     """
     total = len(media)
     target = max(0.0, float(target_duration or 0.0))
@@ -142,10 +204,23 @@ def compute_pool_status(
         return PoolStatus(total, total, total, 0, 0.0, MODE_FULL, True)
 
     minimum = max(0.12, 3.0 / max(fps, 1.0))
-    durations = [max(item.duration, minimum) for item in media]
-    one_pass = prefix_durations(durations, transition_duration, fps)
-    if one_pass and one_pass[-1] >= target - 1e-6:
-        required = required_prefix_length(durations, target, transition_duration, fps)
+    rate = max(0.5, min(2.0, float(playback_rate or 1.0)))
+    # Identisch zur Render-Timeline: _source_copy setzt die Timeline-Dauer auf
+    # max(minimum, source/rate) — nicht max(source, minimum)/rate.
+    durations = [max(minimum, item.duration / rate) for item in media]
+    # Ein einziger O(n)-Lauf; „benötigt“ wird aus derselben Liste abgeleitet
+    # (keine zweite Transition-Berechnung, keine erneute Sortierung).
+    prefixes = prefix_durations(durations, transition_duration, fps)
+    if prefixes and prefixes[-1] >= target - 1e-6:
+        required = next(
+            (index + 1 for index, value in enumerate(prefixes) if value >= target - 1e-6),
+            total,
+        )
+        if duration_fit_mode == "stretch" and required > 1:
+            required = required_selection_length(
+                durations, target, transition_duration, fps,
+                duration_fit_mode, max_stretch_percent, prefixes=prefixes,
+            )
         return PoolStatus(total, required, required, total - required, target, MODE_EXACT, True)
 
     mode = MODE_LOOP if short_video_mode == "loop" else MODE_HOLD
@@ -158,17 +233,24 @@ def select_required_media(
     transition_duration: float,
     fps: float,
     short_video_mode: str = "hold",
+    duration_fit_mode: str = "cut",
+    max_stretch_percent: float = 10.0,
+    playback_rate: float = 1.0,
 ) -> tuple[list[MediaInfo], list[str]]:
     """Liefert exakt die Clips, die die FFmpeg-Pipeline verarbeiten soll.
 
-    Deckt das Material das Ziel, ist das Ergebnis der kürzeste geordnete
-    Präfix (letzter Clip gekürzt) – ungenutzte Pool-Dateien sind enthalten
-    *nicht*. Ist das Ziel nicht deckbar, übernimmt
-    :func:`timeline.fit_media_to_duration` (Hold Last Frame bzw.
-    Full-Timeline-Loop) und verwendet alle Clips der aktiven Reihenfolge.
+    Deckt das Material das Ziel, ist das Ergebnis der kürzeste geordneter
+    Präfix (letzter Clip gekürzt oder — bei Duration Fit Mode „Stretch“ —
+    minimal gedehnt); ungenutzte Pool-Dateien sind enthalten *nicht*. Ist das
+    Ziel nicht deckbar, übernimmt :func:`timeline.fit_media_to_duration`
+    (Hold Last Frame bzw. Full-Timeline-Loop) und verwendet alle Clips der
+    aktiven Reihenfolge.
     """
     from .timeline import fit_media_to_duration
 
     return fit_media_to_duration(
-        media, target_duration, transition_duration, fps, short_video_mode
+        media, target_duration, transition_duration, fps, short_video_mode,
+        duration_fit_mode=duration_fit_mode,
+        max_stretch_percent=max_stretch_percent,
+        playback_rate=playback_rate,
     )

@@ -36,7 +36,7 @@ function Program-Version {
     }
 }
 
-Write-Host 'VideoMerger Windows Diagnostics 1.2.4' -ForegroundColor Cyan
+Write-Host 'VideoMerger Windows Diagnostics 1.3.0' -ForegroundColor Cyan
 Write-Host ('Project Root: ' + $ProjectRoot)
 Write-Host ''
 
