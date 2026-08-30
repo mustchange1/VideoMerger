@@ -1,9 +1,4 @@
-"""1.3.0 – All preserved defaults (§14 of the release specification).
-
-Every good 1.2.4 default must remain exactly as it was; the new 1.3.0
-features add their own defaults on top (Cut Last Clip, 10 % stretch limit,
-1.00x speed, ~1 s end padding, Quote disabled / 2.0 s / cleanest style).
-"""
+"""Current defaults and preserved application behavior."""
 
 from __future__ import annotations
 
@@ -58,14 +53,15 @@ def test_quote_card_defaults():
     assert settings.quote_text == ""
 
 
-def test_existing_behavior_defaults_are_untouched():
+def test_transition_and_music_defaults_are_cinematic_but_safe():
     settings = ExportSettings()
-    assert settings.transition_type == "smooth_blur"
-    assert settings.transition_duration == 0.5
+    assert settings.transition_type == "cross_dissolve"
+    assert settings.transition_duration == 1.0
     assert settings.short_video_mode == "hold"
     assert settings.normalize_audio is True
     assert settings.ducking_enabled is True
-    assert settings.music_volume == 22
+    assert settings.music_volume == 44
+    assert settings.music_preset == "balanced"
     assert settings.voiceover_volume == 100
     assert settings.subtitle_language == "German"
     assert settings.subtitle_debug_overlay is False

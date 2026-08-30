@@ -21,7 +21,7 @@ def test_vertical_mixed_aspect_builds_blurred_background():
 
 def test_transition_is_after_target_format_processing():
     media = [fake_media(), fake_media("b.mp4")]
-    settings = ExportSettings(resolution="1920x1080")
+    settings = ExportSettings(resolution="1920x1080", transition_type="smooth_blur")
     resolved = resolve_export(media, settings)
     graph = FFmpegCommandBuilder("ffmpeg").build_filter_graph(media, settings, resolved)
     assert graph.index("scale=w=1920:h=1080") < graph.index("xfade=transition=custom")

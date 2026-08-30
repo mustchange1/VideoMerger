@@ -19,13 +19,15 @@ from ..diagnostics import run_diagnostics, run_project_diagnostics
 from ..logging_utils import configure_file_logger
 from ..font_manager import FONT_OPTIONS, register_bundled_fonts_with_qt, resolve_font
 from ..models import ExportSettings, ProgressEvent
-from ..project_order import natural_order, natural_sort_key, randomize_order
+from ..project_order import natural_sort_key, randomize_order
 from ..project_assets import probe_audio
 from ..quality import QUALITY_KEYS, QUALITY_PRESETS, quality_label
 from ..subtitles import ANIMATION_OPTIONS
 from ..paths import ensure_project_directories, locate_ffmpeg, project_root
 from ..project_order import ProjectOrderStore
+from ..target import resolve_export
 from ..settings_store import SettingsStore
+from ..voiceover_order import normalize_voiceover_order_mode, voiceover_order_indices
 from ..subtitle_preview import QuotePreviewCanvas, SubtitlePreviewCanvas, sample_subtitle_text
 from ..video_pool import compute_pool_status
 from ..transition_effects import EASE_OPTIONS, TRANSITION_OPTIONS, transition_description
@@ -178,9 +180,36 @@ class MainWindow(QMainWindow):
         music_button = QPushButton("Choose …")
         music_button.clicked.connect(lambda: self._browse_asset(self.music_edit, "audio"))
         self.script_mode_combo = QComboBox()
-        self.script_mode_combo.addItem("Single Global Script (eine Textdatei für die ganze Timeline)", "single")
-        self.script_mode_combo.addItem("Multiple Matched Scripts (eine Textdatei pro Voiceover)", "matched")
-        self.script_mode_combo.currentIndexChanged.connect(self._sync_subtitle_request)
+        self.script_mode_combo.addItem("One Global Script (eine Textdatei für die komplette Voiceover-Timeline)", "single")
+        self.script_mode_combo.addItem("Individual Scripts (Basename-Matching pro Voiceover)", "matched")
+        self.script_mode_combo.currentIndexChanged.connect(self._sync_script_mode_controls)
+        self.voiceover_order_combo = QComboBox()
+        self.voiceover_order_combo.addItem("Natural / Alphabetical", "natural")
+        self.voiceover_order_combo.addItem("Modification Date – oldest first", "mtime_oldest")
+        self.voiceover_order_combo.addItem("Modification Date – newest first", "mtime_newest")
+        self.voiceover_order_combo.addItem("Manual (drag / move buttons)", "manual")
+        self.voiceover_order_combo.currentIndexChanged.connect(self._voiceover_order_changed)
+        self.global_script_edit = QLineEdit()
+        self.global_script_edit.setPlaceholderText("One global script for the complete ordered voiceover sequence …")
+        self.global_script_edit.textChanged.connect(self._sync_subtitle_request)
+        self.global_script_button = QPushButton("Choose Global Script …")
+        self.global_script_button.clicked.connect(lambda: self._browse_asset(self.global_script_edit, "script"))
+        self.voiceover_pause_combo = QComboBox()
+        for label, value in (
+            ("0.0 sec", 0.0), ("0.25 sec", 0.25), ("0.5 sec", 0.5),
+            ("0.7 sec (Standard)", 0.7), ("1.0 sec", 1.0), ("1.5 sec", 1.5),
+            ("2.0 sec", 2.0), ("Custom", -1.0),
+        ):
+            self.voiceover_pause_combo.addItem(label, value)
+        self.voiceover_pause_combo.setCurrentIndex(self.voiceover_pause_combo.findData(0.7))
+        self.voiceover_pause_combo.currentIndexChanged.connect(self._voiceover_pause_changed)
+        self.voiceover_pause_spin = QDoubleSpinBox()
+        self.voiceover_pause_spin.setRange(0.0, 10.0)
+        self.voiceover_pause_spin.setSingleStep(0.05)
+        self.voiceover_pause_spin.setDecimals(2)
+        self.voiceover_pause_spin.setSuffix(" sec")
+        self.voiceover_pause_spin.setValue(0.7)
+        self.voiceover_pause_spin.valueChanged.connect(self._update_pool_status)
         self.voiceover_table = ReorderTableWidget(0, 3)
         self.voiceover_table.setHorizontalHeaderLabels(["#", "Voiceover", "Script"])
         self.voiceover_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -206,7 +235,9 @@ class MainWindow(QMainWindow):
         self.voiceover_reset_button.clicked.connect(self._reset_voiceover_order)
         audio_layout.addWidget(QLabel("Script Mode"), 0, 0)
         audio_layout.addWidget(self.script_mode_combo, 0, 1, 1, 2)
-        audio_layout.addWidget(self.voiceover_table, 1, 0, 1, 3)
+        audio_layout.addWidget(QLabel("Voiceover Order"), 1, 0)
+        audio_layout.addWidget(self.voiceover_order_combo, 1, 1, 1, 2)
+        audio_layout.addWidget(self.voiceover_table, 2, 0, 1, 3)
         voice_buttons = QHBoxLayout()
         voice_buttons.addWidget(self.voiceover_add_button)
         voice_buttons.addWidget(self.voiceover_remove_button)
@@ -216,30 +247,38 @@ class MainWindow(QMainWindow):
         voice_buttons.addWidget(self.voiceover_top_button)
         voice_buttons.addWidget(self.voiceover_bottom_button)
         voice_buttons.addWidget(self.voiceover_reset_button)
-        audio_layout.addLayout(voice_buttons, 2, 0, 1, 3)
-        audio_layout.addWidget(QLabel("Background Music"), 3, 0)
-        audio_layout.addWidget(self.music_edit, 3, 1)
-        audio_layout.addWidget(music_button, 3, 2)
+        audio_layout.addLayout(voice_buttons, 3, 0, 1, 3)
+        audio_layout.addWidget(QLabel("Global Script File"), 4, 0)
+        audio_layout.addWidget(self.global_script_edit, 4, 1)
+        audio_layout.addWidget(self.global_script_button, 4, 2)
+        audio_layout.addWidget(QLabel("Pause Between Voiceovers"), 5, 0)
+        pause_row = QHBoxLayout()
+        pause_row.addWidget(self.voiceover_pause_combo)
+        pause_row.addWidget(self.voiceover_pause_spin)
+        audio_layout.addLayout(pause_row, 5, 1, 1, 2)
+        audio_layout.addWidget(QLabel("Background Music"), 6, 0)
+        audio_layout.addWidget(self.music_edit, 6, 1)
+        audio_layout.addWidget(music_button, 6, 2)
         # 1.2.4 Default: Original Audio (Mute/Low bleiben unabhängig wählbar).
         self.original_audio_combo = QComboBox()
         self.original_audio_combo.addItem("Original (Standard)", "original")
         self.original_audio_combo.addItem("Low", "low")
         self.original_audio_combo.addItem("Mute", "mute")
-        audio_layout.addWidget(QLabel("Original Video Audio"), 4, 0)
-        audio_layout.addWidget(self.original_audio_combo, 4, 1)
+        audio_layout.addWidget(QLabel("Original Video Audio"), 7, 0)
+        audio_layout.addWidget(self.original_audio_combo, 7, 1)
         self.voice_volume_slider = QSlider(Qt.Horizontal)
         self.voice_volume_slider.setRange(0, 125)
         self.voice_volume_value = QLabel()
         self.voice_volume_slider.valueChanged.connect(
             lambda value: self.voice_volume_value.setText(f"{value} %")
         )
-        audio_layout.addWidget(QLabel("Voiceover Volume"), 5, 0)
-        audio_layout.addWidget(self.voice_volume_slider, 5, 1)
-        audio_layout.addWidget(self.voice_volume_value, 5, 2)
+        audio_layout.addWidget(QLabel("Voiceover Volume"), 8, 0)
+        audio_layout.addWidget(self.voice_volume_slider, 8, 1)
+        audio_layout.addWidget(self.voice_volume_value, 8, 2)
         self.music_preset_combo = QComboBox()
         for label, key, value in (
             ("Very Quiet", "very_quiet", 10), ("Quiet / Background", "quiet", 22),
-            ("Balanced", "balanced", 35), ("Medium", "medium", 50), ("Custom", "custom", -1),
+            ("Balanced", "balanced", 44), ("Medium", "medium", 50), ("Custom", "custom", -1),
         ):
             self.music_preset_combo.addItem(label, (key, value))
         self.music_preset_combo.currentIndexChanged.connect(self._music_preset_changed)
@@ -247,13 +286,13 @@ class MainWindow(QMainWindow):
         self.music_volume_slider.setRange(0, 100)
         self.music_volume_value = QLabel()
         self.music_volume_slider.valueChanged.connect(self._music_volume_changed)
-        audio_layout.addWidget(QLabel("Music Preset"), 6, 0)
-        audio_layout.addWidget(self.music_preset_combo, 6, 1)
-        audio_layout.addWidget(QLabel("Music Volume"), 7, 0)
-        audio_layout.addWidget(self.music_volume_slider, 7, 1)
-        audio_layout.addWidget(self.music_volume_value, 7, 2)
+        audio_layout.addWidget(QLabel("Music Preset"), 9, 0)
+        audio_layout.addWidget(self.music_preset_combo, 9, 1)
+        audio_layout.addWidget(QLabel("Music Volume"), 10, 0)
+        audio_layout.addWidget(self.music_volume_slider, 10, 1)
+        audio_layout.addWidget(self.music_volume_value, 10, 2)
         self.ducking_check = QCheckBox("Voiceover Ducking – Musik weich unter Sprache absenken")
-        audio_layout.addWidget(self.ducking_check, 8, 0, 1, 3)
+        audio_layout.addWidget(self.ducking_check, 11, 0, 1, 3)
         # 1.3.0 Main Video End Padding: manual, free setting (0.0–5.0 s);
         # the existing ~1 second default is preserved exactly.
         self.end_padding_spin = QDoubleSpinBox()
@@ -297,19 +336,19 @@ class MainWindow(QMainWindow):
         self.max_stretch_combo.currentIndexChanged.connect(self._update_pool_status)
         self.max_stretch_spin.valueChanged.connect(self._update_pool_status)
         self.video_speed_combo.currentIndexChanged.connect(self._update_pool_status)
-        audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 9, 0)
-        audio_layout.addWidget(self.end_padding_spin, 9, 1)
-        audio_layout.addWidget(QLabel("If Video Is Too Short"), 10, 0)
-        audio_layout.addWidget(self.short_video_combo, 10, 1)
-        audio_layout.addWidget(QLabel("Duration Fit Mode"), 11, 0)
-        audio_layout.addWidget(self.duration_fit_combo, 11, 1)
-        audio_layout.addWidget(QLabel("Maximum Stretch"), 12, 0)
+        audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 12, 0)
+        audio_layout.addWidget(self.end_padding_spin, 12, 1)
+        audio_layout.addWidget(QLabel("If Video Is Too Short"), 13, 0)
+        audio_layout.addWidget(self.short_video_combo, 13, 1)
+        audio_layout.addWidget(QLabel("Duration Fit Mode"), 14, 0)
+        audio_layout.addWidget(self.duration_fit_combo, 14, 1)
+        audio_layout.addWidget(QLabel("Maximum Stretch"), 15, 0)
         stretch_row = QHBoxLayout()
         stretch_row.addWidget(self.max_stretch_combo)
         stretch_row.addWidget(self.max_stretch_spin)
-        audio_layout.addLayout(stretch_row, 12, 1)
-        audio_layout.addWidget(QLabel("Main Video Speed"), 13, 0)
-        audio_layout.addWidget(self.video_speed_combo, 13, 1)
+        audio_layout.addLayout(stretch_row, 15, 1)
+        audio_layout.addWidget(QLabel("Main Video Speed"), 16, 0)
+        audio_layout.addWidget(self.video_speed_combo, 16, 1)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -372,11 +411,14 @@ class MainWindow(QMainWindow):
         self.radio_16 = QRadioButton("16:9 · YouTube / Landscape")
         self.radio_9 = QRadioButton("9:16 · Shorts / Reels / TikTok")
         self.radio_16.toggled.connect(self._update_resolution_choices)
+        self.radio_16.toggled.connect(self._update_quote_preview)
+        self.radio_9.toggled.connect(self._update_quote_preview)
         format_layout.addWidget(self.radio_16, 0, 0)
         format_layout.addWidget(self.radio_9, 0, 1)
         format_layout.addWidget(QLabel("Resolution"), 1, 0)
         self.resolution_combo = QComboBox()
         self.resolution_combo.currentIndexChanged.connect(self._mark_preset_custom)
+        self.resolution_combo.currentIndexChanged.connect(self._update_quote_preview)
         format_layout.addWidget(self.resolution_combo, 1, 1)
         format_layout.addWidget(QLabel("Fit Mode"), 2, 0)
         self.fit_combo = QComboBox()
@@ -593,7 +635,28 @@ class MainWindow(QMainWindow):
         # keine Voiceover, keine Musik und keine Untertitel und nutzt das
         # bestehende Transition-System. 1.3.0: fünf polierte Styles mit
         # vollständigen manuellen Gestaltungsreglern.
-        self.quote_check = QCheckBox("Add Quote Card – stille Zitatkarte vor dem Main Video")
+        self.quote_check = QCheckBox("Include Quote / Flyer Artwork – silent section before Main Video")
+        self.quote_mode_combo = QComboBox()
+        self.quote_mode_combo.addItem("Generated Text Card", "text")
+        self.quote_mode_combo.addItem("Uploaded Artwork (PNG/JPG/WEBP/PDF)", "artwork")
+        self.quote_artwork_path_edit = QLineEdit()
+        self.quote_artwork_path_edit.setPlaceholderText("Optional artwork file …")
+        self.quote_artwork_choose = QPushButton("Choose Artwork …")
+        self.quote_artwork_choose.clicked.connect(
+            lambda: self._browse_asset(self.quote_artwork_path_edit, "quote_artwork")
+        )
+        self.quote_pdf_page_spin = QSpinBox()
+        self.quote_pdf_page_spin.setRange(1, 9999)
+        self.quote_pdf_page_spin.setValue(1)
+        self.quote_pdf_page_spin.setToolTip("One-based page number for a multi-page PDF.")
+        self.quote_artwork_fit_combo = QComboBox()
+        self.quote_artwork_fit_combo.addItem("Fit – complete artwork", "fit")
+        self.quote_artwork_fit_combo.addItem("Fill – cover and center crop", "fill")
+        self.quote_artwork_fit_combo.addItem("Crop – crop source to output ratio", "crop")
+        self.quote_artwork_path_edit.textChanged.connect(self._sync_quote_artwork_controls)
+        self.quote_mode_combo.currentIndexChanged.connect(self._sync_quote_artwork_controls)
+        self.quote_pdf_page_spin.valueChanged.connect(self._update_quote_preview)
+        self.quote_artwork_fit_combo.currentIndexChanged.connect(self._update_quote_preview)
         self.quote_text_edit = QPlainTextEdit()
         self.quote_text_edit.setPlaceholderText(
             "Zitat in Deutsch oder Englisch – Umlaute, Anführungszeichen und Punktzeichen sind erlaubt …"
@@ -690,11 +753,20 @@ class MainWindow(QMainWindow):
         outro_layout.addWidget(self.outro_audio_combo, 4, 1)
         outro_layout.addWidget(self.outro_transition_check, 5, 0, 1, 2)
         outro_layout.addWidget(self.quote_check, 6, 0, 1, 3)
-        outro_layout.addWidget(QLabel("Quote Text"), 7, 0)
-        outro_layout.addWidget(self.quote_text_edit, 7, 1, 1, 2)
-        outro_layout.addWidget(QLabel("Attribution"), 8, 0)
-        outro_layout.addWidget(self.quote_attribution_edit, 8, 1, 1, 2)
-        row = 9
+        outro_layout.addWidget(QLabel("Quote Input"), 7, 0)
+        outro_layout.addWidget(self.quote_mode_combo, 7, 1, 1, 2)
+        outro_layout.addWidget(QLabel("Artwork File"), 8, 0)
+        outro_layout.addWidget(self.quote_artwork_path_edit, 8, 1)
+        outro_layout.addWidget(self.quote_artwork_choose, 8, 2)
+        outro_layout.addWidget(QLabel("PDF Page"), 9, 0)
+        outro_layout.addWidget(self.quote_pdf_page_spin, 9, 1)
+        outro_layout.addWidget(QLabel("Artwork Fit"), 10, 0)
+        outro_layout.addWidget(self.quote_artwork_fit_combo, 10, 1, 1, 2)
+        outro_layout.addWidget(QLabel("Quote Text"), 11, 0)
+        outro_layout.addWidget(self.quote_text_edit, 11, 1, 1, 2)
+        outro_layout.addWidget(QLabel("Attribution"), 12, 0)
+        outro_layout.addWidget(self.quote_attribution_edit, 12, 1, 1, 2)
+        row = 13
         outro_layout.addWidget(QLabel("Quote Style"), row, 0)
         outro_layout.addWidget(self.quote_style_combo, row, 1)
         outro_layout.addWidget(QLabel("Quote Duration"), row + 1, 0)
@@ -827,6 +899,8 @@ class MainWindow(QMainWindow):
         index = self.fit_combo.findData(self.saved.fit_mode)
         self.fit_combo.setCurrentIndex(max(0, index))
         index = self.transition_combo.findData(self.saved.transition_type)
+        if index < 0:
+            index = self.transition_combo.findData("cross_dissolve")
         self.transition_combo.setCurrentIndex(max(0, index))
         self._update_transition_description()
         index = self.ease_combo.findData(self.saved.transition_ease)
@@ -863,9 +937,31 @@ class MainWindow(QMainWindow):
             script_units = [self.saved.script_path]
         self.voiceover_paths_list: list[str] = voiceover_units
         self.voiceover_scripts_list: list[str] = script_units
-        self._render_voiceover_table()
+        global_script = self.saved.global_script_path or (
+            script_units[0]
+            if str(self.saved.script_mode).casefold() not in {"matched", "individual"} and script_units
+            else ""
+        )
+        self.global_script_edit.setText(global_script)
+        order_index = self.voiceover_order_combo.findData(
+            normalize_voiceover_order_mode(self.saved.voiceover_order_mode)
+        )
+        self.voiceover_order_combo.blockSignals(True)
+        self.voiceover_order_combo.setCurrentIndex(order_index if order_index >= 0 else 0)
+        self.voiceover_order_combo.blockSignals(False)
+        self._apply_voiceover_order(self.voiceover_order_combo.currentData())
         mode_index = self.script_mode_combo.findData(self.saved.script_mode)
         self.script_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        pause = max(0.0, min(10.0, float(self.saved.voiceover_pause)))
+        pause_index = next(
+            (index for index in range(self.voiceover_pause_combo.count())
+             if self.voiceover_pause_combo.itemData(index) >= 0
+             and abs(float(self.voiceover_pause_combo.itemData(index)) - pause) < 1e-9),
+            self.voiceover_pause_combo.findData(-1.0),
+        )
+        self.voiceover_pause_spin.setValue(pause)
+        self.voiceover_pause_combo.setCurrentIndex(pause_index)
+        self._voiceover_pause_changed()
         for combo, value in (
             (self.original_audio_combo, self.saved.original_audio_mode),
             (self.intro_audio_combo, self.saved.intro_audio_mode),
@@ -925,6 +1021,14 @@ class MainWindow(QMainWindow):
         self.subtitle_model_combo.setCurrentText(self.saved.subtitle_model)
         # 1.2.4/1.3.0 Quote Card.
         self.quote_check.setChecked(self.saved.quote_enabled)
+        mode_index = self.quote_mode_combo.findData(getattr(self.saved, "quote_input_mode", "text"))
+        self.quote_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
+        self.quote_artwork_path_edit.setText(getattr(self.saved, "quote_artwork_path", ""))
+        self.quote_pdf_page_spin.setValue(max(1, int(getattr(self.saved, "quote_pdf_page", 1) or 1)))
+        fit_index = self.quote_artwork_fit_combo.findData(
+            getattr(self.saved, "quote_artwork_fit_mode", "fit")
+        )
+        self.quote_artwork_fit_combo.setCurrentIndex(fit_index if fit_index >= 0 else 0)
         self.quote_text_edit.setPlainText(self.saved.quote_text)
         self.quote_attribution_edit.setText(self.saved.quote_attribution)
         self.quote_duration_spin.setValue(max(0.5, min(5.0, float(self.saved.quote_duration))))
@@ -950,7 +1054,16 @@ class MainWindow(QMainWindow):
 
     def _settings(self) -> ExportSettings:
         voiceover_units = list(getattr(self, "voiceover_paths_list", []))
-        script_units = list(getattr(self, "voiceover_scripts_list", []))
+        row_scripts = list(getattr(self, "voiceover_scripts_list", []))
+        script_mode = str(self.script_mode_combo.currentData())
+        global_script = self.global_script_edit.text().strip() if hasattr(self, "global_script_edit") else ""
+        if script_mode == "single":
+            # One authoritative path only; never serialize it once per audio
+            # row. The first legacy row remains a migration fallback.
+            global_script = global_script or (row_scripts[0] if row_scripts else "")
+            script_units = [global_script] if global_script else []
+        else:
+            script_units = row_scripts
         return ExportSettings(
             aspect="16:9" if self.radio_16.isChecked() else "9:16",
             resolution=self.resolution_combo.currentText(),
@@ -973,7 +1086,10 @@ class MainWindow(QMainWindow):
             script_path=script_units[0] if script_units else "",
             voiceover_paths=voiceover_units,
             script_paths=script_units,
-            script_mode=str(self.script_mode_combo.currentData()),
+            script_mode=script_mode,
+            global_script_path=global_script,
+            voiceover_pause=self._voiceover_pause_value(),
+            voiceover_order_mode=normalize_voiceover_order_mode(self.voiceover_order_combo.currentData()),
             music_path=self.music_edit.text().strip(),
             main_video_path=self.main_video_edit.text().strip(),
             intro_path=self.intro_edit.text().strip(),
@@ -1012,6 +1128,10 @@ class MainWindow(QMainWindow):
             # 1.2.4/1.3.0 Quote Card (optional, still, zwischen Intro und
             # MainVideo) mit vollem Stil-/Gestaltungssystem.
             quote_enabled=self.quote_check.isChecked(),
+            quote_input_mode=str(self.quote_mode_combo.currentData()),
+            quote_artwork_path=self.quote_artwork_path_edit.text().strip(),
+            quote_pdf_page=int(self.quote_pdf_page_spin.value()),
+            quote_artwork_fit_mode=str(self.quote_artwork_fit_combo.currentData()),
             quote_text=self.quote_text_edit.toPlainText().strip(),
             quote_attribution=self.quote_attribution_edit.text().strip(),
             quote_duration=float(self.quote_duration_spin.value()),
@@ -1100,6 +1220,7 @@ class MainWindow(QMainWindow):
             "audio": "Audio (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.opus);;All files (*)",
             "script": "Text Script (*.txt *.text *.md);;All files (*)",
             "image": "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;All files (*)",
+            "quote_artwork": "Quote Artwork (*.png *.jpg *.jpeg *.webp *.pdf);;All files (*)",
             "video": "Videos (*.mp4 *.mov *.mkv *.m4v *.avi *.webm);;All files (*)",
         }
         selected, _ = QFileDialog.getOpenFileName(
@@ -1107,6 +1228,55 @@ class MainWindow(QMainWindow):
         )
         if selected:
             edit.setText(selected)
+
+    def _voiceover_pause_value(self) -> float:
+        data = self.voiceover_pause_combo.currentData()
+        if data is not None and float(data) >= 0:
+            return float(data)
+        return max(0.0, min(10.0, float(self.voiceover_pause_spin.value())))
+
+    def _voiceover_pause_changed(self, *_args) -> None:
+        data = self.voiceover_pause_combo.currentData()
+        custom = data is not None and float(data) < 0
+        self.voiceover_pause_spin.setEnabled(custom)
+        if not custom:
+            self.voiceover_pause_spin.blockSignals(True)
+            self.voiceover_pause_spin.setValue(float(data))
+            self.voiceover_pause_spin.blockSignals(False)
+        self._update_pool_status()
+
+    def _sync_script_mode_controls(self, *_args) -> None:
+        mode = str(self.script_mode_combo.currentData())
+        global_mode = mode == "single"
+        self.voiceover_table.setColumnHidden(2, global_mode)
+        self.voiceover_script_button.setEnabled(not global_mode)
+        self.global_script_edit.setEnabled(global_mode)
+        self.global_script_button.setEnabled(global_mode)
+        self._render_voiceover_table()
+        self._sync_subtitle_request()
+
+    def _voiceover_order_changed(self, *_args) -> None:
+        if not hasattr(self, "voiceover_paths_list") or self.busy:
+            return
+        mode = normalize_voiceover_order_mode(self.voiceover_order_combo.currentData())
+        self._apply_voiceover_order(mode, save=True)
+
+    def _apply_voiceover_order(self, mode: str, save: bool = False) -> None:
+        mode = normalize_voiceover_order_mode(mode)
+        units = list(getattr(self, "voiceover_paths_list", []))
+        scripts = list(getattr(self, "voiceover_scripts_list", []))
+        if units and mode != "manual":
+            indices = voiceover_order_indices(units, mode)
+            units = [units[index] for index in indices]
+            # Preserve empty/missing script rows while moving each matched
+            # script with its audio unit. Global mode ignores this list.
+            scripts = [scripts[index] if index < len(scripts) else "" for index in indices]
+        self.voiceover_paths_list = [str(path) for path in units]
+        self.voiceover_scripts_list = [str(path) for path in scripts]
+        self._render_voiceover_table()
+        if save:
+            self._save_project()
+            self._update_pool_status()
 
     def _sync_subtitle_request(self) -> None:
         # Voiceover + Script is the canonical subtitle workflow. Auto-enable
@@ -1117,7 +1287,8 @@ class MainWindow(QMainWindow):
         units = list(getattr(self, "voiceover_paths_list", []))
         scripts = list(getattr(self, "voiceover_scripts_list", []))
         mode = str(self.script_mode_combo.currentData()) if hasattr(self, "script_mode_combo") else "single"
-        have_scripts = (bool(scripts) and bool(scripts[0])) if mode == "single" else bool(units) and len(scripts) >= len(units) and all(scripts)
+        global_script = self.global_script_edit.text().strip() if hasattr(self, "global_script_edit") else ""
+        have_scripts = bool(global_script) if mode == "single" else bool(units) and len(scripts) >= len(units) and all(scripts)
         if units and have_scripts:
             if not self.subtitle_check.isChecked():
                 self.subtitle_check.setChecked(True)
@@ -1174,6 +1345,31 @@ class MainWindow(QMainWindow):
     # Quote Card (1.2.4) – stille Zitatkarte zwischen Intro und MainVideo
     # ------------------------------------------------------------------ #
     def _quote_dimensions(self) -> tuple[int, int]:
+        """Use the selected output dimensions for the live Quote preview."""
+        if hasattr(self, "resolution_combo"):
+            value = self.resolution_combo.currentText().strip().lower().replace("×", "x")
+            if "x" in value:
+                try:
+                    width, height = (int(part) for part in value.split("x", 1))
+                    if width > 0 and height > 0:
+                        return width, height
+                except ValueError:
+                    pass
+            # Auto uses the same resolution resolver as the export whenever
+            # Analyze has supplied the active media. This keeps a 4K/portrait
+            # preview from silently falling back to a 1080p landscape canvas.
+            if value == "auto" and getattr(self, "current_media", None):
+                try:
+                    resolved = resolve_export(
+                        list(self.current_media),
+                        ExportSettings(
+                            aspect="16:9" if self.radio_16.isChecked() else "9:16",
+                            resolution="Auto",
+                        ),
+                    )
+                    return resolved.width, resolved.height
+                except Exception:
+                    pass
         return (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
 
     def _update_quote_preview(self, *_args) -> None:
@@ -1189,6 +1385,16 @@ class MainWindow(QMainWindow):
         width, height = self._quote_dimensions()
         if not self.quote_check.isChecked():
             self.quote_preview.set_state("", "", str(self.quote_font_combo.currentData()), width, height)
+            return
+        if str(self.quote_mode_combo.currentData()) == "artwork":
+            self.quote_preview.set_artwork(
+                self.quote_artwork_path_edit.text().strip(),
+                int(self.quote_pdf_page_spin.value()),
+                str(self.quote_artwork_fit_combo.currentData()),
+                width,
+                height,
+                float(self.quote_zoom_spin.value()),
+            )
             return
         self.quote_preview.set_state(
             text=self.quote_text_edit.toPlainText().strip(),
@@ -1206,11 +1412,34 @@ class MainWindow(QMainWindow):
             safe_padding_percent=float(self.quote_safe_padding_spin.value()),
         )
 
+    def _sync_quote_artwork_controls(self, *_args) -> None:
+        """Keep text and uploaded-artwork inputs unambiguous in the GUI."""
+        enabled = self.quote_check.isChecked()
+        artwork_mode = str(self.quote_mode_combo.currentData()) == "artwork"
+        artwork_path = self.quote_artwork_path_edit.text().strip()
+        is_pdf = artwork_path.casefold().endswith(".pdf")
+        if is_pdf:
+            try:
+                from ..quote_artwork import pdf_page_count
+                self.quote_pdf_page_spin.setMaximum(max(1, pdf_page_count(artwork_path)))
+            except Exception:
+                # Keep manual page entry available; export emits the precise
+                # dependency, corruption, or out-of-range error.
+                self.quote_pdf_page_spin.setMaximum(9999)
+        else:
+            self.quote_pdf_page_spin.setMaximum(9999)
+        self.quote_artwork_path_edit.setEnabled(enabled and artwork_mode)
+        self.quote_artwork_choose.setEnabled(enabled and artwork_mode)
+        self.quote_pdf_page_spin.setEnabled(enabled and artwork_mode and is_pdf)
+        self.quote_artwork_fit_combo.setEnabled(enabled and artwork_mode)
+        self.quote_text_edit.setEnabled(enabled and not artwork_mode)
+        self.quote_attribution_edit.setEnabled(enabled and not artwork_mode)
+        self._update_quote_preview()
+
     def _sync_quote_visibility(self, *_args) -> None:
         enabled = self.quote_check.isChecked()
         for widget in (
-            self.quote_text_edit, self.quote_attribution_edit,
-            self.quote_duration_spin, self.quote_font_combo,
+            self.quote_mode_combo, self.quote_duration_spin, self.quote_font_combo,
             self.quote_style_combo, self.quote_font_size_spin,
             self.quote_weight_combo, self.quote_text_color_edit,
             self.quote_background_color_edit, self.quote_zoom_spin,
@@ -1218,7 +1447,7 @@ class MainWindow(QMainWindow):
             self.quote_transition_spin,
         ):
             widget.setEnabled(enabled)
-        self._update_quote_preview()
+        self._sync_quote_artwork_controls()
 
     def _preview_subtitle_style(self) -> None:
         """1.3.0: größere Untertitel-Vorschau mit DER Renderer-Logik.
@@ -1389,11 +1618,16 @@ class MainWindow(QMainWindow):
     def _render_voiceover_table(self, selected_row: int | None = None) -> None:
         units = list(getattr(self, "voiceover_paths_list", []))
         scripts = list(getattr(self, "voiceover_scripts_list", []))
+        mode = str(self.script_mode_combo.currentData()) if hasattr(self, "script_mode_combo") else "single"
+        self.voiceover_table.setColumnHidden(2, mode == "single")
         self.voiceover_table.setRowCount(len(units))
         for row, path_text in enumerate(units):
             name = Path(path_text).name
             script_text = scripts[row] if row < len(scripts) else ""
-            values = [str(row + 1), name, script_text or "— no script —"]
+            values = [
+                str(row + 1), name,
+                "— one global script —" if mode == "single" else (script_text or "— no script —"),
+            ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
@@ -1428,8 +1662,8 @@ class MainWindow(QMainWindow):
             scripts.append(script_path)
         self.voiceover_paths_list = units
         self.voiceover_scripts_list = scripts
-        self._render_voiceover_table()
-        self._append_log(f"Voiceover-Einheiten: {len(units)} (natürliche Standardreihenfolge beim nächsten Reset)")
+        self._apply_voiceover_order(self.voiceover_order_combo.currentData())
+        self._append_log(f"Voiceover-Einheiten: {len(units)} (aktive Reihenfolge: {self.voiceover_order_combo.currentText()})")
         self._save_project()
         self._update_pool_status()
 
@@ -1442,7 +1676,8 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(units):
             return
         units.pop(row)
-        scripts.pop(row)
+        if row < len(scripts):
+            scripts.pop(row)
         self.voiceover_paths_list = units
         self.voiceover_scripts_list = scripts
         self._render_voiceover_table()
@@ -1451,6 +1686,8 @@ class MainWindow(QMainWindow):
 
     def _choose_voiceover_script(self) -> None:
         if self.busy:
+            return
+        if str(self.script_mode_combo.currentData()) == "single":
             return
         row = self.voiceover_table.currentRow()
         units = list(getattr(self, "voiceover_paths_list", []))
@@ -1498,8 +1735,12 @@ class MainWindow(QMainWindow):
         scripts.insert(target, script)
         self.voiceover_paths_list = units
         self.voiceover_scripts_list = scripts
+        manual_index = self.voiceover_order_combo.findData("manual")
+        self.voiceover_order_combo.blockSignals(True)
+        self.voiceover_order_combo.setCurrentIndex(manual_index)
+        self.voiceover_order_combo.blockSignals(False)
         self._render_voiceover_table(target)
-        self._append_log("Voiceover-Reihenfolge geändert: " + " → ".join(Path(path).name for path in units))
+        self._append_log("Voiceover-Reihenfolge geändert (Manual): " + " → ".join(Path(path).name for path in units))
         self._save_project()
         self._update_pool_status()
 
@@ -1510,15 +1751,19 @@ class MainWindow(QMainWindow):
         scripts = list(getattr(self, "voiceover_scripts_list", []))
         if not units:
             return
-        ordered_names = natural_order([Path(path).name for path in units])
-        by_name = {Path(path).name: (path, script) for path, script in zip(units, scripts)}
-        units = [by_name[name][0] for name in ordered_names]
-        scripts = [by_name[name][1] for name in ordered_names]
+        indices = voiceover_order_indices(units, "natural")
+        units = [units[index] for index in indices]
+        scripts = [scripts[index] if index < len(scripts) else "" for index in indices]
         self.voiceover_paths_list = units
         self.voiceover_scripts_list = scripts
+        natural_index = self.voiceover_order_combo.findData("natural")
+        self.voiceover_order_combo.blockSignals(True)
+        self.voiceover_order_combo.setCurrentIndex(natural_index)
+        self.voiceover_order_combo.blockSignals(False)
         self._render_voiceover_table()
-        self._append_log("Voiceover-Reihenfolge auf natürliche Standardreihenfolge zurückgesetzt.")
+        self._append_log("Voiceover-Reihenfolge auf Natural / Alphabetical zurückgesetzt.")
         self._save_project()
+        self._update_pool_status()
 
     def _save_project(self) -> None:
         """Persist the complete current project state (order + settings)."""
@@ -1611,6 +1856,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
         try:
+            pause = self._voiceover_pause_value()
+            total += pause * max(0, len(units) - 1)
             return total + max(0.0, float(self.end_padding_spin.value()))
         except Exception:
             return total
@@ -1744,19 +1991,24 @@ class MainWindow(QMainWindow):
             if settings.watermark_enabled and not settings.watermark_path:
                 QMessageBox.warning(self, "Watermark fehlt", "Bitte ein Watermark-Bild wählen oder Watermark deaktivieren.")
                 return
-        # 1.2.4: Eine Quote-Karte mit Text ist ein gültiger Stage-2-Grund,
-        # auch ohne Intro UND ohne Outro (gleiche Regel wie MainProjectEngine).
-        quote_active = bool(settings.quote_enabled and (settings.quote_text or "").strip())
+        # Phase 3: text and uploaded-artwork modes have separate required
+        # inputs; an inactive Quote never participates in Stage 2 validation.
+        quote_mode = str(settings.quote_input_mode or "text")
+        quote_active = bool(
+            settings.quote_enabled
+            and ((settings.quote_artwork_path or "").strip() if quote_mode == "artwork" else (settings.quote_text or "").strip())
+        )
         if mode in {"complete", "outro"} and settings.quote_enabled and not quote_active:
+            missing = "Artwork-Datei" if quote_mode == "artwork" else "Quote-Text"
             QMessageBox.warning(
-                self, "Quote-Text fehlt",
-                "Die Quote-Karte ist aktiv, aber der Quote-Text ist leer. Text eingeben oder Karte deaktivieren.",
+                self, f"{missing} fehlt",
+                f"Die Quote-Karte ist aktiv, aber {missing} fehlt. Eingabe ergänzen oder Karte deaktivieren.",
             )
             return
         if mode == "complete" and not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active:
             QMessageBox.warning(
                 self, "Intro/Outro/Quote fehlen",
-                "One-Click benötigt mindestens ein gültiges Intro- oder Outro-Video oder eine aktive Quote-Karte mit Text.",
+                "One-Click benötigt mindestens ein gültiges Intro- oder Outro-Video oder eine aktive Quote-/Flyer-Karte.",
             )
             return
         if mode == "outro":
@@ -1815,6 +2067,11 @@ class MainWindow(QMainWindow):
         self.reset_order_button.setEnabled(not busy)
         self.voiceover_table.setEnabled(not busy)
         self.voiceover_table.setDragEnabled(not busy)
+        for widget in (
+            self.script_mode_combo, self.voiceover_order_combo, self.global_script_edit,
+            self.global_script_button, self.voiceover_pause_combo, self.voiceover_pause_spin,
+        ):
+            widget.setEnabled(not busy)
         for button in (
             self.voiceover_add_button, self.voiceover_remove_button, self.voiceover_script_button,
             self.voiceover_up_button, self.voiceover_down_button, self.voiceover_top_button,
@@ -1822,8 +2079,9 @@ class MainWindow(QMainWindow):
         ):
             button.setEnabled(not busy)
         for widget in (
-            self.quote_check, self.quote_text_edit, self.quote_attribution_edit,
-            self.quote_duration_spin, self.quote_font_combo, self.quote_preview,
+            self.quote_check, self.quote_mode_combo, self.quote_text_edit, self.quote_attribution_edit,
+            self.quote_artwork_path_edit, self.quote_artwork_choose, self.quote_pdf_page_spin,
+            self.quote_artwork_fit_combo, self.quote_duration_spin, self.quote_font_combo, self.quote_preview,
             self.quote_style_combo, self.quote_font_size_spin,
             self.quote_weight_combo, self.quote_text_color_edit,
             self.quote_background_color_edit, self.quote_zoom_spin,
@@ -1831,6 +2089,10 @@ class MainWindow(QMainWindow):
             self.quote_transition_spin,
         ):
             widget.setEnabled(not busy)
+        if not busy:
+            self._sync_script_mode_controls()
+            self._voiceover_pause_changed()
+            self._sync_quote_visibility()
 
     def _cancel(self) -> None:
         if self.worker:
@@ -1957,6 +2219,9 @@ class MainWindow(QMainWindow):
             if self.thread:
                 self.thread.quit()
                 self.thread.wait(6000)
+        # Persist the complete project, including the selected voiceover order,
+        # global script and inter-unit pause, on a normal application close.
+        self._save_project()
         event.accept()
 
 

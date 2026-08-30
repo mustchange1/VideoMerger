@@ -205,6 +205,7 @@ class QuoteLayout:
     grain: bool = False
     zoom_percent: float = 0.0
     safe_padding_percent: float = QUOTE_SAFE_PADDING_DEFAULT
+    font_weight: str = "bold"
 
     @property
     def total_block_height(self) -> int:
@@ -410,6 +411,7 @@ def layout_quote(
         grain=style.grain,
         zoom_percent=_clamp(float(zoom_percent), 0.0, 10.0),
         safe_padding_percent=padding,
+        font_weight="regular" if font_weight == "regular" else "bold",
     )
 
 

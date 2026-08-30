@@ -48,6 +48,11 @@ class MediaInfo:
     # clip down (stretch), > 1.0 speeds it up. The render graph applies this
     # via setpts on the video chain and atempo on the clip's own audio.
     playback_rate: float = 1.0
+    # Phase 3: uploaded Quote artwork is a real, silent image input. It is
+    # deliberately separate from ``is_generated_quote`` so old generated-card
+    # behavior and input numbering remain unchanged.
+    is_quote_artwork: bool = False
+    quote_fit_mode: str = "fit"  # fit | fill | crop
 
     @property
     def display_name(self) -> str:
@@ -63,9 +68,9 @@ class ExportSettings:
     aspect: str = "16:9"
     resolution: str = "Auto"
     fit_mode: str = "contain_blur"
-    transition_type: str = "smooth_blur"
+    transition_type: str = "cross_dissolve"
     transition_ease: str = "ease_in_out"
-    transition_duration: float = 0.5
+    transition_duration: float = 1.0
     background_blur: int = 30
     background_darkness: int = 10
     background_zoom: int = 100
@@ -95,22 +100,33 @@ class ExportSettings:
     outro_path: str = ""
     intro_path: str = ""
 
-    # 1.2.3 multiple voiceover/script units. The ordered lists are the
-    # authoritative project state; ``voiceover_path``/``script_path`` keep the
-    # legacy single-file mapping for compatibility and are derived from the
-    # lists by the GUI. ``script_mode`` selects the canonical workflow:
-    # "single" = one global script drives the whole concatenated timeline,
-    # "matched" = every voiceover needs its own matching script file.
+    # 1.2.3/Phase 4 multiple voiceover/script units. ``voiceover_paths`` is
+    # always the ordered authoritative audio list; ``script_paths`` is one
+    # global entry in single mode and one basename-matched entry per unit in
+    # matched mode. ``voiceover_path``/``script_path`` keep the legacy
+    # single-file mapping for compatibility. ``script_mode`` selects the
+    # canonical workflow: "single" = one global script drives the complete
+    # concatenated timeline, "matched" = every voiceover needs its own script.
     voiceover_paths: list[str] = field(default_factory=list)
     script_paths: list[str] = field(default_factory=list)
-    script_mode: str = "single"  # single | matched
+    script_mode: str = "single"  # single = global | matched = individual
+    # Phase 4: the global script is stored once, independently of the ordered
+    # voiceover list. ``script_paths[0]`` remains the migration fallback for
+    # older projects. The pause is inserted between units, never after the
+    # final unit; ``final_pause`` below remains Main Video end padding.
+    global_script_path: str = ""
+    voiceover_pause: float = 0.7
+    voiceover_order_mode: str = "natural"  # natural | mtime_oldest | mtime_newest | manual
 
     original_audio_mode: str = "original"  # mute | low | original (1.2.4: Original is the default)
     intro_audio_mode: str = "original"  # mute | low | original
     outro_audio_mode: str = "original"
     voiceover_volume: int = 100
-    music_volume: int = 22
-    music_preset: str = "quiet"
+    # 44 % is approximately +6 dB over the former 22 % linear gain. It stays
+    # below the 100 % voiceover gain while the limiter and ducking remain the
+    # final safety net in the mixed graph.
+    music_volume: int = 44
+    music_preset: str = "balanced"
     ducking_enabled: bool = True
     ducking_attack_ms: int = 25
     ducking_release_ms: int = 450
@@ -151,14 +167,19 @@ class ExportSettings:
     watermark_scope: str = "both"  # main | outro | both
     outro_transition_enabled: bool = True
 
-    # 1.2.4 optional Quote Card between Intro and Main (Stage 2 only). The
-    # section is generated in FFmpeg (dark card + drawtext), is always
-    # silent and never receives voiceover, music or subtitles.
+    # Optional Quote Card between Intro and Main (Stage 2 only). Text mode is
+    # generated in FFmpeg; Phase 3 artwork mode accepts PNG/JPG/JPEG/WEBP or
+    # one selected PDF page. Both modes are always silent and never receive
+    # voiceover, music or subtitles.
     quote_enabled: bool = False
+    quote_input_mode: str = "text"  # text | artwork; text remains the default
     quote_text: str = ""
     quote_attribution: str = ""
     quote_duration: float = 2.0  # seconds (0.5–5.0 in the 1.3.0 GUI)
     quote_font: str = "inter"
+    quote_artwork_path: str = ""
+    quote_pdf_page: int = 1  # one-based page number when artwork is a PDF
+    quote_artwork_fit_mode: str = "fit"  # fit | fill | crop
     # 1.3.0 quote card style system: five polished styles with manual controls.
     # Defaults preserve the 1.2.4 guarantees: disabled unless enabled,
     # duration 2.0 s, cleanest/most readable style, subtle zoom, bold weight.
@@ -256,6 +277,10 @@ class AlignmentResult:
     compatibility: float
     average_confidence: float
     warnings: list[str] = field(default_factory=list)
+    # Hard acoustic section boundaries (the starts of later voiceover units).
+    # Subtitle grouping may not merge across these, even when the wording and
+    # measured font geometry would otherwise fit in one cue.
+    hard_breaks: list[float] = field(default_factory=list)
 
 
 @dataclass(slots=True)

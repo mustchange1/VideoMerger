@@ -157,9 +157,9 @@ def quote_layout_for_preview(
 
 try:  # pragma: no cover - Plattformabhängigkeit
     from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtCore import QPointF, QRectF, QSize, Qt
     from PySide6.QtGui import (
-        QBrush, QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath,
+        QBrush, QColor, QFont, QFontMetrics, QImage, QLinearGradient, QPainter, QPainterPath,
         QPen, QRadialGradient,
     )
     from PySide6.QtWidgets import QSizePolicy, QWidget
@@ -418,6 +418,52 @@ if _QIMPORTS_OK:
         def __init__(self, parent=None) -> None:
             super().__init__(parent)
             self._layout: QuoteLayout | None = None
+            self._artwork: QImage | None = None
+            self._artwork_fit_mode = "fit"
+            self._artwork_zoom_percent = 0.0
+            self._artwork_error = ""
+
+        def set_artwork(
+            self, path: str, page: int, fit_mode: str, width: int, height: int,
+            zoom_percent: float = 0.0,
+        ) -> None:
+            """Load an uploaded image/PDF page for an approximate live preview."""
+            self._layout = None
+            self._artwork = None
+            self._artwork_error = ""
+            self._artwork_fit_mode = fit_mode if fit_mode in {"fit", "fill", "crop"} else "fit"
+            try:
+                self._artwork_zoom_percent = max(0.0, min(10.0, float(zoom_percent or 0.0)))
+            except (TypeError, ValueError):
+                self._artwork_zoom_percent = 0.0
+            source = str(path or "").strip()
+            if source:
+                if source.casefold().endswith(".pdf"):
+                    try:
+                        import fitz  # type: ignore[import-not-found]
+                        document = fitz.open(source)
+                        try:
+                            if 1 <= int(page) <= document.page_count:
+                                pdf_page = document.load_page(int(page) - 1)
+                                pixmap = pdf_page.get_pixmap(alpha=False)
+                                self._artwork = QImage(
+                                    pixmap.samples, pixmap.width, pixmap.height,
+                                    pixmap.stride, QImage.Format.Format_RGB888,
+                                ).copy()
+                            else:
+                                self._artwork_error = f"PDF page {page} is not available"
+                        finally:
+                            document.close()
+                    except Exception as exc:  # preview must not block export
+                        self._artwork_error = f"PDF preview unavailable: {exc}"
+                else:
+                    image = QImage(source)
+                    if not image.isNull():
+                        self._artwork = image
+                    else:
+                        self._artwork_error = "Artwork preview unavailable"
+            self._artwork_width, self._artwork_height = width, height
+            self.update()
 
         def set_state(
             self,
@@ -437,6 +483,8 @@ if _QIMPORTS_OK:
             safe_padding_percent: float = 8.0,
         ) -> None:
             from .quote import DEFAULT_QUOTE_STYLE
+            self._artwork = None
+            self._artwork_error = ""
             self._layout = layout_quote(
                 text, attribution, font_key, width, height,
                 style_key=style_key or DEFAULT_QUOTE_STYLE,
@@ -459,13 +507,66 @@ if _QIMPORTS_OK:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
             video = self._video_rect(
-                layout.width if layout else 16, layout.height if layout else 9
+                layout.width if layout else getattr(self, "_artwork_width", 16),
+                layout.height if layout else getattr(self, "_artwork_height", 9),
             )
-            if layout is None or video is None:
-                self._paint_backdrop(painter, video[0] if video else None)
+            if video is None:
+                self._paint_backdrop(painter, None)
                 painter.end()
                 return
             rect, scale = video
+            if layout is None and self._artwork is not None:
+                self._paint_backdrop(painter, rect)
+                # Mirror the render graph's three aspect-safe modes. The
+                # painter draws a centered contain/cover/cropped image into
+                # the same target rectangle used by generated-card preview.
+                image = self._artwork
+                target = QSize(max(1, round(rect.width())), max(1, round(rect.height())))
+                mode = self._artwork_fit_mode
+                if mode == "fit":
+                    # The render pads Fit with black before applying zoom. Fill
+                    # that canvas explicitly so the preview behaves the same
+                    # instead of revealing the surrounding dark backdrop.
+                    painter.fillRect(rect, QColor(0, 0, 0))
+                    shown = image.scaled(target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                else:
+                    # Fill and Crop both use a deliberate center crop; Crop
+                    # first trims the source ratio, while Fill covers directly.
+                    if mode == "crop" and image.height() > 0:
+                        target_ratio = rect.width() / max(1.0, rect.height())
+                        source_ratio = image.width() / max(1.0, image.height())
+                        if source_ratio > target_ratio:
+                            crop_w = max(1, round(image.height() * target_ratio))
+                            image = image.copy((image.width() - crop_w) // 2, 0, crop_w, image.height())
+                        else:
+                            crop_h = max(1, round(image.width() / target_ratio))
+                            image = image.copy(0, (image.height() - crop_h) // 2, image.width(), crop_h)
+                    shown = image.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+
+                zoom_mid = 1.0 + self._artwork_zoom_percent / 100.0 / 2.0
+                if zoom_mid > 1.001:
+                    painter.save()
+                    painter.setClipRect(rect)
+                    painter.translate(rect.center())
+                    painter.scale(zoom_mid, zoom_mid)
+                    painter.translate(-rect.center())
+                x = rect.left() + (rect.width() - shown.width()) / 2
+                y = rect.top() + (rect.height() - shown.height()) / 2
+                painter.drawImage(QPointF(x, y), shown)
+                if zoom_mid > 1.001:
+                    painter.restore()
+                if self._artwork_error:
+                    painter.setPen(QPen(QColor(255, 210, 100)))
+                    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._artwork_error)
+                painter.end()
+                return
+            if layout is None:
+                self._paint_backdrop(painter, rect)
+                if self._artwork_error:
+                    painter.setPen(QPen(QColor(255, 210, 100)))
+                    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._artwork_error)
+                painter.end()
+                return
 
             # Stilfläche (Background + Vignette + Korn-Andeutung wie im Graph)
             bg = _hex_rgb(layout.background_hex)
@@ -507,7 +608,7 @@ if _QIMPORTS_OK:
 
             font = QFont(layout.font_family)
             font.setPixelSize(max(2, round(layout.font_size * scale)))
-            font.setBold(True)
+            font.setBold(layout.font_weight != "regular")
             text_color = QColor(*_hex_rgb(layout.text_hex))
             metrics = QFontMetrics(font)
             for offset, line in enumerate(layout.lines):
@@ -524,7 +625,7 @@ if _QIMPORTS_OK:
             if layout.attribution and layout.attribution_y is not None:
                 attr_font = QFont(layout.font_family)
                 attr_font.setPixelSize(max(2, round(layout.attribution_size * scale)))
-                attr_font.setBold(True)  # Renderer zeichnet mit derselben (Bold)-Datei
+                attr_font.setBold(layout.font_weight != "regular")
                 painter.setFont(attr_font)
                 am = QFontMetrics(attr_font)
                 w = am.horizontalAdvance(layout.attribution)
@@ -557,6 +658,9 @@ else:  # pragma: no cover - PySide6 fehlt
             super().__init__()
 
         def set_state(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            raise RuntimeError("PySide6 ist für die Quote-Vorschau erforderlich.")
+
+        def set_artwork(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
             raise RuntimeError("PySide6 ist für die Quote-Vorschau erforderlich.")
 
 
