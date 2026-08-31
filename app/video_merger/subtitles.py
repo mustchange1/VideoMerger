@@ -82,9 +82,18 @@ def build_cues(
     size = _font_size(width, height, preset)
     width_ratio = .86 if preset.collection == "long" else .90
     available_width = max(40.0, width * width_ratio)
+    # Caption grouping and later long-form rebalancing must share this guard;
+    # otherwise a repair merge could accidentally cross an inter-unit pause.
+    hard_breaks = sorted(float(value) for value in getattr(alignment, "hard_breaks", []))
 
     def fits(group: list[WordTiming]) -> bool:
         if len(group) > preset.max_words:
+            return False
+        if any(
+            left.start < boundary <= right.start
+            for left, right in zip(group, group[1:])
+            for boundary in hard_breaks
+        ):
             return False
         exact = _clean_text(script[group[0].script_start:group[-1].script_end])
         # max_chars is a guard only; real selected-font geometry is authoritative.
@@ -94,11 +103,17 @@ def build_cues(
 
     groups: list[list[WordTiming]] = []
     current: list[WordTiming] = []
+    # A multi-voiceover pause is an actual quiet interval, not an end pad.
+    # Never keep a caption alive across a substantial acoustic gap: doing so
+    # would display the previous unit's subtitle while the next unit is silent.
     for word in words:
         candidate = current + [word]
         sentence_end = bool(re.search(r"[.!?…][\"”’)]?$", word.text))
         clause_end = bool(re.search(r"[,;:][\"”’)]?$", word.text))
-        if current and not fits(candidate):
+        gap_break = bool(
+            current and any(current[-1].start < boundary <= word.start for boundary in hard_breaks)
+        )
+        if current and (gap_break or not fits(candidate)):
             groups.append(current)
             current = [word]
         else:
@@ -178,6 +193,15 @@ def build_cues(
         next_start = groups[index][0].start if index < len(groups) else None
         desired_end = group[-1].end + (0.18 if preset.collection == "long" else 0.10)
         end = min(desired_end, next_start - 0.01) if next_start is not None else desired_end
+        # A hard boundary is an acoustic silence boundary, so even a generous
+        # long-form display allowance must end before it.
+        boundary_after_group = next(
+            (boundary for boundary in hard_breaks
+             if group[-1].start < boundary and (next_start is None or boundary <= next_start)),
+            None,
+        )
+        if boundary_after_group is not None:
+            end = min(end, boundary_after_group - 0.01)
         if program_end is not None:
             end = min(end, float(program_end))
         end = max(start + 0.02, end)
@@ -244,6 +268,7 @@ def write_canonical_timeline(script: str, alignment: AlignmentResult, cues: list
         "method": alignment.method,
         "compatibility": alignment.compatibility,
         "average_confidence": alignment.average_confidence,
+        "hard_breaks": alignment.hard_breaks,
         "words": [asdict(word) for word in alignment.words],
         "cues": [{
             "index": cue.index, "start": cue.start, "end": cue.end, "text": cue.text,

@@ -19,9 +19,9 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
     parser.add_argument("--resolution", default="Auto")
-    parser.add_argument("--transition", type=float, default=0.5, help="transition duration in seconds")
+    parser.add_argument("--transition", type=float, default=1.0, help="transition duration in seconds")
     parser.add_argument(
-        "--transition-effect", default="smooth_blur",
+        "--transition-effect", default="cross_dissolve",
         choices=["smooth_blur", "cross_dissolve", "film_dissolve", "additive_dissolve"],
     )
     parser.add_argument(
@@ -35,10 +35,26 @@ def main() -> int:
     parser.add_argument("--no-normalize", action="store_true")
     parser.add_argument("--voiceover", action="append", default=[], help="voiceover audio file (repeat for multiple units)")
     parser.add_argument("--script", action="append", default=[], help="script file (single or matched per voiceover)")
-    parser.add_argument("--script-mode", choices=["single", "matched"], default="single")
+    parser.add_argument(
+        "--script-mode", choices=["single", "global", "matched", "individual"], default="single"
+    )
+    parser.add_argument(
+        "--global-script", default="",
+        help="authoritative single script for all ordered voiceover units (single mode)",
+    )
+    parser.add_argument(
+        "--voiceover-pause", type=float, default=0.7,
+        help="silence between voiceover units in seconds (default 0.7; does not change --pause end padding)",
+    )
+    parser.add_argument(
+        "--voiceover-order",
+        choices=["natural", "mtime_oldest", "mtime_newest", "manual"],
+        default="natural",
+        help="voiceover order before alignment and rendering",
+    )
     parser.add_argument("--music", default="")
     parser.add_argument("--original-audio", choices=["mute", "low", "original"], default="mute")
-    parser.add_argument("--music-volume", type=int, default=22)
+    parser.add_argument("--music-volume", type=int, default=44)
     parser.add_argument("--pause", type=float, default=1.0)
     parser.add_argument(
         "--short-video", choices=["hold", "loop"], default="hold",
@@ -57,18 +73,25 @@ def main() -> int:
         "--video-speed", type=float, default=1.0,
         help="global Main Video playback speed 0.50-2.00 (default 1.00; voiceover stays the timing authority)",
     )
-    # 1.3.0 quote card (optional, silent section between Intro and Main).
-    parser.add_argument("--quote", action="store_true", help="enable the generated quote card")
-    parser.add_argument("--quote-text", default="", help="quote card text")
-    parser.add_argument("--quote-attribution", default="", help="quote card attribution")
-    parser.add_argument("--quote-duration", type=float, default=2.0, help="quote card duration 0.5-5.0 s")
+    # Optional silent Quote/Flyer artwork between Intro and Main.
+    parser.add_argument("--quote", action="store_true", help="enable the Quote / Flyer section")
     parser.add_argument(
-        "--quote-style",
-        choices=["clean_editorial", "warm_cinematic", "soft_paper", "minimal_film", "elegant_contrast"],
-        default="clean_editorial",
+        "--quote-artwork", default="",
+        help="Quote/Flyer artwork (.png, .jpg, .jpeg, .webp or .pdf)",
     )
-    parser.add_argument("--quote-font", default="inter")
-    parser.add_argument("--quote-zoom", type=float, default=4.0, help="subtle quote zoom 0-10 percent")
+    parser.add_argument(
+        "--quote-pdf-page", "--quote-page", type=int, default=1,
+        help="one-based PDF page for --quote-artwork (default: 1)",
+    )
+    parser.add_argument(
+        "--quote-fit-mode", "--quote-fit", dest="quote_fit_mode",
+        choices=["fit", "fill", "crop"], default="fit",
+        help="artwork framing mode; Fit preserves the complete artwork (default)",
+    )
+    parser.add_argument(
+        "--quote-duration", type=float, default=2.0,
+        help="Quote/Flyer duration in seconds (0.5-5.0; default 2.0)",
+    )
     parser.add_argument("--subtitles", action="store_true")
     parser.add_argument("--language", choices=["German", "English", "Auto"], default="German")
     parser.add_argument("--subtitle-style", default="long_1")
@@ -87,6 +110,12 @@ def main() -> int:
     args = parser.parse_args()
     voiceover_paths = [str(Path(value).expanduser().resolve()) for value in args.voiceover]
     script_paths = [str(Path(value).expanduser().resolve()) for value in args.script]
+    script_mode = "matched" if args.script_mode in {"matched", "individual"} else "single"
+    global_script = str(Path(args.global_script).expanduser().resolve()) if args.global_script else (
+        script_paths[0] if script_mode == "single" and script_paths else ""
+    )
+    if script_mode == "single":
+        script_paths = [global_script] if global_script else []
     settings = ExportSettings(
         aspect=args.aspect, resolution=args.resolution,
         transition_type=args.transition_effect, transition_ease=args.transition_ease,
@@ -95,20 +124,22 @@ def main() -> int:
         normalize_audio=not args.no_normalize,
         workflow_stage=args.stage, voiceover_path=voiceover_paths[0] if voiceover_paths else "",
         script_path=script_paths[0] if script_paths else "",
-        voiceover_paths=voiceover_paths, script_paths=script_paths, script_mode=args.script_mode,
+        voiceover_paths=voiceover_paths, script_paths=script_paths, script_mode=script_mode,
+        global_script_path=global_script,
+        voiceover_pause=max(0.0, min(10.0, args.voiceover_pause)),
+        voiceover_order_mode=args.voiceover_order,
         music_path=args.music, original_audio_mode=args.original_audio,
         music_volume=args.music_volume, final_pause=args.pause,
         short_video_mode=args.short_video,
         duration_fit_mode=args.duration_fit,
         max_stretch_percent=max(1.0, min(50.0, args.max_stretch)),
         video_speed=max(0.5, min(2.0, args.video_speed)),
-        quote_enabled=args.quote,
-        quote_text=args.quote_text,
-        quote_attribution=args.quote_attribution,
+        quote_enabled=args.quote or bool(args.quote_artwork),
+        quote_input_mode="artwork",
+        quote_artwork_path=args.quote_artwork,
+        quote_pdf_page=args.quote_pdf_page,
+        quote_artwork_fit_mode=args.quote_fit_mode,
         quote_duration=max(0.5, min(5.0, args.quote_duration)),
-        quote_style=args.quote_style,
-        quote_font=args.quote_font,
-        quote_zoom_percent=max(0.0, min(10.0, args.quote_zoom)),
         subtitle_enabled=args.subtitles, subtitle_language=args.language,
         subtitle_style=args.subtitle_style, subtitle_animation=args.subtitle_animation,
         subtitle_font=args.subtitle_font, subtitle_position=args.subtitle_position,

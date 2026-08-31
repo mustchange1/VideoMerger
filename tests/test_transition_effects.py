@@ -32,9 +32,9 @@ def test_transition_catalog_has_exact_primary_choices_and_safe_defaults():
         "Linear", "Ease In", "Ease Out", "Ease In + Ease Out"
     ]
     settings = ExportSettings()
-    assert settings.transition_type == "smooth_blur"
+    assert settings.transition_type == "cross_dissolve"
     assert settings.transition_ease == "ease_in_out"
-    assert normalize_transition("rejected_unknown_transition") == "smooth_blur"
+    assert normalize_transition("rejected_unknown_transition") == "cross_dissolve"
     assert normalize_ease("rejected_unknown_curve") == "ease_in_out"
 
 

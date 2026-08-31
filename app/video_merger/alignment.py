@@ -203,6 +203,7 @@ class LocalWordAligner:
             compatibility=float(data["compatibility"]),
             average_confidence=float(data["average_confidence"]),
             warnings=[str(item) for item in data.get("warnings", [])],
+            hard_breaks=[float(item) for item in data.get("hard_breaks", [])],
         )
 
     def _transcription_for(
@@ -251,6 +252,113 @@ class LocalWordAligner:
             words, detected = self._transcription_for(path, language_code)
             self.last_timings["total_alignment_seconds"] = time.perf_counter() - started_total
             return words, detected
+        except VideoMergerError:
+            raise
+        except Exception as exc:
+            raise VideoMergerError(f"Lokale Voiceover-Ausrichtung fehlgeschlagen: {exc}") from exc
+
+    def align_global(
+        self,
+        script: str,
+        units: Iterable[tuple[Path, float]],
+        language: str = "German",
+        inter_unit_pause: float = 0.7,
+    ) -> AlignmentResult:
+        """Map one script onto an ordered multi-voiceover acoustic timeline.
+
+        Each source transcription remains independently cacheable because
+        faster-whisper accepts files, but the script mapping itself happens
+        exactly once over the logical concatenated timeline. The cache key
+        includes the ordered source identities, their durations, and the real
+        inter-unit pause, so a pause/order change cannot reuse stale timestamps.
+        """
+        started_total = time.perf_counter()
+        self.last_timings = {
+            "model_loading_seconds": 0.0,
+            "transcription_seconds": 0.0,
+            "forced_mapping_seconds": 0.0,
+            "cache_hit": False,
+            "cache_level": "none",
+        }
+        language_code = {"German": "de", "English": "en", "Auto": None}.get(language)
+        if language not in {"German", "English", "Auto"}:
+            raise VideoMergerError(f"Unbekannte Untertitelsprache: {language}")
+        units = [(Path(path).expanduser().resolve(), float(duration)) for path, duration in units]
+        if not units:
+            raise VideoMergerError("Für das globale Alignment wurde kein Voiceover übergeben.")
+        pause = max(0.0, min(10.0, float(inter_unit_pause)))
+
+        # Build the complete cache identity before ASR. A cache hit therefore
+        # avoids both repeated recognition and repeated global script mapping.
+        transcription_keys: list[str] = []
+        for path, duration in units:
+            if not path.is_file() and self._recognizer is None:
+                raise VideoMergerError(f"Voiceover für Wortausrichtung fehlt: {path}")
+            audio_sha = self._audio_fingerprint(path) if self.use_cache else "custom-recognizer"
+            transcription_keys.append(_json_digest({
+                "schema": _CACHE_SCHEMA,
+                "audio_sha256": audio_sha,
+                "model": self.model_name,
+                "language": language_code,
+            }))
+        alignment_key = _json_digest({
+            "schema": _CACHE_SCHEMA,
+            "transcriptions": transcription_keys,
+            "durations": [duration for _path, duration in units],
+            "inter_unit_pause": pause,
+            "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
+        })
+        cached_alignment = self._cache_read("alignments", alignment_key)
+        if cached_alignment is not None:
+            self.last_timings.update({
+                "cache_hit": True,
+                "cache_level": "alignment",
+                "total_alignment_seconds": time.perf_counter() - started_total,
+            })
+            return self._result_from_cache(cached_alignment)
+
+        recognized_all: list[RecognizedWord] = []
+        detected_languages: list[str] = []
+        time_cursor = 0.0
+        try:
+            for unit_index, (path, duration) in enumerate(units):
+                recognized, detected = self._transcription_for(path, language_code)
+                recognized_all.extend(
+                    RecognizedWord(
+                        word.text,
+                        word.start + time_cursor,
+                        word.end + time_cursor,
+                        word.confidence,
+                    )
+                    for word in recognized
+                )
+                detected_languages.append(detected)
+                time_cursor += duration
+                if unit_index < len(units) - 1:
+                    time_cursor += pause
+            mapping_started = time.perf_counter()
+            result = self.align_from_recognized(
+                script,
+                recognized_all,
+                detected_languages[0] if detected_languages else language,
+            )
+            result.hard_breaks = [
+                sum(item[1] for item in units[:unit_index]) + pause * unit_index
+                for unit_index in range(1, len(units))
+                if pause > 1e-9
+            ]
+            self.last_timings["forced_mapping_seconds"] = time.perf_counter() - mapping_started
+            self._cache_write("alignments", alignment_key, {
+                "words": [asdict(word) for word in result.words],
+                "language": result.language,
+                "method": result.method,
+                "compatibility": result.compatibility,
+                "average_confidence": result.average_confidence,
+                "warnings": result.warnings,
+                "hard_breaks": result.hard_breaks,
+            })
+            self.last_timings["total_alignment_seconds"] = time.perf_counter() - started_total
+            return result
         except VideoMergerError:
             raise
         except Exception as exc:
