@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 from app.video_merger.gui.main_window import MainWindow
 from app.video_merger.models import ExportSettings
 from app.video_merger.project_order import ProjectOrderStore
+from app.video_merger.settings_store import SettingsStore
 from app.video_merger.target import resolve_export
 from tests.conftest import fake_media
 
@@ -36,6 +37,37 @@ def test_gui_exposes_exact_transition_and_advanced_easing_choices(qt_app):
         assert "professioneller" in window.transition_description.text()
         window.ease_combo.setCurrentIndex(0)
         assert window._settings().transition_ease == "linear"
+    finally:
+        window.close()
+
+
+def test_gui_voiceover_pause_control_constructs_and_updates_settings(qt_app, tmp_path):
+    window = MainWindow()
+    try:
+        # Construction itself is the regression guard for the connected slot.
+        assert window.voiceover_pause_combo.currentData() == pytest.approx(0.7)
+        assert window.voiceover_pause_spin.value() == pytest.approx(0.7)
+        assert window._settings().voiceover_pause == pytest.approx(0.7)
+        assert window.voiceover_pause_spin.isEnabled() is False
+
+        window.voiceover_pause_combo.setCurrentIndex(
+            window.voiceover_pause_combo.findData(1.5)
+        )
+        assert window.voiceover_pause_spin.value() == pytest.approx(1.5)
+        assert window._settings().voiceover_pause == pytest.approx(1.5)
+        assert window.voiceover_pause_spin.isEnabled() is False
+
+        window.voiceover_pause_combo.setCurrentIndex(
+            window.voiceover_pause_combo.findData(-1.0)
+        )
+        window.voiceover_pause_spin.setValue(1.35)
+        assert window._settings().voiceover_pause == pytest.approx(1.35)
+        assert window.voiceover_pause_spin.isEnabled() is True
+
+        # The normal project save/load path keeps the selected custom value.
+        window.store = SettingsStore(tmp_path / "settings.json")
+        window._save_project()
+        assert window.store.load().voiceover_pause == pytest.approx(1.35)
     finally:
         window.close()
 

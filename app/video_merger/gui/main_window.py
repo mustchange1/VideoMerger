@@ -841,6 +841,15 @@ class MainWindow(QMainWindow):
         self.voiceover_paths_list: list[str] = voiceover_units
         self.voiceover_scripts_list: list[str] = script_units
         self._render_voiceover_table()
+        pause_value = max(0.0, min(10.0, float(getattr(self.saved, "voiceover_pause", 0.7))))
+        self.voiceover_pause_spin.setValue(pause_value)
+        pause_index = next(
+            (index for index in range(self.voiceover_pause_combo.count())
+             if abs(float(self.voiceover_pause_combo.itemData(index)) - pause_value) < 1e-9),
+            self.voiceover_pause_combo.findData(-1.0),
+        )
+        self.voiceover_pause_combo.setCurrentIndex(pause_index)
+        self._voiceover_pause_changed()
         mode_index = self.script_mode_combo.findData(self.saved.script_mode)
         self.script_mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
         for combo, value in (
@@ -943,6 +952,7 @@ class MainWindow(QMainWindow):
             voiceover_paths=voiceover_units,
             script_paths=script_units,
             script_mode=str(self.script_mode_combo.currentData()),
+            voiceover_pause=float(self.voiceover_pause_spin.value()),
             music_path=self.music_edit.text().strip(),
             main_video_path=self.main_video_edit.text().strip(),
             intro_path=self.intro_edit.text().strip(),
@@ -1105,6 +1115,22 @@ class MainWindow(QMainWindow):
                 self._append_log(
                     "Untertitel automatisch aktiviert: Voiceover + Script erzeugen SRT, VTT und Burn-In."
                 )
+
+    def _voiceover_pause_changed(self, *_args) -> None:
+        """Apply the selected pause preset or enable the custom value."""
+        data = self.voiceover_pause_combo.currentData()
+        try:
+            value = float(data)
+        except (TypeError, ValueError):
+            value = -1.0
+        if value >= 0.0:
+            self.voiceover_pause_spin.blockSignals(True)
+            self.voiceover_pause_spin.setValue(max(0.0, min(10.0, value)))
+            self.voiceover_pause_spin.blockSignals(False)
+            self.voiceover_pause_spin.setEnabled(False)
+        else:
+            self.voiceover_pause_spin.setEnabled(not getattr(self, "busy", False))
+        self._update_pool_status()
 
     def _music_preset_changed(self) -> None:
         data = self.music_preset_combo.currentData()
