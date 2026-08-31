@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 from app.video_merger.gui.main_window import MainWindow
 from app.video_merger.models import ExportSettings
 from app.video_merger.project_order import ProjectOrderStore
+from app.video_merger.settings_store import SettingsStore
 from app.video_merger.target import resolve_export
 from tests.conftest import fake_media
 
@@ -40,6 +41,37 @@ def test_gui_exposes_exact_transition_and_advanced_easing_choices(qt_app):
         window.close()
 
 
+def test_gui_voiceover_pause_control_constructs_and_updates_settings(qt_app, tmp_path):
+    window = MainWindow()
+    try:
+        # Construction itself is the regression guard for the connected slot.
+        assert window.voiceover_pause_combo.currentData() == pytest.approx(0.7)
+        assert window.voiceover_pause_spin.value() == pytest.approx(0.7)
+        assert window._settings().voiceover_pause == pytest.approx(0.7)
+        assert window.voiceover_pause_spin.isEnabled() is False
+
+        window.voiceover_pause_combo.setCurrentIndex(
+            window.voiceover_pause_combo.findData(1.5)
+        )
+        assert window.voiceover_pause_spin.value() == pytest.approx(1.5)
+        assert window._settings().voiceover_pause == pytest.approx(1.5)
+        assert window.voiceover_pause_spin.isEnabled() is False
+
+        window.voiceover_pause_combo.setCurrentIndex(
+            window.voiceover_pause_combo.findData(-1.0)
+        )
+        window.voiceover_pause_spin.setValue(1.35)
+        assert window._settings().voiceover_pause == pytest.approx(1.35)
+        assert window.voiceover_pause_spin.isEnabled() is True
+
+        # The normal project save/load path keeps the selected custom value.
+        window.store = SettingsStore(tmp_path / "settings.json")
+        window._save_project()
+        assert window.store.load().voiceover_pause == pytest.approx(1.35)
+    finally:
+        window.close()
+
+
 def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
     window = MainWindow()
     try:
@@ -53,11 +85,14 @@ def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
         # 1.2.4: Intro-Original-Audio default "original" (vor 1.2.4 "mute").
         assert window.original_audio_combo.currentData() == "original"
         assert window.outro_audio_combo.currentData() == "original"
+        assert window.transition_combo.currentData() == "cross_dissolve"
+        assert window.transition_spin.value() == 1.0
         # 1.3.0: Main Video End Padding ist eine freie Zahl-Eingabe; der
         # bestehende Standard (~1 Sekunde) bleibt exakt erhalten.
         assert window.end_padding_spin.value() == 1.0
         assert window._settings().final_pause == 1.0
-        assert window.music_volume_slider.value() == 22
+        assert window.music_volume_slider.value() == 44
+        assert window.music_preset_combo.currentData() == ("balanced", 44)
         assert window.ducking_check.isChecked()
         assert window.subtitle_language_combo.currentText() == "German"
         assert window.subtitle_style_combo.currentData() == "long_1"
@@ -124,5 +159,92 @@ def test_gui_move_renumbers_persists_resets_and_locks_during_job(qt_app, tmp_pat
         assert [path.name for path in ProjectOrderStore(state).order(folder, list(reversed(paths)))] == [
             "A.mp4", "B.mp4", "C.mp4"
         ]
+    finally:
+        window.close()
+
+
+def test_gui_global_script_and_order_mode_roundtrip(qt_app, tmp_path):
+    window = MainWindow()
+    try:
+        window.store = SettingsStore(tmp_path / "settings.json")
+        voices = [tmp_path / "voice_2.wav", tmp_path / "voice_1.wav"]
+        global_script = tmp_path / "CompleteScript.txt"
+        window.voiceover_paths_list = [str(path) for path in voices]
+        window.voiceover_scripts_list = ["", ""]
+        window.subtitle_check.setChecked(False)
+        window.global_script_edit.setText(str(global_script))
+        assert window.subtitle_check.isChecked()
+        window.voiceover_order_combo.setCurrentIndex(window.voiceover_order_combo.findData("manual"))
+        window._render_voiceover_table()
+
+        settings = window._settings()
+        assert settings.global_script_path == str(global_script)
+        assert settings.script_mode == "single"
+        assert settings.script_paths == [str(global_script)]
+        assert settings.voiceover_order_mode == "manual"
+        window._save_project()
+        saved = window.store.load()
+        assert saved.global_script_path == str(global_script)
+        assert saved.voiceover_order_mode == "manual"
+
+        window.saved = saved
+        window._load_settings()
+        assert window.global_script_edit.text() == str(global_script)
+        assert window.voiceover_order_combo.currentData() == "manual"
+    finally:
+        window.close()
+
+
+def test_gui_delete_all_voiceovers_clears_project_only(qt_app, tmp_path):
+    source_files = [tmp_path / "voice_1.wav", tmp_path / "voice_2.wav"]
+    for path in source_files:
+        path.write_bytes(b"source")
+    global_script = tmp_path / "complete.txt"
+    global_script.write_text("spoken words", encoding="utf-8")
+
+    window = MainWindow()
+    try:
+        window.store = SettingsStore(tmp_path / "settings.json")
+        window.voiceover_paths_list = [str(path) for path in source_files]
+        window.voiceover_scripts_list = [str(tmp_path / "voice_1.txt"), ""]
+        window.global_script_edit.setText(str(global_script))
+        window.script_mode_combo.setCurrentIndex(window.script_mode_combo.findData("matched"))
+        window.voiceover_order_combo.setCurrentIndex(window.voiceover_order_combo.findData("manual"))
+        window.voiceover_pause_combo.setCurrentIndex(window.voiceover_pause_combo.findData(1.5))
+        window._render_voiceover_table()
+        window._delete_all_voiceovers()
+
+        assert window.voiceover_paths_list == []
+        assert window.voiceover_scripts_list == []
+        assert window.global_script_edit.text() == ""
+        assert window.script_mode_combo.currentData() == "single"
+        assert window.voiceover_order_combo.currentData() == "natural"
+        assert window.voiceover_pause_combo.currentData() == pytest.approx(0.7)
+        assert not window.subtitle_check.isChecked()
+        assert window.voiceover_table.rowCount() == 0
+        saved = window.store.load()
+        assert saved.voiceover_paths == []
+        assert saved.script_paths == []
+        assert saved.global_script_path == ""
+        assert all(path.is_file() for path in source_files)
+    finally:
+        window.close()
+
+
+def test_gui_clear_all_scripts_preserves_voiceover_rows(qt_app, tmp_path):
+    voices = [tmp_path / "voice_1.wav", tmp_path / "voice_2.wav"]
+    window = MainWindow()
+    try:
+        window.store = SettingsStore(tmp_path / "settings.json")
+        window.voiceover_paths_list = [str(path) for path in voices]
+        window.voiceover_scripts_list = ["first.txt", "second.txt"]
+        window.global_script_edit.setText("complete.txt")
+        window._render_voiceover_table()
+        window._clear_all_scripts()
+        assert window.voiceover_paths_list == [str(path) for path in voices]
+        assert window.voiceover_scripts_list == ["", ""]
+        assert window.global_script_edit.text() == ""
+        assert window.voiceover_table.rowCount() == 2
+        assert all(window.voiceover_table.item(row, 2).text() == "— no script —" for row in range(2))
     finally:
         window.close()

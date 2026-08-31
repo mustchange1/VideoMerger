@@ -105,7 +105,7 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 
 ### Windows-sichere Filterpfade
 
-`filter_escape.filter_file_value()` ist die einzige Stelle für Dateipfade im Filtergraph. FFmpeg läuft mit `cwd = project_root()` (`engine._execute(..., working_directory)`); alle Render-Dateien (staged ASS unter `temp/`, `tools/fonts`, Quote-Font) bekommen relative ASCII-Werte. Außerhalb des Ankers: UNQUOTED + Zwei-Stufen-Escape (apostrophe-sicher). `command_builder._filter_path`, `quote._filter_path_for` und `engine.burn_subtitles` nutzen ausschließlich diesen Einstiegspunkt.
+`filter_escape.filter_file_value()` ist die einzige Stelle für Dateipfade im Filtergraph. FFmpeg läuft mit `cwd = project_root()` (`engine._execute(..., working_directory)`); alle Render-Dateien (staged ASS unter `temp/` und `tools/fonts`) bekommen relative ASCII-Werte. Außerhalb des Ankers: UNQUOTED + Zwei-Stufen-Escape (apostrophe-sicher). `command_builder._filter_path` und `engine.burn_subtitles` nutzen ausschließlich diesen Einstiegspunkt.
 
 ### Dauer-Fit, Speed, End-Padding
 
@@ -115,9 +115,9 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 
 `create_main` rendert zuerst das saubere Master (`_no_subtitles.mp4`), dann brennt `engine.burn_subtitles()` die ASS in die primäre Datei (libass-Pass, Audio Stream-Copy, identische Encoder-Argumente). SRT/VTT liegen im Output; Timeline-JSON und Verifikations-PNGs bleiben unter `temp/`. `create_complete` reserviert beide FinalVideo-Namen vorab, rendert die primäre (untertitelte) Komposition aus dem untertitelten Main und die Clean-Variante aus dem sauberen Main.
 
-### Quote-Karten-Stile
+### Quote-/Flyer-Artwork
 
-`quote.QUOTE_STYLES` (fünf `QuoteStyleSpec`) definieren Hintergrund/Text/Attribution/Hairline/Korn/Default-Font; `layout_quote(...)` nimmt alle manuellen Regler keyword-only an (Geometrie-erhaltende Defaults). `quote_video_chain()` setzt stilabhängig Vignette/Korn/Hairline/drawtext/zoompan (d=1 → Dauer exakt) und bleibt stumm (anullsrc). `add_outro` validiert die freie Dauer 0,5–5,0 s und kann die Übergänge um die Karte separat begrenzen (`quote_transition_duration`, gleiche 45-%-Clamp-Regel).
+`quote_artwork.quote_artwork_path()` akzeptiert ausschließlich PDF, PNG, JPG, JPEG und WEBP und meldet fehlende, nicht lesbare oder nicht unterstützte Dateien explizit. Rasterbilder werden direkt als ein realer, geloopter Stage-2-Bildeingang verwendet. PDFs werden seitengeprüft und mit PyMuPDF output-aware in eine render-only PNG-Datei gerastert; `cleanup_prepared_quote_artwork()` entfernt diese Datei in `finally`, ohne die Quelle anzutasten. `command_builder` verwendet Fit (Contain + Letterbox), Fill (Cover + Center-Crop) oder Crop (zuerst aspect-safe zuschneiden, dann skalieren), nie eine nicht-uniforme Dehnung. Der Abschnitt hat eine eigene `anullsrc`-Audiospur und erhält keine Voiceover-, Musik-, Subtitle- oder Main-Audio-Spur. `add_outro` fügt ihn nur bei aktiviertem, gültigem Artwork zwischen Intro und Main ein; ohne Artwork bleibt der alte Textpfad ausgeschlossen und es gibt keinen generierten Fallback. Quote-only-Einstellungen sind nicht Bestandteil von `render_cache.stage1_fingerprint()`.
 
 ### Lokale YouTube-Metadaten
 

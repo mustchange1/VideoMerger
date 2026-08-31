@@ -94,7 +94,6 @@ def test_media_analyzer_cache_is_stat_keyed_and_reused(tmp_path):
                                      "channel_layout": "stereo"},
             "is_hdr": False, "color_primaries": "", "color_transfer": "",
             "color_space": "", "warnings": [], "source_duration": 0.0,
-            "is_generated_quote": False,
         },
     }
     path = tmp_path / "clip.mp4"

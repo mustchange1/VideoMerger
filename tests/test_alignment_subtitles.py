@@ -81,13 +81,14 @@ def test_word_timestamps_follow_actual_recognized_boundaries_not_equal_division(
     assert result.words[2].end - result.words[2].start > result.words[0].end - result.words[0].start
 
 
-def test_mismatch_produces_prominent_warning_without_replacing_script(tmp_path):
+def test_mismatch_omits_unmatched_script_without_fabricated_timestamps(tmp_path):
     result = LocalWordAligner(
         "tiny", _recognizer([("completely", .1, .4, .8), ("different", .5, .9, .8)], "en")
     ).align("Authoritative script words stay here.", tmp_path / "voice.wav", "English")
     assert result.compatibility < .72
     assert any("appear to differ" in warning for warning in result.warnings)
-    assert "Authoritative" == result.words[0].text
+    assert result.words == []
+    assert all(word.confidence > 0 for word in result.words)
 
 
 def _perfect_alignment(script: str) -> AlignmentResult:
@@ -131,6 +132,19 @@ def test_srt_vtt_are_monotonic_valid_youtube_tracks_and_end_with_program(tmp_pat
     assert vtt.read_text(encoding="utf-8").startswith("WEBVTT")
     validate_cues(cues, len(alignment.words))
     assert cues[-1].end < 20
+
+
+def test_empty_reliable_alignment_writes_valid_empty_sidecars(tmp_path):
+    alignment = AlignmentResult([], "en", "no reliable matches", 0.0, 0.0)
+    cues = build_cues("Nothing can be trusted here.", alignment, "long_1")
+    assert cues == []
+    srt, vtt = tmp_path / "empty.srt", tmp_path / "empty.vtt"
+    write_srt(cues, srt)
+    write_vtt(cues, vtt)
+    validate_subtitle_file(srt, "srt")
+    validate_subtitle_file(vtt, "vtt")
+    assert srt.read_text(encoding="utf-8") == "\n"
+    assert vtt.read_text(encoding="utf-8") == "WEBVTT\n\n"
 
 
 def test_short_and_long_scripts_keep_every_word_without_orphans():

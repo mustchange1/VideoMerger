@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -203,6 +204,7 @@ class LocalWordAligner:
             compatibility=float(data["compatibility"]),
             average_confidence=float(data["average_confidence"]),
             warnings=[str(item) for item in data.get("warnings", [])],
+            hard_breaks=[float(item) for item in data.get("hard_breaks", [])],
         )
 
     def _transcription_for(
@@ -251,6 +253,114 @@ class LocalWordAligner:
             words, detected = self._transcription_for(path, language_code)
             self.last_timings["total_alignment_seconds"] = time.perf_counter() - started_total
             return words, detected
+        except VideoMergerError:
+            raise
+        except Exception as exc:
+            raise VideoMergerError(f"Lokale Voiceover-Ausrichtung fehlgeschlagen: {exc}") from exc
+
+    def align_global(
+        self,
+        script: str,
+        units: Iterable[tuple[Path, float]],
+        language: str = "German",
+        inter_unit_pause: float = 0.7,
+    ) -> AlignmentResult:
+        """Map one script onto an ordered multi-voiceover acoustic timeline.
+
+        Each source transcription remains independently cacheable because
+        faster-whisper accepts files, but the script mapping itself happens
+        exactly once over the logical concatenated timeline. The cache key
+        includes the ordered source identities, their durations, and the real
+        inter-unit pause, so a pause/order change cannot reuse stale timestamps.
+        """
+        started_total = time.perf_counter()
+        self.last_timings = {
+            "model_loading_seconds": 0.0,
+            "transcription_seconds": 0.0,
+            "forced_mapping_seconds": 0.0,
+            "cache_hit": False,
+            "cache_level": "none",
+        }
+        language_code = {"German": "de", "English": "en", "Auto": None}.get(language)
+        if language not in {"German", "English", "Auto"}:
+            raise VideoMergerError(f"Unbekannte Untertitelsprache: {language}")
+        units = [(Path(path).expanduser().resolve(), float(duration)) for path, duration in units]
+        if not units:
+            raise VideoMergerError("Für das globale Alignment wurde kein Voiceover übergeben.")
+        pause = max(0.0, min(10.0, float(inter_unit_pause)))
+
+        # Build the complete cache identity before ASR. A cache hit therefore
+        # avoids both repeated recognition and repeated global script mapping.
+        transcription_keys: list[str] = []
+        for path, duration in units:
+            if not path.is_file() and self._recognizer is None:
+                raise VideoMergerError(f"Voiceover für Wortausrichtung fehlt: {path}")
+            audio_sha = self._audio_fingerprint(path) if self.use_cache else "custom-recognizer"
+            transcription_keys.append(_json_digest({
+                "schema": _CACHE_SCHEMA,
+                "audio_sha256": audio_sha,
+                "model": self.model_name,
+                "language": language_code,
+            }))
+        alignment_key = _json_digest({
+            "schema": _CACHE_SCHEMA,
+            "transcriptions": transcription_keys,
+            "durations": [duration for _path, duration in units],
+            "inter_unit_pause": pause,
+            "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
+        })
+        cached_alignment = self._cache_read("alignments", alignment_key)
+        if cached_alignment is not None:
+            self.last_timings.update({
+                "cache_hit": True,
+                "cache_level": "alignment",
+                "total_alignment_seconds": time.perf_counter() - started_total,
+            })
+            return self._result_from_cache(cached_alignment)
+
+        recognized_all: list[RecognizedWord] = []
+        detected_languages: list[str] = []
+        time_cursor = 0.0
+        try:
+            for unit_index, (path, duration) in enumerate(units):
+                recognized, detected = self._transcription_for(path, language_code)
+                recognized_all.extend(
+                    RecognizedWord(
+                        word.text,
+                        word.start + time_cursor,
+                        word.end + time_cursor,
+                        word.confidence,
+                    )
+                    for word in recognized
+                )
+                detected_languages.append(detected)
+                time_cursor += duration
+                if unit_index < len(units) - 1:
+                    time_cursor += pause
+            mapping_started = time.perf_counter()
+            result = self.align_from_recognized(
+                script,
+                recognized_all,
+                detected_languages[0] if detected_languages else language,
+            )
+            pause_breaks = [
+                sum(item[1] for item in units[:unit_index]) + pause * unit_index
+                for unit_index in range(1, len(units))
+                if pause > 1e-9
+            ]
+            result.hard_breaks = sorted(set(result.hard_breaks + pause_breaks))
+            self.last_timings["forced_mapping_seconds"] = time.perf_counter() - mapping_started
+            self._cache_write("alignments", alignment_key, {
+                "words": [asdict(word) for word in result.words],
+                "language": result.language,
+                "method": result.method,
+                "compatibility": result.compatibility,
+                "average_confidence": result.average_confidence,
+                "warnings": result.warnings,
+                "hard_breaks": result.hard_breaks,
+            })
+            self.last_timings["total_alignment_seconds"] = time.perf_counter() - started_total
+            return result
         except VideoMergerError:
             raise
         except Exception as exc:
@@ -319,81 +429,124 @@ class LocalWordAligner:
         recognized: Iterable[RecognizedWord],
         detected_language: str,
     ) -> AlignmentResult:
+        """Keep only script words with a real, reliable acoustic match.
+
+        SequenceMatcher supplies lexical correspondences, but it is never
+        allowed to manufacture a timestamp for a script-only or unrecognized
+        word. Gaps in the returned word list are intentional: subtitle cues
+        built from it omit those regions and can resume at a later match.
+        """
         spans = script_word_spans(script)
         asr = [word for word in recognized if _normalize(word.text)]
         if not spans:
-            raise VideoMergerError("Das Skript enthält keine ausrichtbaren Wörter.")
+            return AlignmentResult(
+                words=[], language=detected_language, method="no script words",
+                compatibility=1.0, average_confidence=0.0,
+                warnings=["The supplied script contains no alignable words."],
+            )
         if not asr:
-            raise VideoMergerError("Im Voiceover wurden keine gesprochenen Wörter mit Zeitstempeln erkannt.")
+            return AlignmentResult(
+                words=[], language=detected_language,
+                method=f"faster-whisper/{self.model_name} no acoustic words matched",
+                compatibility=0.0, average_confidence=0.0,
+                warnings=["No acoustic words with usable timestamps were recognized; subtitles omitted."],
+            )
         script_norm = [_normalize(token) for token, _start, _end in spans]
         asr_norm = [_normalize(word.text) for word in asr]
         matcher = SequenceMatcher(a=script_norm, b=asr_norm, autojunk=False)
-        mapping: dict[int, int] = {}
+        lexical_mapping: dict[int, int] = {}
         for block in matcher.get_matching_blocks():
             for offset in range(block.size):
-                mapping[block.a + offset] = block.b + offset
+                lexical_mapping[block.a + offset] = block.b + offset
         compatibility = matcher.ratio()
 
-        starts: list[float | None] = [None] * len(spans)
-        ends: list[float | None] = [None] * len(spans)
-        confidences = [0.0] * len(spans)
-        for script_index, asr_index in mapping.items():
-            starts[script_index] = max(0.0, asr[asr_index].start)
-            ends[script_index] = max(asr[asr_index].start + 0.02, asr[asr_index].end)
-            confidences[script_index] = asr[asr_index].confidence
+        # A mapping is usable only when the recognizer supplied a finite,
+        # positive-duration timestamp and a positive confidence. In particular,
+        # confidence 0.0 is not converted into a synthetic subtitle word.
+        words: list[WordTiming] = []
+        matched_pairs: list[tuple[int, int, WordTiming]] = []
+        matched_script_indexes: set[int] = set()
+        matched_asr_indexes: set[int] = set()
+        for script_index, asr_index in lexical_mapping.items():
+            acoustic = asr[asr_index]
+            try:
+                start = float(acoustic.start)
+                end = float(acoustic.end)
+                confidence = float(acoustic.confidence)
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(start) and math.isfinite(end) and math.isfinite(confidence)):
+                continue
+            if end <= start or confidence <= 0.0:
+                continue
+            token, char_start, char_end = spans[script_index]
+            start = max(0.0, start)
+            end = max(start + 0.02, end)
+            words.append(WordTiming(
+                text=token,
+                start=start,
+                end=end,
+                confidence=confidence,
+                script_start=char_start,
+                script_end=char_end,
+            ))
+            matched_pairs.append((script_index, asr_index, words[-1]))
+            matched_script_indexes.add(script_index)
+            matched_asr_indexes.add(asr_index)
+        # Matching blocks are monotone, but sort defensively so injected or
+        # cached recognizers cannot make the canonical timeline regress.
+        matched_pairs.sort(key=lambda pair: (pair[2].start, pair[2].end, pair[2].script_start))
+        words = [pair[2] for pair in matched_pairs]
 
-        # Only unmatched lexical runs are constrained between neighboring real
-        # acoustic anchors. Whole-script equal division and character-count
-        # estimates are never used.
+        warnings: list[str] = []
+        unmatched_script = len(spans) - len(matched_script_indexes)
+        unmatched_audio_indexes = set(range(len(asr))) - matched_asr_indexes
+        unmatched_audio = len(unmatched_audio_indexes)
+        # Mark each contiguous uncaptioned acoustic run as a real subtitle
+        # boundary. This prevents a cue before an omitted spoken section from
+        # remaining visible until a later matched word.
+        acoustic_gaps: list[float] = []
         index = 0
-        while index < len(spans):
-            if starts[index] is not None:
+        while index < len(asr):
+            if index not in unmatched_audio_indexes:
                 index += 1
                 continue
             first = index
-            while index < len(spans) and starts[index] is None:
+            while index < len(asr) and index in unmatched_audio_indexes:
                 index += 1
             last = index - 1
-            left_end = ends[first - 1] if first > 0 and ends[first - 1] is not None else None
-            right_start = starts[index] if index < len(spans) and starts[index] is not None else None
-            count = last - first + 1
-            if left_end is None and right_start is not None:
-                run_start = max(0.0, right_start - 0.28 * count)
-                run_end = right_start
-            elif right_start is None and left_end is not None:
-                run_start = left_end
-                run_end = left_end + 0.28 * count
-            elif left_end is not None and right_start is not None:
-                run_start, run_end = left_end, max(left_end + 0.04 * count, right_start)
-            else:
-                run_start, run_end = asr[0].start, asr[-1].end
-            step = max(0.04, (run_end - run_start) / count)
-            for offset, word_index in enumerate(range(first, last + 1)):
-                starts[word_index] = run_start + offset * step
-                ends[word_index] = min(run_end, run_start + (offset + 1) * step)
-                confidences[word_index] = 0.0
-
-        words: list[WordTiming] = []
-        cursor = 0.0
-        for idx, ((token, char_start, char_end), start, end) in enumerate(zip(spans, starts, ends)):
-            actual_start = max(cursor, float(start or 0.0))
-            actual_end = max(actual_start + 0.02, float(end or actual_start + 0.08))
-            words.append(WordTiming(
-                text=token, start=actual_start, end=actual_end,
-                confidence=confidences[idx], script_start=char_start, script_end=char_end,
-            ))
-            cursor = actual_start + 0.001
-
-        warnings: list[str] = []
-        unmatched = len(spans) - len(mapping)
+            for timestamp in (asr[first].start, asr[last].end):
+                try:
+                    timestamp = float(timestamp)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(timestamp):
+                    acoustic_gaps.append(max(0.0, timestamp))
+        # A script-only omission can occur even when every recognized acoustic
+        # word was itself matched. Split at the next reliable anchor so a cue
+        # cannot silently jump over the unreliable interval, while keeping all
+        # timestamps sourced from real acoustic words.
+        for previous, current in zip(matched_pairs, matched_pairs[1:]):
+            if current[0] != previous[0] + 1 or current[1] != previous[1] + 1:
+                try:
+                    boundary = float(current[2].start)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(boundary):
+                    acoustic_gaps.append(max(0.0, boundary))
         if compatibility < 0.72:
             warnings.append(
-                "The supplied script and voiceover appear to differ. Subtitle synchronization may be inaccurate."
+                "The supplied script and voiceover appear to differ; only reliable matching words were subtitled."
             )
-        if unmatched:
+        if unmatched_script:
             warnings.append(
-                f"Subtitle alignment warning: {unmatched} script word(s) could not be confidently matched "
-                "and were constrained between neighboring acoustic timestamps."
+                f"Subtitle alignment warning: {unmatched_script} script word(s) were omitted because no reliable "
+                "acoustic match and timestamp were available."
+            )
+        if unmatched_audio:
+            warnings.append(
+                f"Subtitle alignment warning: {unmatched_audio} spoken word(s) were left without subtitles because "
+                "they were not present in the supplied script or were not reliably matched."
             )
         large_gaps = [
             right.start - left.end for left, right in zip(words, words[1:])
@@ -403,12 +556,13 @@ class LocalWordAligner:
             warnings.append(
                 f"Subtitle alignment warning: {len(large_gaps)} unusually large speech gap(s) detected."
             )
-        average = sum(word.confidence for word in words) / len(words)
+        average = sum(word.confidence for word in words) / len(words) if words else 0.0
         return AlignmentResult(
             words=words,
             language=detected_language,
-            method=f"faster-whisper/{self.model_name} word timestamps + script-forced mapping",
+            method=f"faster-whisper/{self.model_name} word timestamps + reliable script mapping",
             compatibility=compatibility,
             average_confidence=average,
             warnings=warnings,
+            hard_breaks=sorted(set(acoustic_gaps)),
         )

@@ -77,16 +77,31 @@ def build_cues(
     """
     preset = get_preset(preset_key)
     words = alignment.words
+    # A complete mismatch is valid output: the audio still renders, while the
+    # subtitle track simply contains no cues. Partial matches are represented
+    # by gaps in ``words`` and resume at later reliable acoustic matches.
     if not words:
-        raise VideoMergerError("Keine Wortzeitstempel für Untertitel vorhanden.")
+        return []
     size = _font_size(width, height, preset)
     width_ratio = .86 if preset.collection == "long" else .90
     available_width = max(40.0, width * width_ratio)
+    # Caption grouping and later long-form rebalancing must share this guard;
+    # otherwise a repair merge could accidentally cross an inter-unit pause.
+    hard_breaks = sorted(float(value) for value in getattr(alignment, "hard_breaks", []))
 
     def fits(group: list[WordTiming]) -> bool:
         if len(group) > preset.max_words:
             return False
-        exact = _clean_text(script[group[0].script_start:group[-1].script_end])
+        if any(
+            left.start < boundary <= right.start
+            for left, right in zip(group, group[1:])
+            for boundary in hard_breaks
+        ):
+            return False
+        # Only words present in the canonical alignment may reach a cue. Using
+        # the enclosing script slice here would re-introduce unmatched text
+        # between two valid anchors.
+        exact = _clean_text(" ".join(word.text for word in group))
         # max_chars is a guard only; real selected-font geometry is authoritative.
         if len(exact) > max(preset.max_chars, 24) * 2:
             return False
@@ -94,11 +109,17 @@ def build_cues(
 
     groups: list[list[WordTiming]] = []
     current: list[WordTiming] = []
+    # A multi-voiceover pause is an actual quiet interval, not an end pad.
+    # Never keep a caption alive across a substantial acoustic gap: doing so
+    # would display the previous unit's subtitle while the next unit is silent.
     for word in words:
         candidate = current + [word]
         sentence_end = bool(re.search(r"[.!?…][\"”’)]?$", word.text))
         clause_end = bool(re.search(r"[,;:][\"”’)]?$", word.text))
-        if current and not fits(candidate):
+        gap_break = bool(
+            current and any(current[-1].start < boundary <= word.start for boundary in hard_breaks)
+        )
+        if current and (gap_break or not fits(candidate)):
             groups.append(current)
             current = [word]
         else:
@@ -131,11 +152,22 @@ def build_cues(
             if not merged and index > 0 and len(groups[index - 1]) >= 3:
                 # Rebalance 10+1 style boundaries to 9+2 without changing any
                 # acoustic timestamps or crossing the two-line geometry limit.
-                groups[index].insert(0, groups[index - 1].pop())
+                moved = groups[index - 1].pop()
+                groups[index].insert(0, moved)
                 merged = fits(groups[index - 1]) and fits(groups[index])
+                if not merged:
+                    groups[index].pop(0)
+                    groups[index - 1].append(moved)
             if not merged and index + 1 < len(groups) and len(groups[index + 1]) >= 3:
-                groups[index].append(groups[index + 1].pop(0))
+                # Only the resulting groups must fit; the two original groups
+                # need not fit together. The ``fits`` guard still prevents
+                # crossing a hard acoustic boundary.
+                moved = groups[index + 1].pop(0)
+                groups[index].append(moved)
                 merged = fits(groups[index]) and fits(groups[index + 1])
+                if not merged:
+                    groups[index].pop()
+                    groups[index + 1].insert(0, moved)
             if not merged:
                 # A single extreme token may be unavoidable; retain it rather
                 # than losing or fabricating authoritative script text.
@@ -161,11 +193,19 @@ def build_cues(
                 groups[index].extend(groups.pop(index + 1))
                 merged = True
             elif index > 0 and len(groups[index - 1]) >= 4:
-                groups[index].insert(0, groups[index - 1].pop())
+                moved = groups[index - 1].pop()
+                groups[index].insert(0, moved)
                 merged = fits(groups[index - 1]) and fits(groups[index])
+                if not merged:
+                    groups[index].pop(0)
+                    groups[index - 1].append(moved)
             elif index + 1 < len(groups) and len(groups[index + 1]) >= 4:
-                groups[index].append(groups[index + 1].pop(0))
+                moved = groups[index + 1].pop(0)
+                groups[index].append(moved)
                 merged = fits(groups[index]) and fits(groups[index + 1])
+                if not merged:
+                    groups[index].pop()
+                    groups[index + 1].insert(0, moved)
             if not merged:
                 index += 1
 
@@ -178,10 +218,19 @@ def build_cues(
         next_start = groups[index][0].start if index < len(groups) else None
         desired_end = group[-1].end + (0.18 if preset.collection == "long" else 0.10)
         end = min(desired_end, next_start - 0.01) if next_start is not None else desired_end
+        # A hard boundary is an acoustic silence boundary, so even a generous
+        # long-form display allowance must end before it.
+        boundary_after_group = next(
+            (boundary for boundary in hard_breaks
+             if group[-1].start < boundary and (next_start is None or boundary <= next_start)),
+            None,
+        )
+        if boundary_after_group is not None:
+            end = min(end, boundary_after_group - 0.01)
         if program_end is not None:
             end = min(end, float(program_end))
         end = max(start + 0.02, end)
-        text = _clean_text(script[group[0].script_start:group[-1].script_end])
+        text = _clean_text(" ".join(word.text for word in group))
         cues.append(SubtitleCue(index, start, end, text, group, split, 2 if split else 1))
     validate_cues(cues, len(words))
     return cues
@@ -219,12 +268,22 @@ def _vtt_time(seconds: float) -> str:
 
 def write_srt(cues: list[SubtitleCue], path: Path) -> None:
     validate_cues(cues)
-    path.write_text("\n".join(f"{c.index}\n{_srt_time(c.start)} --> {_srt_time(c.end)}\n{c.text}\n" for c in cues), encoding="utf-8", newline="\n")
+    body = "\n".join(
+        f"{c.index}\n{_srt_time(c.start)} --> {_srt_time(c.end)}\n{c.text}\n" for c in cues
+    )
+    # An empty, valid SRT is useful when all script text is unmatched: the
+    # audio still renders and the sidecar explicitly contains no captions.
+    path.write_text(body if body else "\n", encoding="utf-8", newline="\n")
 
 
 def write_vtt(cues: list[SubtitleCue], path: Path) -> None:
     validate_cues(cues)
-    path.write_text("WEBVTT\n\n" + "\n".join(f"{_vtt_time(c.start)} --> {_vtt_time(c.end)}\n{c.text}\n" for c in cues), encoding="utf-8", newline="\n")
+    path.write_text(
+        "WEBVTT\n\n" + "\n".join(
+            f"{_vtt_time(c.start)} --> {_vtt_time(c.end)}\n{c.text}\n" for c in cues
+        ),
+        encoding="utf-8", newline="\n",
+    )
 
 
 def validate_subtitle_file(path: Path, kind: str) -> None:
@@ -232,6 +291,8 @@ def validate_subtitle_file(path: Path, kind: str) -> None:
     if kind == "vtt" and not text.startswith("WEBVTT"):
         raise VideoMergerError("VTT-Validierung fehlgeschlagen: WEBVTT-Kopf fehlt.")
     if text.count(" --> ") <= 0:
+        if (kind == "srt" and not text.strip()) or (kind == "vtt" and text.strip() == "WEBVTT"):
+            return
         raise VideoMergerError(f"{kind.upper()}-Validierung fehlgeschlagen: keine Zeitstempel.")
 
 
@@ -244,13 +305,17 @@ def write_canonical_timeline(script: str, alignment: AlignmentResult, cues: list
         "method": alignment.method,
         "compatibility": alignment.compatibility,
         "average_confidence": alignment.average_confidence,
+        "hard_breaks": alignment.hard_breaks,
         "words": [asdict(word) for word in alignment.words],
         "cues": [{
             "index": cue.index, "start": cue.start, "end": cue.end, "text": cue.text,
             "word_indexes": [alignment.words.index(word) for word in cue.words],
             "line_break_after": cue.line_break_after, "line_count": cue.line_count,
         } for cue in cues],
-        "verification_word_indexes": [0, len(alignment.words) // 2, len(alignment.words) - 1],
+        "verification_word_indexes": (
+            [0, len(alignment.words) // 2, len(alignment.words) - 1]
+            if alignment.words else []
+        ),
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
 

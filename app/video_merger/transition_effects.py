@@ -35,7 +35,7 @@ _VALID_EASES = {key for key, _label in EASE_OPTIONS}
 
 
 def normalize_transition(value: str) -> str:
-    return value if value in _VALID_TRANSITIONS else "smooth_blur"
+    return value if value in _VALID_TRANSITIONS else "cross_dissolve"
 
 
 def normalize_ease(value: str) -> str:

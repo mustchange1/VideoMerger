@@ -39,7 +39,7 @@ Escape table (unquoted, two passes), escaping backslashes FIRST:
 
 Everything else (spaces, '=', '&', umlauts, '%%', ...) passes through as-is.
 Percent signs are NOT doubled: all drawtext instances in this project are
-emitted with ``expansion=none`` (see quote.py), which keeps the text
+emitted with ``expansion=none`` (see the Stage-2 artwork filter graph), which keeps the text
 byte-for-byte literal and also avoids the modern engine's hard "Stray %"
 failure mode (n8.x: a stray '%' makes drawtext log an error and render
 nothing at all, while the process still exits 0).
@@ -98,7 +98,7 @@ def escape_quoted_value(value: str) -> str:
 # The fix removes the failure surface instead of escaping harder:
 #
 # 1. Render-time files referenced by the filtergraph (staged ASS subtitle
-#    file, bundled fonts directory, quote-card font file) are always created
+#    file and bundled fonts directory) are always created
 #    by this application itself under the project root with app-controlled
 #    ASCII names (``temp/<stem>_burn.ass``, ``tools/fonts``).  When the file
 #    lies under the anchor directory (the FFmpeg working directory), the
