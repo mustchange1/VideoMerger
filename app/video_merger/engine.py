@@ -30,6 +30,7 @@ from .platform_utils import format_command_for_log, hidden_process_flags, safe_s
 from .progress import ProgressTracker
 from .quality import effective_quality
 from .target import resolve_export
+from .timeline import after_merge_enabled, duration_after_merge_value, duration_before_merge_value
 from .transition_effects import transition_label
 from .validation import validate_output
 
@@ -155,6 +156,33 @@ class VideoMergerEngine:
         export_started = time.perf_counter()
         self.last_timings = {}
         cancel_event = cancel_event or threading.Event()
+        # Direct/basic callers may pass raw MediaInfo instead of the fitted
+        # Stage-1 sequence produced by MainProjectEngine. Apply the canonical
+        # Before Merge multiplier here as a safety net, but never touch a
+        # sequence that already carries per-occurrence playback rates.
+        before_merge = duration_before_merge_value(settings)
+        has_per_occurrence_rate = any(
+            not item.is_quote_artwork and abs(float(getattr(item, "playback_rate", 1.0) or 1.0) - 1.0) > 1e-6
+            for item in media
+        )
+        if settings.workflow_stage != "outro" and not has_per_occurrence_rate and str(
+            getattr(settings, "video_order_mode", "folder_alternating")
+        ) != "manual":
+            from .video_pool import folder_aware_order
+            media = folder_aware_order(media)
+        if settings.workflow_stage != "outro" and abs(before_merge - 1.0) > 1e-6 and not has_per_occurrence_rate:
+            prepared_media = []
+            for item in media:
+                if item.is_quote_artwork:
+                    prepared_media.append(item)
+                    continue
+                source = item.source_duration or item.duration
+                prepared_media.append(replace(
+                    item, source_duration=source, duration=max(0.12, source / before_merge),
+                    playback_rate=before_merge,
+                ))
+            media = prepared_media
+            resolved = self.make_plan(media, settings, log)
         preflight_started = time.perf_counter()
         self.preflight(log)
         self.last_timings["preflight_seconds"] = time.perf_counter() - preflight_started
@@ -213,6 +241,16 @@ class VideoMergerEngine:
                     media, settings, resolved, output_path, built.command,
                     progress, log, cancel_event, workdir,
                 )
+                if settings.workflow_stage == "main" and after_merge_enabled(settings):
+                    final_expected = resolved.expected_duration / duration_after_merge_value(settings)
+                    resolved.expected_duration = final_expected
+                    self.post_process_duration(
+                        output_path, resolved, settings, media,
+                        progress=progress, log=log, cancel_event=cancel_event,
+                    )
+                    chunk_report = validate_output(output_path, self.ffprobe_path, resolved)
+                    if not chunk_report.ok:
+                        raise ValidationError("After Merge validation failed. " + " ".join(chunk_report.details))
                 self.last_timings["engine_total_seconds"] = time.perf_counter() - export_started
                 export_succeeded = True
                 return chunk_report
@@ -244,6 +282,15 @@ class VideoMergerEngine:
             self.last_timings["ffmpeg_rendering_seconds"] = time.perf_counter() - render_started
             if cancel_event.is_set():
                 raise ExportCancelled("Export wurde abgebrochen.")
+            if settings.workflow_stage == "main" and after_merge_enabled(settings):
+                # Keep the pre-post timeline target for the normal graph; the
+                # public resolved plan is then advanced to the actual final
+                # duration for validation, subtitle burn-in, and cache reuse.
+                resolved.expected_duration = resolved.expected_duration / duration_after_merge_value(settings)
+                self.post_process_duration(
+                    output_path, resolved, settings, media,
+                    progress=progress, log=log, cancel_event=cancel_event,
+                )
             log("Validiere Ausgabedatei mit FFprobe …")
             validation_started = time.perf_counter()
             report = validate_output(output_path, self.ffprobe_path, resolved)
@@ -274,6 +321,70 @@ class VideoMergerEngine:
                 graph_path.unlink(missing_ok=True)
             elif graph_path.exists():
                 log(f"Diagnose-Filtergraph wurde nach dem Fehler aufbewahrt: {graph_path}")
+
+    def post_process_duration(
+        self,
+        input_path: Path,
+        resolved: ResolvedExport,
+        settings: ExportSettings,
+        media: list[MediaInfo],
+        progress: ProgressCallback = lambda _event: None,
+        log: LogCallback = lambda _message: None,
+        cancel_event: threading.Event | None = None,
+    ) -> ValidationReport:
+        """Apply the independent After Merge multiplier to a finished master.
+
+        This is deliberately a second FFmpeg operation. It changes the
+        complete already-merged program (video, voiceover, music and any
+        burned subtitles together), unlike Before Merge which changes each
+        selected visual occurrence during timeline construction.
+        """
+        cancel_event = cancel_event or threading.Event()
+        rate = duration_after_merge_value(settings)
+        if not after_merge_enabled(settings):
+            return validate_output(input_path, self.ffprobe_path, resolved)
+        source = Path(input_path).expanduser().resolve()
+        temporary = source.with_name(f".{source.stem}.after-merge-{uuid.uuid4().hex}.mp4")
+        remaining = max(0.25, min(4.0, rate))
+        atempo: list[str] = []
+        while remaining < 0.5 - 1e-9:
+            atempo.append("atempo=0.5")
+            remaining /= 0.5
+        while remaining > 2.0 + 1e-9:
+            atempo.append("atempo=2.0")
+            remaining /= 2.0
+        atempo.append(f"atempo={remaining:.6f}".rstrip("0").rstrip("."))
+        audio_chain = ",".join(atempo)
+        graph = (
+            f"[0:v]setpts=PTS/{rate:.6f},fps={resolved.fps_expr}:round=near,"
+            f"settb=AVTB,setsar=1,format=yuv420p[vout];"
+            f"[0:a]aresample=48000:async=1,{audio_chain},"
+            f"asetpts=PTS-STARTPTS[aout]"
+        )
+        command = [
+            str(self.ffmpeg_path), "-hide_banner", "-y", "-i", str(source),
+            "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]",
+            *encoder_arguments(resolved.encoder, resolved.crf, resolved.preset),
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-c:a", "aac",
+            "-profile:a", "aac_low", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart", "-metadata:s:v:0", "rotate=0",
+            "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+            "-color_range", "tv", "-max_muxing_queue_size", "4096",
+            "-progress", "pipe:1", "-nostats", str(temporary),
+        ]
+        log(f"Duration After Merge: {rate:.2f}x – kompletter Stage-1-Master wird separat verarbeitet.")
+        try:
+            self._execute(
+                command, media, resolved, progress, log, cancel_event,
+                transition_label(settings.transition_type), project_root(),
+            )
+            report = validate_output(temporary, self.ffprobe_path, resolved)
+            if not report.ok:
+                raise ValidationError("After Merge validation failed. " + " ".join(report.details))
+            temporary.replace(source)
+            return validate_output(source, self.ffprobe_path, resolved)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def burn_subtitles(
         self,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 import sys
 from pathlib import Path
@@ -11,8 +10,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton,
-    QScrollArea, QSlider, QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QScrollArea, QSlider, QSpinBox, QDoubleSpinBox,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..diagnostics import run_diagnostics, run_project_diagnostics
@@ -27,10 +26,10 @@ from ..quality import QUALITY_KEYS, QUALITY_PRESETS, quality_label
 from ..subtitles import ANIMATION_OPTIONS
 from ..paths import ensure_project_directories, locate_ffmpeg, project_root
 from ..project_order import ProjectOrderStore
-from ..target import resolve_export
 from ..settings_store import SettingsStore
 from ..voiceover_order import normalize_voiceover_order_mode, voiceover_order_indices
 from ..subtitle_preview import QuotePreviewCanvas, SubtitlePreviewCanvas, sample_subtitle_text
+from ..timeline import duration_before_merge_value
 from ..video_pool import compute_pool_status
 from ..transition_effects import EASE_OPTIONS, TRANSITION_OPTIONS, transition_description
 from .style import APP_STYLE
@@ -120,6 +119,7 @@ class MainWindow(QMainWindow):
         self.last_output: Path | None = None
         self.active_mode = ""
         self.busy = False
+        self._loading = True
 
         self.setWindowTitle("VideoMerger – Local Studio")
         self.setMinimumSize(900, 760)
@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.setStyleSheet(APP_STYLE)
         self._load_settings()
-        self._append_log("VideoMerger 1.3.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Video-Speed, Quote/Flyer-Artwork, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
+        self._append_log("VideoMerger 1.4.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Before/After Merge, Quote/Flyer-Artwork, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
 
     def _build_ui(self) -> None:
         scroll = QScrollArea()
@@ -145,7 +145,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("VideoMerger")
         title.setObjectName("title")
-        subtitle = QLabel("Zwei Stufen · Voiceover · Musik · Wort-Sync · Untertitel · Video-Pool · Quote/Flyer · Smart Stretch · Video-Speed · lokal")
+        subtitle = QLabel("Zwei Stufen · Voiceover · Musik · Wort-Sync · Untertitel · Video-Pool · Quote/Flyer · Smart Stretch · Before/After Merge · lokal")
         subtitle.setObjectName("subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -161,19 +161,36 @@ class MainWindow(QMainWindow):
         self.input_edit = QLineEdit()
         self.input_edit.textChanged.connect(self._clear_stale_analysis)
         self.output_edit = QLineEdit()
-        browse_input = QPushButton("Browse …")
+        browse_input = QPushButton("Browse Legacy Root …")
         browse_output = QPushButton("Browse …")
         browse_input.clicked.connect(self._browse_input)
         browse_output.clicked.connect(self._browse_output)
-        io_layout.addWidget(QLabel("Input Folder"), 0, 0)
+        io_layout.addWidget(QLabel("Legacy Input Root"), 0, 0)
         io_layout.addWidget(self.input_edit, 0, 1)
         io_layout.addWidget(browse_input, 0, 2)
-        io_layout.addWidget(QLabel("Output Folder"), 1, 0)
-        io_layout.addWidget(self.output_edit, 1, 1)
-        io_layout.addWidget(browse_output, 1, 2)
-        drop_hint = QLabel("Videoordner hierher ziehen – MP4, MOV, MKV, AVI, WebM, M4V und weitere")
+        self.source_folders_list = QListWidget()
+        self.source_folders_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.source_folders_list.setMaximumHeight(105)
+        self.source_folders_list.itemChanged.connect(lambda _item: self._clear_stale_analysis(self.input_edit.text()))
+        self.add_folder_button = QPushButton("Add Folder …")
+        self.remove_folder_button = QPushButton("Remove Folder")
+        self.clear_folders_button = QPushButton("Clear All")
+        self.add_folder_button.clicked.connect(self._add_source_folder)
+        self.remove_folder_button.clicked.connect(self._remove_source_folder)
+        self.clear_folders_button.clicked.connect(self._clear_source_folders)
+        folder_buttons = QHBoxLayout()
+        folder_buttons.addWidget(self.add_folder_button)
+        folder_buttons.addWidget(self.remove_folder_button)
+        folder_buttons.addWidget(self.clear_folders_button)
+        io_layout.addWidget(QLabel("Configured Video Folders"), 1, 0, Qt.AlignTop)
+        io_layout.addWidget(self.source_folders_list, 1, 1, 1, 2)
+        io_layout.addLayout(folder_buttons, 2, 1, 1, 2)
+        io_layout.addWidget(QLabel("Output Folder"), 3, 0)
+        io_layout.addWidget(self.output_edit, 3, 1)
+        io_layout.addWidget(browse_output, 3, 2)
+        drop_hint = QLabel("Add one or more configured folders; the legacy root scans its immediate files only. MP4, MOV, MKV, AVI, WebM, M4V …")
         drop_hint.setObjectName("dropHint")
-        io_layout.addWidget(drop_hint, 2, 0, 1, 3)
+        io_layout.addWidget(drop_hint, 4, 0, 1, 3)
         outer.addWidget(io_group)
 
         audio_group = QGroupBox("2 · Audio & Script")
@@ -329,21 +346,37 @@ class MainWindow(QMainWindow):
         self.max_stretch_spin.setDecimals(1)
         self.max_stretch_spin.setSuffix(" %")
         self.max_stretch_spin.setValue(10.0)
-        # 1.3.0 Global Video Speed: 0.50x–2.00x, 1.00x default. Voiceover,
-        # subtitles and music are never affected (voiceover = timing authority).
-        self.video_speed_combo = QComboBox()
-        for step in range(10, 41):  # 0.50 … 2.00 in 0.05 steps
+        # Independent Before/After Merge duration controls. The old
+        # ``video_speed_combo`` name remains a Python compatibility alias, but
+        # there is only one visible Before Merge control.
+        self.duration_before_merge_combo = QComboBox()
+        for step in range(5, 41):  # 0.25 … 2.00 in 0.05 steps
             value = step / 20.0
-            label = f"{value:.2f}x" + ("  (Standard)" if abs(value - 1.0) < 1e-9 else "")
-            self.video_speed_combo.addItem(label, value)
-        self.video_speed_combo.setCurrentIndex(10)  # 1.00x
+            label = f"{value:.2f}x" + ("  (Standard)" if abs(value - 0.70) < 1e-9 else "")
+            self.duration_before_merge_combo.addItem(label, value)
+        self.duration_before_merge_combo.setCurrentIndex(
+            self.duration_before_merge_combo.findData(0.70)
+        )
+        self.video_speed_combo = self.duration_before_merge_combo
+        self.duration_after_merge_check = QCheckBox("Enable independent After Merge operation")
+        self.duration_after_merge_combo = QComboBox()
+        for step in range(5, 41):
+            value = step / 20.0
+            self.duration_after_merge_combo.addItem(
+                f"{value:.2f}x" + ("  (Standard)" if abs(value - 1.0) < 1e-9 else ""), value
+            )
+        self.duration_after_merge_combo.setCurrentIndex(
+            self.duration_after_merge_combo.findData(1.0)
+        )
         # 1.2.4/1.3.0: Zieldauer-Einflüsse sofort im Video-Pool-Status zeigen.
         self.end_padding_spin.valueChanged.connect(self._update_pool_status)
         self.short_video_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_fit_combo.currentIndexChanged.connect(self._update_pool_status)
         self.max_stretch_combo.currentIndexChanged.connect(self._update_pool_status)
         self.max_stretch_spin.valueChanged.connect(self._update_pool_status)
-        self.video_speed_combo.currentIndexChanged.connect(self._update_pool_status)
+        self.duration_before_merge_combo.currentIndexChanged.connect(self._update_pool_status)
+        self.duration_after_merge_combo.currentIndexChanged.connect(self._update_pool_status)
+        self.duration_after_merge_check.toggled.connect(self._update_pool_status)
         audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 12, 0)
         audio_layout.addWidget(self.end_padding_spin, 12, 1)
         audio_layout.addWidget(QLabel("If Video Is Too Short"), 13, 0)
@@ -355,8 +388,13 @@ class MainWindow(QMainWindow):
         stretch_row.addWidget(self.max_stretch_combo)
         stretch_row.addWidget(self.max_stretch_spin)
         audio_layout.addLayout(stretch_row, 15, 1)
-        audio_layout.addWidget(QLabel("Main Video Speed"), 16, 0)
-        audio_layout.addWidget(self.video_speed_combo, 16, 1)
+        audio_layout.addWidget(QLabel("Duration Before Merge"), 16, 0)
+        audio_layout.addWidget(self.duration_before_merge_combo, 16, 1)
+        audio_layout.addWidget(QLabel("Duration After Merge"), 17, 0)
+        after_row = QHBoxLayout()
+        after_row.addWidget(self.duration_after_merge_check)
+        after_row.addWidget(self.duration_after_merge_combo)
+        audio_layout.addLayout(after_row, 17, 1, 1, 2)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -381,7 +419,10 @@ class MainWindow(QMainWindow):
         for key, label in FONT_OPTIONS:
             self.subtitle_font_combo.addItem(label, key)
         self.subtitle_position_combo = QComboBox()
-        self.subtitle_position_combo.addItems(["Bottom", "Medium-Low", "Middle", "Top"])
+        self.subtitle_position_combo.addItems(["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"])
+        self._subtitle_position_overridden = False
+        self._subtitle_style_overridden = False
+        self._subtitle_animation_overridden = False
         self.subtitle_debug_check = QCheckBox("Subtitle Debug Overlay – current word + exact start/end (default OFF)")
         subtitle_layout.addWidget(QLabel("Language"), 1, 0)
         subtitle_layout.addWidget(self.subtitle_language_combo, 1, 1)
@@ -407,6 +448,9 @@ class MainWindow(QMainWindow):
         ):
             control.currentIndexChanged.connect(self._update_subtitle_live_preview)
         self.subtitle_debug_check.toggled.connect(self._update_subtitle_live_preview)
+        self.subtitle_position_combo.currentIndexChanged.connect(self._subtitle_position_changed)
+        self.subtitle_style_combo.currentIndexChanged.connect(self._subtitle_style_changed)
+        self.subtitle_animation_combo.currentIndexChanged.connect(self._subtitle_animation_changed)
         self.subtitle_preview_button = QPushButton("Open Larger Subtitle Preview")
         self.subtitle_preview_button.clicked.connect(self._preview_subtitle_style)
         subtitle_layout.addWidget(self.subtitle_preview_button, 8, 1)
@@ -663,7 +707,7 @@ class MainWindow(QMainWindow):
         self.quote_duration_spin.setSingleStep(0.1)
         self.quote_duration_spin.setDecimals(1)
         self.quote_duration_spin.setSuffix(" sec")
-        self.quote_duration_spin.setValue(2.0)
+        self.quote_duration_spin.setValue(4.0)
         self.quote_preview = QuotePreviewCanvas()
         self.quote_preview.setMinimumHeight(180)
         self.quote_check.toggled.connect(self._sync_quote_visibility)
@@ -801,6 +845,29 @@ class MainWindow(QMainWindow):
 
     def _load_settings_inner(self) -> None:
         self.input_edit.setText(str(self.root / "input"))
+        self.source_folders_list.clear()
+        for value in list(getattr(self.saved, "source_folders", []) or []):
+            path = Path(value).expanduser().resolve()
+            self.source_folders_list.addItem(QListWidgetItem(str(path)))
+        self.video_order_mode = (
+            "manual" if getattr(self.saved, "video_order_mode", "folder_alternating") == "manual"
+            else "folder_alternating"
+        )
+        saved_keys: set[str] = set()
+        if self.store.path.is_file():
+            try:
+                import json
+                raw_settings = json.loads(self.store.path.read_text(encoding="utf-8"))
+                if isinstance(raw_settings, dict):
+                    saved_keys = set(raw_settings)
+            except (OSError, ValueError, TypeError):
+                pass
+        # A field that is absent from a legacy settings file is not an
+        # explicit user override. This lets the new aspect-aware position
+        # default apply once, while any saved/manual value remains authoritative.
+        self._subtitle_position_overridden = "subtitle_position" in saved_keys
+        self._subtitle_style_overridden = "subtitle_style" in saved_keys
+        self._subtitle_animation_overridden = "subtitle_animation" in saved_keys
         self.output_edit.setText(str(self.root / "output"))
         self.radio_16.setChecked(self.saved.aspect != "9:16")
         self.radio_9.setChecked(self.saved.aspect == "9:16")
@@ -896,7 +963,7 @@ class MainWindow(QMainWindow):
         self.ducking_check.setChecked(self.saved.ducking_enabled)
         # 1.3.0 Main Video End Padding (freie Eingabe, Standard bleibt 1.0 s).
         self.end_padding_spin.setValue(float(self.saved.final_pause))
-        # 1.3.0 Duration Fit / Max Stretch / Global Video Speed.
+        # Duration Fit / Smart Stretch / independent merge durations.
         fit_index = self.duration_fit_combo.findData(
             self.saved.duration_fit_mode if self.saved.duration_fit_mode in {"cut", "stretch"} else "cut"
         )
@@ -908,10 +975,17 @@ class MainWindow(QMainWindow):
         else:
             self.max_stretch_combo.setCurrentIndex(self.max_stretch_combo.count() - 1)  # Custom
         self.max_stretch_spin.setValue(stretch_value)
-        speed_index = self.video_speed_combo.findData(
-            max(0.5, min(2.0, round(float(self.saved.video_speed or 1.0) / 0.05) * 0.05))
+        before_value = max(0.25, min(2.0, round(float(getattr(self.saved, "duration_before_merge", 0.70) or 0.70) / 0.05) * 0.05))
+        before_index = self.duration_before_merge_combo.findData(before_value)
+        self.duration_before_merge_combo.setCurrentIndex(
+            before_index if before_index >= 0 else self.duration_before_merge_combo.findData(0.70)
         )
-        self.video_speed_combo.setCurrentIndex(speed_index if speed_index >= 0 else 10)
+        after_value = max(0.25, min(2.0, round(float(getattr(self.saved, "duration_after_merge", 1.0) or 1.0) / 0.05) * 0.05))
+        after_index = self.duration_after_merge_combo.findData(after_value)
+        self.duration_after_merge_combo.setCurrentIndex(
+            after_index if after_index >= 0 else self.duration_after_merge_combo.findData(1.0)
+        )
+        self.duration_after_merge_check.setChecked(bool(getattr(self.saved, "duration_after_merge_enabled", False)))
         self._sync_stretch_controls()
         self.subtitle_check.setChecked(self.saved.subtitle_enabled)
         self.alignment_warning_check.setChecked(self.saved.allow_alignment_warnings)
@@ -954,6 +1028,8 @@ class MainWindow(QMainWindow):
             else (script_units if script_mode == "matched" else [])
         )
         return ExportSettings(
+            source_folders=self._configured_source_folders(),
+            video_order_mode=("manual" if getattr(self, "video_order_mode", "folder_alternating") == "manual" else "folder_alternating"),
             aspect="16:9" if self.radio_16.isChecked() else "9:16",
             resolution=self.resolution_combo.currentText(),
             fit_mode=str(self.fit_combo.currentData()),
@@ -996,7 +1072,10 @@ class MainWindow(QMainWindow):
             short_video_mode=str(self.short_video_combo.currentData()),
             duration_fit_mode=str(self.duration_fit_combo.currentData()),
             max_stretch_percent=self._max_stretch_value(),
-            video_speed=float(self.video_speed_combo.currentData()),
+            duration_before_merge=float(self.duration_before_merge_combo.currentData()),
+            duration_after_merge=float(self.duration_after_merge_combo.currentData()),
+            duration_after_merge_enabled=self.duration_after_merge_check.isChecked(),
+            video_speed=1.0,
             subtitle_enabled=self.subtitle_check.isChecked(),
             subtitle_language=self.subtitle_language_combo.currentText(),
             subtitle_style=str(self.subtitle_style_combo.currentData()),
@@ -1076,6 +1155,21 @@ class MainWindow(QMainWindow):
                 transition_description(str(self.transition_combo.currentData()))
             )
 
+    def _subtitle_position_changed(self, *_args) -> None:
+        if not getattr(self, "_loading", False):
+            self._subtitle_position_overridden = True
+        self._update_subtitle_live_preview()
+
+    def _subtitle_style_changed(self, *_args) -> None:
+        if not getattr(self, "_loading", False):
+            self._subtitle_style_overridden = True
+        self._update_subtitle_live_preview()
+
+    def _subtitle_animation_changed(self, *_args) -> None:
+        if not getattr(self, "_loading", False):
+            self._subtitle_animation_overridden = True
+        self._update_subtitle_live_preview()
+
     def _update_resolution_choices(self) -> None:
         if not hasattr(self, "resolution_combo"):
             return
@@ -1086,20 +1180,21 @@ class MainWindow(QMainWindow):
         index = self.resolution_combo.findText(previous)
         self.resolution_combo.setCurrentIndex(index if index >= 0 else 0)
         if hasattr(self, "subtitle_style_combo"):
-            default_key = "long_1" if self.radio_16.isChecked() else "short_1"
-            style_index = self.subtitle_style_combo.findData(default_key)
-            if style_index >= 0:
-                self.subtitle_style_combo.setCurrentIndex(style_index)
-            self.subtitle_position_combo.setCurrentText(
-                "Bottom" if self.radio_16.isChecked() else "Medium-Low"
-            )
-            # 1.2.4 Default: Static Phrase (Long-Form / YouTube Landscape).
-            # 9:16 Shorts behalten word_highlight. Alle 5 Animationen bleiben
-            # jederzeit manuell wählbar.
-            animation_key = "static_phrase" if self.radio_16.isChecked() else "word_highlight"
-            animation_index = self.subtitle_animation_combo.findData(animation_key)
-            if animation_index >= 0:
-                self.subtitle_animation_combo.setCurrentIndex(animation_index)
+            if not self._subtitle_style_overridden:
+                default_key = "long_1" if self.radio_16.isChecked() else "short_1"
+                style_index = self.subtitle_style_combo.findData(default_key)
+                if style_index >= 0:
+                    self.subtitle_style_combo.setCurrentIndex(style_index)
+            if not self._subtitle_position_overridden:
+                self.subtitle_position_combo.setCurrentText(
+                    "Center" if self.radio_16.isChecked() else "Bottom Center"
+                )
+            # Long-form uses a stable phrase; Shorts retain word highlight.
+            if not self._subtitle_animation_overridden:
+                animation_key = "static_phrase" if self.radio_16.isChecked() else "word_highlight"
+                animation_index = self.subtitle_animation_combo.findData(animation_key)
+                if animation_index >= 0:
+                    self.subtitle_animation_combo.setCurrentIndex(animation_index)
             self._update_subtitle_live_preview()
         self._mark_preset_custom()
         self._update_quote_preview()
@@ -1116,13 +1211,19 @@ class MainWindow(QMainWindow):
         if not self.current_media:
             return
         try:
-            folder = Path(text.strip()).expanduser().resolve()
-        except OSError:
-            folder = None
-        if folder is None or any(item.path.expanduser().resolve().parent != folder for item in self.current_media):
+            configured = self._configured_source_folders()
+            if not configured:
+                configured = [str(Path(text.strip()).expanduser().resolve())]
+            keys = {os.path.normcase(str(Path(value).expanduser().resolve())) for value in configured}
+        except (OSError, ValueError):
+            keys = set()
+        if not keys or any(
+            os.path.normcase(str(item.path.expanduser().resolve().parent)) not in keys
+            for item in self.current_media
+        ):
             self.current_media = []
             self.files_table.setRowCount(0)
-            self.summary_label.setText("Input Folder geändert – bitte Analyze Inputs ausführen.")
+            self.summary_label.setText("Input Folder changed – please Analyze Inputs again.")
 
     def _browse_asset(self, edit: QLineEdit, role: str) -> None:
         filters = {
@@ -1384,24 +1485,73 @@ class MainWindow(QMainWindow):
         layout.addWidget(close, alignment=Qt.AlignRight)
         dialog.exec()
 
+    def _configured_source_folders(self) -> list[str]:
+        """Return the persisted GUI folder list in visible order."""
+        if not hasattr(self, "source_folders_list"):
+            return []
+        values: list[str] = []
+        for row in range(self.source_folders_list.count()):
+            value = self.source_folders_list.item(row).text().strip()
+            if value:
+                values.append(str(Path(value).expanduser().resolve()))
+        return values
+
+    def _add_source_folder(self) -> None:
+        if self.busy:
+            return
+        selected = QFileDialog.getExistingDirectory(self, "Add Video Source Folder", self.input_edit.text())
+        if not selected:
+            return
+        value = str(Path(selected).expanduser().resolve())
+        if value not in self._configured_source_folders():
+            self.source_folders_list.addItem(QListWidgetItem(value))
+            self._save_project()
+            self._clear_stale_analysis(self.input_edit.text())
+
+    def _remove_source_folder(self) -> None:
+        if self.busy:
+            return
+        row = self.source_folders_list.currentRow()
+        if row >= 0:
+            self.source_folders_list.takeItem(row)
+            self._save_project()
+            self._clear_stale_analysis(self.input_edit.text())
+
+    def _clear_source_folders(self) -> None:
+        if self.busy:
+            return
+        self.source_folders_list.clear()
+        self._save_project()
+        self._clear_stale_analysis(self.input_edit.text())
+
     def _browse_input(self) -> None:
-        selected = QFileDialog.getExistingDirectory(self, "Input Folder", self.input_edit.text())
+        selected = QFileDialog.getExistingDirectory(self, "Legacy Input Root", self.input_edit.text())
         if selected:
             self.input_edit.setText(selected)
 
     def _reset_project_order(self) -> None:
         if self.busy:
             return
-        folder = Path(self.input_edit.text().strip())
-        if not folder.is_dir():
-            QMessageBox.warning(self, "Input fehlt", "Bitte zuerst einen gültigen Input Folder auswählen.")
-            return
+        folders = [Path(value) for value in self._configured_source_folders()]
+        if not folders:
+            folder = Path(self.input_edit.text().strip())
+            if not folder.is_dir() and not self.current_media:
+                QMessageBox.warning(self, "Input fehlt", "Bitte zuerst einen gültigen Input Folder auswählen.")
+                return
+            if self.current_media:
+                folders = sorted({item.path.expanduser().resolve().parent for item in self.current_media}, key=str)
+            else:
+                folders = [folder]
         if not self.current_media:
             QMessageBox.information(
                 self, "Reihenfolge", "Bitte zuerst Analyze Inputs ausführen, dann kann die Standardreihenfolge wiederhergestellt werden."
             )
             return
-        paths = self.order_store.reset_to_default(folder, [item.path for item in self.current_media])
+        if hasattr(self.order_store, "reset_to_default_many"):
+            paths = self.order_store.reset_to_default_many(folders, [item.path for item in self.current_media])
+        else:
+            paths = self.order_store.reset_to_default(folders[0], [item.path for item in self.current_media])
+        self.video_order_mode = "folder_alternating"
         by_path = {item.path.expanduser().resolve(): item for item in self.current_media}
         self.current_media = [by_path[path.expanduser().resolve()] for path in paths]
         self._render_media_table()
@@ -1423,11 +1573,17 @@ class MainWindow(QMainWindow):
         if len(self.current_media) < 2:
             QMessageBox.information(self, "Reihenfolge", "Mindestens zwei Clips sind für Randomize Order nötig.")
             return
-        folder = Path(self.input_edit.text().strip())
-        if not folder.is_dir():
-            QMessageBox.warning(self, "Input fehlt", "Bitte zuerst einen gültigen Input Folder auswählen.")
-            return
-        paths = self.order_store.set_randomized_order(folder, [item.path for item in self.current_media])
+        folders = [Path(value) for value in self._configured_source_folders()]
+        if not folders:
+            folders = sorted({item.path.expanduser().resolve().parent for item in self.current_media}, key=str)
+        paths = randomize_order([item.path for item in self.current_media])
+        self.order_store.set_active_order_many(folders, paths)
+        for folder in folders:
+            folder_paths = [path for path in paths if path.expanduser().resolve().parent == folder.resolve()]
+            if folder_paths:
+                self.order_store.set_active_order(folder, folder_paths)
+        self.video_order_mode = "manual"
+        self._save_project()
         by_path = {item.path.expanduser().resolve(): item for item in self.current_media}
         self.current_media = [by_path[path.expanduser().resolve()] for path in paths]
         self._render_media_table()
@@ -1761,7 +1917,8 @@ class MainWindow(QMainWindow):
             str(settings.short_video_mode),
             duration_fit_mode=str(settings.duration_fit_mode),
             max_stretch_percent=float(settings.max_stretch_percent),
-            playback_rate=float(settings.video_speed),
+            playback_rate=duration_before_merge_value(settings),
+            folder_aware=str(getattr(settings, "video_order_mode", "folder_alternating")) != "manual",
         )
         self.pool_status_label.setText(status.summary_line)
 
@@ -1783,11 +1940,28 @@ class MainWindow(QMainWindow):
         self._update_pool_status()
 
     def _persist_current_order(self) -> None:
-        folder = Path(self.input_edit.text().strip())
-        if folder.is_dir() and self.current_media:
-            self.order_store.set_active_order(folder, [item.path for item in self.current_media])
-            self._append_log("Manuelle Exportreihenfolge gespeichert: " +
-                             " → ".join(item.path.name for item in self.current_media))
+        if not self.current_media:
+            return
+        configured = [Path(value) for value in self._configured_source_folders()]
+        folders = configured or sorted({item.path.expanduser().resolve().parent for item in self.current_media}, key=str)
+        try:
+            ordered_paths = [item.path for item in self.current_media]
+            self.order_store.set_active_order_many(folders, ordered_paths)
+            # Keep the established per-folder store readable for legacy
+            # callers and single-folder projects as well.
+            for folder in folders:
+                paths = [path for path in ordered_paths if path.expanduser().resolve().parent == folder.resolve()]
+                if paths:
+                    self.order_store.set_active_order(folder, paths)
+        except AttributeError:
+            for folder in folders:
+                paths = [item.path for item in self.current_media if item.path.expanduser().resolve().parent == folder.resolve()]
+                if paths:
+                    self.order_store.set_active_order(folder, paths)
+        self.video_order_mode = "manual"
+        self._append_log("Manuelle Exportreihenfolge gespeichert: " +
+                         " → ".join(item.path.name for item in self.current_media))
+        self._save_project()
 
     def _render_media_table(self, selected_row: int | None = None) -> None:
         self.files_table.setRowCount(len(self.current_media))
@@ -1829,10 +2003,16 @@ class MainWindow(QMainWindow):
         if self.busy:
             return
         input_folder = Path(self.input_edit.text().strip())
+        configured_sources = self._configured_source_folders()
         output_folder = Path(self.output_edit.text().strip())
-        if mode != "outro" and not input_folder.is_dir():
-            QMessageBox.warning(self, "Input fehlt", "Bitte einen gültigen Input Folder auswählen.")
+        if mode != "outro" and not configured_sources and not input_folder.is_dir():
+            QMessageBox.warning(self, "Input fehlt", "Bitte einen gültigen Input Root oder mindestens einen Video Folder hinzufügen.")
             return
+        if mode != "outro" and configured_sources:
+            invalid = [value for value in configured_sources if not Path(value).is_dir()]
+            if invalid:
+                QMessageBox.warning(self, "Input fehlt", "Nicht lesbare Video Folder:\n" + "\n".join(invalid))
+                return
         try:
             output_folder.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -1944,6 +2124,10 @@ class MainWindow(QMainWindow):
         ):
             button.setEnabled(not busy)
         for widget in (
+            self.add_folder_button, self.remove_folder_button, self.clear_folders_button,
+            self.source_folders_list,
+            self.duration_before_merge_combo, self.duration_after_merge_check,
+            self.duration_after_merge_combo,
             self.quote_check, self.quote_artwork_path_edit, self.quote_artwork_choose,
             self.quote_pdf_page_spin, self.quote_artwork_fit_combo,
             self.quote_duration_spin, self.quote_preview,

@@ -143,6 +143,62 @@ class ProjectOrderStore:
             self._save(folders)
         return [by_name[name] for name in active]
 
+    @classmethod
+    def _multi_key(cls, folders: list[Path]) -> str:
+        keys = sorted(cls._folder_key(folder) for folder in folders)
+        return "__multi__:" + "|".join(keys)
+
+    def order_many(self, folders: list[Path], detected: list[Path]) -> list[Path]:
+        """Return/persist one combined order for multiple source folders."""
+        roots = [Path(folder).expanduser().resolve() for folder in folders]
+        key = self._multi_key(roots)
+        names = [str(path.expanduser().resolve()) for path in detected]
+        by_name = {name: Path(name) for name in names}
+        with self._lock:
+            state = self._load()
+            entry = state.get(key)
+            if entry is None:
+                # Per-folder ordering has already been applied by discovery;
+                # retain that deterministic configured-folder sequence.
+                state[key] = self._entry(names, names)
+                self._save(state)
+                return [by_name[name] for name in names]
+            active = self._reconcile(entry["active"], names)
+            first_in = self._reconcile(entry["first_in"], names)
+            state[key] = self._entry(first_in, active)
+            self._save(state)
+        return [by_name[name] for name in active]
+
+    def set_active_order_many(self, folders: list[Path], ordered: list[Path]) -> None:
+        """Persist a manually reordered sequence spanning source folders."""
+        roots = [Path(folder).expanduser().resolve() for folder in folders]
+        key = self._multi_key(roots)
+        names = [str(path.expanduser().resolve()) for path in ordered]
+        with self._lock:
+            state = self._load()
+            entry = state.get(key, self._entry(names, names))
+            first_in = self._reconcile(entry["first_in"], names)
+            state[key] = self._entry(first_in, names)
+            self._save(state)
+
+    def reset_to_default_many(self, folders: list[Path], current: list[Path]) -> list[Path]:
+        """Restore each folder's natural active order in configured sequence."""
+        roots = [Path(folder).expanduser().resolve() for folder in folders]
+        by_folder: dict[str, list[Path]] = {self._folder_key(root): [] for root in roots}
+        for path in current:
+            parent_key = self._folder_key(Path(path).expanduser().resolve().parent)
+            by_folder.setdefault(parent_key, []).append(Path(path).expanduser().resolve())
+        ordered: list[Path] = []
+        for root in roots:
+            values = by_folder.get(self._folder_key(root), [])
+            ordered.extend(sorted(values, key=lambda item: natural_sort_key(item.name)))
+        self.set_active_order_many(roots, ordered)
+        for root in roots:
+            values = [path for path in ordered if path.expanduser().resolve().parent == root]
+            if values:
+                self.set_active_order(root, values)
+        return ordered
+
     def set_active_order(self, folder: Path | str, ordered: list[Path]) -> None:
         """Persist ``ordered`` as the exact active order without re-sorting it."""
         root = Path(folder).expanduser().resolve()

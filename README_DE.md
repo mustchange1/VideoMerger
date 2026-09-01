@@ -1,4 +1,18 @@
-# VideoMerger 1.3.0 für Windows
+# VideoMerger 1.4.0 für Windows
+
+## Neu in 1.4.0
+
+### Mehrere Quellordner und ordnerbewusste Auswahl
+
+Mit **Add Folder**, **Remove Folder** und **Clear All** lassen sich beliebig viele Video-Quellordner hinzufügen; die Liste wird in den Projekteinstellungen gespeichert. Jeder Clip behält seine aufgelöste Quellordner-Identität. Die automatische Auswahl nutzt eine reproduzierbare Zufalls-Alternierung: Solange ein anderer Quellordner brauchbare Clips hat, wird kein Ordner direkt wiederholt; erst danach ist der gleiche Ordner als Fallback erlaubt. Eine explizite manuelle Reihenfolge deaktiviert diese Alternierung; Required-Only, Hold Last Frame, Full-Timeline Loop und Smart Last-Clip Stretch bleiben unverändert.
+
+### Unabhängige Merge-Dauer
+
+**Duration Before Merge** ist standardmäßig `0,70x` und gilt für jeden normalen ausgewählten Visual-Clip (`timeline_duration = source_duration / 0,70`) vor dem Timeline-Aufbau. **Duration After Merge** ist standardmäßig deaktiviert / `1,00x` und wird als eigener Post-Merge-Schritt auf den vollständigen Stage-1-Master angewendet. Smart Last-Clip Stretch bleibt zwischen Timeline-Aufbau und Render; Stage-2-Intro, Flyer und Outro werden von Before Merge nicht verändert.
+
+### Flyer und Untertitel-Defaults
+
+Quote/Flyer bleibt nur nach Auswahl aktiv und nutzt jetzt standardmäßig 4,0 Sekunden, Cross Dissolve/Crossfade und 1,0 Sekunden Übergang. Long-Form im Querformat nutzt standardmäßig **Center**, Short-Form im Hochformat weiterhin **Bottom Center**. Gespeicherte/manuelle Positionswerte bleiben maßgeblich.
 
 ## Neu in 1.3.0
 
@@ -6,7 +20,7 @@
 - **Automatisches Chunked Rendering für große Windows-Projekte:** Unter dem konservativen Befehlsziel bleibt der bestehende einzelne FFmpeg-Aufruf aktiv. Größere Projekte werden automatisch an sicheren Übergangsgrenzen in große Segmente geteilt; Cross Dissolve wird nicht dupliziert, der aktive Video-Pool bleibt Required-Only, und die Segmente werden ohne erneutes Re-Encoding zusammengesetzt. Untertitel werden erst einmal auf dem vollständigen Clean Master gebrannt; der bisherige Guard bei ungefähr 30.000 Zeichen bleibt als letzte Sicherheitsgrenze bestehen.
 - **Smart Last-Clip Stretch:** Dauer-Fit-Modus `Cut Last Clip` (Standard) oder `Stretch Last Clip` — nur der letzte ausgewählte Clip läuft minimal langsamer (Limit 5/10 (Standard)/15/20/Custom %). Transitions und Kontinuität bleiben erhalten; über dem Limit gilt das normale Kürzen, niemals Hold Last Frame.
 - **Phase-2-Mix-Defaults:** `Cross Dissolve` mit 1,0 Sekunden (sicher geklemmt bei kurzen Clips) und Musik 44 % / `Balanced` (ca. +6 dB gegenüber 22 %, weiterhin unter Voiceover). Ducking, Limiter, Looping und manuelle Regler bleiben aktiv.
-- **Globale Video-Geschwindigkeit:** 0,50x–2,00x (Standard 1,00x). Voiceover bleibt die Timing-Autorität — Untertitel, Voiceover und Musik ändern sich nicht (SRT byte-identisch nachgewiesen).
+- **Globale Video-Geschwindigkeit (Legacy-Kompatibilität): 0,50x–2,00x. Duration Before Merge ist jetzt separat 0,70x Standard; Duration After Merge ist deaktiviert / 1,00x. Voiceover bleibt die Timing-Autorität — Untertitel, Voiceover und Musik ändern sich nicht (SRT byte-identisch nachgewiesen).
 - **Main Video End Padding:** freie manuelle Einstellung 0,0–5,0 s; der bestehende Standard von ca. 1 Sekunde bleibt exakt erhalten.
 - **Quote-/Flyer-Upload (optional, stumm):** `Intro → Cross Dissolve → Quote/Flyer → Cross Dissolve → Main → Cross Dissolve → Outro` verwendet eine fertige PDF-, PNG-, JPG-, JPEG- oder WEBP-Datei. Die Funktion ist standardmäßig aus, die Dauer beträgt standardmäßig 2,0 Sekunden, und die vorhandene Transition-Sicherheitsklemmung bleibt aktiv. PDFs bieten Seitenzählung und Seitenauswahl; Fit, Fill und Crop bewahren das Seitenverhältnis in 16:9, 9:16, 1080p und 4K. Es gibt keine Text-Quote und keinen generierten Quote-Modus mehr. PDF-Seiten werden intern mit PyMuPDF in eine temporäre Renderdatei gerastert und danach automatisch entfernt.
 - **Bessere Untertitel-Segmentierung:** Long-Form bevorzugt 1–2 Zeilen natürlicher Phrasen; Ein-/Zwei-Wort-Captions werden zusammengeführt (Wort-Timing unangetastet). Live-Vorschau UND der neue große Vorschau-Dialog malen mit derselben Renderer-Geometrie (inkl. Animations-Wortfortschritt).

@@ -99,7 +99,7 @@ def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
         # 1.2.4: Animation-Default "static_phrase" (vor 1.2.4 "type_reveal").
         assert window.subtitle_animation_combo.currentData() == "static_phrase"
         assert window.subtitle_font_combo.currentData() == "modern_sans_bold"
-        assert window.subtitle_position_combo.currentText() == "Bottom"
+        assert window.subtitle_position_combo.currentText() == "Center"
         assert not window.subtitle_debug_check.isChecked()
         # 1.2.4: Die Subtitle-Preview ist jetzt ein echter Renderer-Canvas
         # (SubtitlePreviewCanvas), kein QLabel mehr -> Layout muss gefüllt sein.
@@ -110,7 +110,7 @@ def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
         window.radio_9.setChecked(True)
         assert window.subtitle_style_combo.currentData() == "short_1"
         assert window.subtitle_animation_combo.currentData() == "word_highlight"
-        assert window.subtitle_position_combo.currentText() == "Medium-Low"
+        assert window.subtitle_position_combo.currentText() == "Bottom Center"
         window.subtitle_style_combo.setCurrentIndex(window.subtitle_style_combo.findData("long_3"))
         assert window._settings().subtitle_style == "long_3"  # manual override remains available
     finally:

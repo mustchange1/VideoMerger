@@ -59,7 +59,14 @@ _STAGE1_SETTING_FIELDS = (
     "short_video_mode",
     "duration_fit_mode",
     "max_stretch_percent",
+    "duration_before_merge",
+    "duration_after_merge",
+    "duration_after_merge_enabled",
+    # Keep the legacy field in the digest so an old caller changing
+    # video_speed cannot accidentally reuse a cache built with different
+    # legacy semantics; new GUI projects use the canonical field above.
     "video_speed",
+    "video_order_mode",
     "allow_hdr_unsafe",
     "watermark_enabled",
     "watermark_scope",
@@ -151,6 +158,9 @@ def _media_payload(item: MediaInfo) -> dict[str, Any]:
         "color_transfer": str(item.color_transfer),
         "color_space": str(item.color_space),
         "playback_rate": float(item.playback_rate),
+        "source_folder": str(getattr(item, "source_folder", "") or item.path.parent),
+        "is_quote_artwork": bool(item.is_quote_artwork),
+        "quote_fit_mode": str(item.quote_fit_mode),
     }
 
 

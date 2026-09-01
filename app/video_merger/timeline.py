@@ -6,6 +6,46 @@ from .models import MediaInfo
 from .target import safe_transition_durations
 
 
+DEFAULT_DURATION_BEFORE_MERGE = 0.70
+DEFAULT_DURATION_AFTER_MERGE = 1.00
+
+
+def duration_before_merge_value(settings) -> float:
+    """Return the one canonical Before Merge multiplier.
+
+    ``video_speed`` is accepted only as a migration/API compatibility value.
+    A legacy caller that explicitly changed it away from 1.0 still receives
+    the old behavior; new settings use the requested 0.70 default.
+    """
+    try:
+        value = float(getattr(settings, "duration_before_merge", DEFAULT_DURATION_BEFORE_MERGE))
+    except (TypeError, ValueError):
+        value = DEFAULT_DURATION_BEFORE_MERGE
+    try:
+        legacy = float(getattr(settings, "video_speed", 1.0))
+    except (TypeError, ValueError):
+        legacy = 1.0
+    if abs(value - DEFAULT_DURATION_BEFORE_MERGE) <= 1e-9 and abs(legacy - 1.0) > 1e-9:
+        value = legacy
+    return max(0.25, min(4.0, value))
+
+
+def duration_after_merge_value(settings) -> float:
+    """Return the independent post-merge multiplier."""
+    try:
+        value = float(getattr(settings, "duration_after_merge", DEFAULT_DURATION_AFTER_MERGE))
+    except (TypeError, ValueError):
+        value = DEFAULT_DURATION_AFTER_MERGE
+    return max(0.25, min(4.0, value))
+
+
+def after_merge_enabled(settings) -> bool:
+    return bool(
+        getattr(settings, "duration_after_merge_enabled", False)
+        and abs(duration_after_merge_value(settings) - 1.0) > 1e-9
+    )
+
+
 def _source_copy(item: MediaInfo, minimum: float, playback_rate: float = 1.0) -> MediaInfo:
     source = item.source_duration or item.duration
     if abs(playback_rate - 1.0) <= 1e-6:
@@ -94,6 +134,7 @@ def fit_media_to_duration(
     duration_fit_mode: str = "cut",
     max_stretch_percent: float = 10.0,
     playback_rate: float = 1.0,
+    folder_aware: bool = True,
 ) -> tuple[list[MediaInfo], list[str]]:
     """Build an exact voiceover-driven visual sequence without changing order.
 
@@ -129,7 +170,13 @@ def fit_media_to_duration(
 
     target = max(0.12, float(target_duration))
     minimum = max(0.12, 3.0 / max(fps, 1.0))
-    originals = [_source_copy(item, minimum, playback_rate) for item in media]
+    if folder_aware:
+        # Import lazily: video_pool delegates selection to this module.
+        from .video_pool import folder_aware_order
+        active_media = folder_aware_order(media)
+    else:
+        active_media = list(media)
+    originals = [_source_copy(item, minimum, playback_rate) for item in active_media]
     one_pass_duration = _duration(originals, transition_duration, fps)
     warnings: list[str] = []
     limit_percent = max(0.0, min(50.0, float(max_stretch_percent)))

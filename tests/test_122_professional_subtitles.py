@@ -152,7 +152,7 @@ def test_new_presentation_settings_round_trip_without_changing_professional_defa
     # 1.2.4: Default-Animation ist "Static Phrase" (vor 1.2.4 "type_reveal").
     assert defaults.subtitle_animation == "static_phrase"
     assert defaults.subtitle_font == "modern_sans_bold"
-    assert defaults.subtitle_position == "Bottom"
+    assert defaults.subtitle_position == "Center"
     assert defaults.subtitle_debug_overlay is False
 
     path = tmp_path / "settings.json"

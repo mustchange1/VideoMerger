@@ -1,4 +1,18 @@
-# VideoMerger 1.3.0 for Windows
+# VideoMerger 1.4.0 for Windows
+
+## New in 1.4.0
+
+### Multiple source folders and folder-aware selection
+
+Add any number of configured video folders with **Add Folder**, **Remove Folder**, and **Clear All**. Folders persist in project settings; each clip keeps its resolved source-folder identity. Automatic selection uses deterministic randomized folder alternation, never repeats a folder while another configured folder still has usable clips, and falls back only when no alternative remains. An explicit manual order disables alternation; Required-Only, Hold Last Frame, Full-Timeline Loop, and Smart Last-Clip Stretch keep their existing semantics.
+
+### Independent merge-duration controls
+
+**Duration Before Merge** defaults to `0.70x` and applies to each normal selected visual clip (`timeline_duration = source_duration / 0.70`) before timeline construction. **Duration After Merge** defaults to disabled / `1.00x` and runs as a separate post-merge operation on the complete Stage-1 master. Smart Last-Clip Stretch remains after timeline construction and before rendering; Stage-2 Intro, Flyer, and Outro are not altered by Before Merge.
+
+### Flyer and subtitle defaults
+
+Quote/Flyer remains disabled unless selected and now defaults to 4.0 seconds with Cross Dissolve/Crossfade at 1.0 seconds. Landscape long-form subtitles default to **Center**; vertical short-form subtitles default to **Bottom Center**. Saved/manual position overrides remain authoritative.
 
 ## New in 1.3.0
 
@@ -46,7 +60,7 @@ Every successful one-click final video automatically produces `FinalVideo_16x9_Y
 
 ### Current defaults
 
-Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static Phrase · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant) · End Padding ≈ 1 s · Quote/Flyer disabled unless enabled (2.0 s, Fit) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Global Speed = 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
+Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static Phrase · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant) · End Padding ≈ 1 s · Quote/Flyer disabled unless enabled (2.0 s, Fit) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
 
 # VideoMerger 1.3.0 for Windows
 
@@ -169,11 +183,11 @@ SUBTITLE GENERATION FAILED [actual stage]: actual error
 
 No cloud API or remote renderer is required. Initial setup creates the project-local `.venv`, installs dependencies, downloads the local `small` model and obtains project-local FFmpeg/FFprobe. It requires no administrator account, global PATH edit, manual virtual-environment activation or manual FFmpeg relocation.
 
-Save `VideoMerger_Final_1.3.0.zip` in Downloads and run Windows PowerShell:
+Save `VideoMerger_Final_1.4.0.zip` in Downloads and run Windows PowerShell:
 
 ```powershell
-$Zip = Join-Path $HOME "Downloads\VideoMerger_Final_1.3.0.zip"
-$ProjectRoot = Join-Path $HOME "Downloads\VideoMerger_Final_1.3.0"
+$Zip = Join-Path $HOME "Downloads\VideoMerger_Final_1.4.0.zip"
+$ProjectRoot = Join-Path $HOME "Downloads\VideoMerger_Final_1.4.0"
 if (Test-Path -LiteralPath $ProjectRoot) { Remove-Item -LiteralPath $ProjectRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $ProjectRoot -Force | Out-Null
 Expand-Archive -LiteralPath $Zip -DestinationPath $ProjectRoot -Force

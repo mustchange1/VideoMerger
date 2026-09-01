@@ -8,32 +8,58 @@ from pathlib import Path
 from .alignment import LocalWordAligner
 from .engine import VideoMergerEngine
 from .errors import VideoMergerError
-from .models import (
-    AlignmentResult, CompleteWorkflowResult, ExportSettings, LogCallback, MainVideoResult,
-    MediaInfo, ProgressCallback, ProgressEvent, ValidationReport, WordTiming,
-)
 from .font_manager import bundled_fonts_dir
+from .models import (
+    AlignmentResult,
+    CompleteWorkflowResult,
+    ExportSettings,
+    LogCallback,
+    MainVideoResult,
+    MediaInfo,
+    ProgressCallback,
+    ProgressEvent,
+    ValidationReport,
+    WordTiming,
+)
 from .paths import project_root
 from .project_assets import (
-    AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, optional_path, probe_audio, read_script, require_asset,
+    AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    optional_path,
+    probe_audio,
+    read_script,
+    require_asset,
 )
 from .quote_artwork import (
-    cleanup_prepared_quote_artwork, prepare_quote_artwork, quote_artwork_path,
+    cleanup_prepared_quote_artwork,
+    prepare_quote_artwork,
+    quote_artwork_path,
 )
 from .render_cache import Stage1RenderCache, load_cached_alignment, stage1_fingerprint
 from .subtitle_verification import create_visual_verification_frames
 from .subtitles import (
-    build_cues, validate_subtitle_file, write_ass, write_canonical_timeline, write_srt, write_vtt,
+    build_cues,
+    validate_subtitle_file,
+    write_ass,
+    write_canonical_timeline,
+    write_srt,
+    write_vtt,
 )
 from .target import choose_fps, parse_resolution, resolve_export
-from .timeline import fit_media_to_duration
+from .timeline import (
+    after_merge_enabled,
+    duration_after_merge_value,
+    duration_before_merge_value,
+    fit_media_to_duration,
+)
 from .validation import validate_output
-from .youtube_metadata import generate_youtube_metadata_file
+from .video_pool import media_source_folder
 from .voiceover_order import (
     normalize_voiceover_order_mode,
     order_voiceover_paths,
     voiceover_order_indices,
 )
+from .youtube_metadata import generate_youtube_metadata_file
 
 
 def _raw_voiceover_paths(settings: ExportSettings) -> list[Path]:
@@ -272,6 +298,21 @@ def _seconds(value) -> float:
         return 0.0
 
 
+def _scale_alignment(alignment: AlignmentResult, speed: float) -> AlignmentResult:
+    """Scale subtitle timing together with an explicit post-merge speed."""
+    if abs(speed - 1.0) <= 1e-9:
+        return alignment
+    words = [
+        replace(word, start=word.start / speed, end=word.end / speed)
+        for word in alignment.words
+    ]
+    return replace(
+        alignment,
+        words=words,
+        hard_breaks=[boundary / speed for boundary in alignment.hard_breaks],
+    )
+
+
 class MainProjectEngine:
     """Two-stage orchestration layered on the proven merge engine."""
 
@@ -500,9 +541,12 @@ class MainProjectEngine:
         # remains the timing authority — the target duration, subtitle
         # timeline, voiceover and music behavior never change; only the clip
         # playback rate (and therefore how much material is required).
-        video_speed = max(0.5, min(2.0, float(getattr(settings, "video_speed", 1.0) or 1.0)))
-        if abs(video_speed - 1.0) > 1e-6:
-            log(f"Global Video Speed: {video_speed:.2f}x – Voiceover, Untertitel und Musik bleiben unverändert.")
+        duration_before_merge = duration_before_merge_value(settings)
+        if abs(duration_before_merge - 1.0) > 1e-6:
+            log(
+                f"Duration Before Merge: {duration_before_merge:.2f}x – "
+                "jeder normale ausgewählte Clip wird vor der Timeline entsprechend angepasst."
+            )
         duration_fit_mode = settings.duration_fit_mode if settings.duration_fit_mode in {"cut", "stretch"} else "cut"
         max_stretch = max(1.0, min(50.0, float(getattr(settings, "max_stretch_percent", 10.0) or 10.0)))
         if voice_assets:
@@ -511,7 +555,8 @@ class MainProjectEngine:
                 media, target, settings.transition_duration, fps, settings.short_video_mode,
                 duration_fit_mode=duration_fit_mode,
                 max_stretch_percent=max_stretch,
-                playback_rate=video_speed,
+                playback_rate=duration_before_merge,
+                folder_aware=str(getattr(settings, "video_order_mode", "folder_alternating")) != "manual",
             )
             warnings.extend(timing_warnings)
             program_duration = voice_total
@@ -550,10 +595,20 @@ class MainProjectEngine:
                 f"Zielabweichung nach Frame-Rundung: {resolved.expected_duration - target:+.3f} s."
             )
 
+        # The cache validates the final Stage-1 artifact, not the temporary
+        # pre-post-merge master. Keep After Merge in Stage 1 while leaving the
+        # clip-selection/timeline target above untouched.
+        cache_resolved = resolved
+        if after_merge_enabled(settings):
+            after_speed = duration_after_merge_value(settings)
+            cache_resolved = replace(
+                resolved,
+                expected_duration=resolved.expected_duration / after_speed,
+            )
         stage1_digest, stage1_payload = stage1_fingerprint(
             render_media,
             settings,
-            resolved,
+            cache_resolved,
             voice_assets=voice_assets,
             script_files=script_files,
             subtitle_requested=subtitle_requested,
@@ -563,7 +618,7 @@ class MainProjectEngine:
         if reuse_cached:
             cached_result = self._try_reuse_cached_main(
                 stage1_digest,
-                resolved,
+                cache_resolved,
                 subtitle_requested,
                 progress,
                 log,
@@ -606,6 +661,9 @@ class MainProjectEngine:
 
         log("Stage 1 – Create Main Video")
         log("Aktive Clip-Reihenfolge: " + " → ".join(item.path.name for item in render_media))
+        render_folders = [media_source_folder(item) for item in render_media if not item.is_quote_artwork]
+        if len(set(render_folders)) > 1:
+            log("Folder-aware alternation: consecutive clips use different source folders whenever an alternative remains.")
         if settings.short_video_mode == "loop" and len(render_media) > len(media):
             log("Full-Timeline Loop sequence: " + " → ".join(item.path.name for item in render_media))
         elif settings.short_video_mode == "hold":
@@ -801,10 +859,17 @@ class MainProjectEngine:
                         "Der letzte Wortbeginn liegt außerhalb der Voiceover-Timeline.",
                     )
 
+                # A post-merge speed change applies to the complete finished
+                # program, including burned subtitles. Scale the authoritative
+                # word timeline before writing SRT/VTT/ASS so sidecars and the
+                # final video remain synchronized.
+                subtitle_speed = duration_after_merge_value(settings) if after_merge_enabled(settings) else 1.0
+                alignment = _scale_alignment(alignment, subtitle_speed)
+                subtitle_program_end = voice_total / subtitle_speed
                 subtitle_creation_started = time.perf_counter()
                 try:
                     cues = build_cues(
-                        combined_script, alignment, settings.subtitle_style, program_end=voice_total,
+                        combined_script, alignment, settings.subtitle_style, program_end=subtitle_program_end,
                         width=resolved.width, height=resolved.height, font_key=settings.subtitle_font,
                     )
                     srt_path, vtt_path = srt_candidate, vtt_candidate
@@ -814,7 +879,7 @@ class MainProjectEngine:
                     write_canonical_timeline(combined_script, alignment, cues, timeline_path)
                     validate_subtitle_file(srt_path, "srt")
                     validate_subtitle_file(vtt_path, "vtt")
-                    if cues and cues[-1].end > voice_total + 0.001:
+                    if cues and cues[-1].end > subtitle_program_end + 0.001:
                         raise VideoMergerError("Untertitel reichen in die Quiet Pause hinein.")
                     temp = project_root() / "temp"
                     temp.mkdir(parents=True, exist_ok=True)
@@ -855,6 +920,10 @@ class MainProjectEngine:
                         render_media, render_settings, resolved, output_video_clean,
                         progress=progress, log=log, cancel_event=cancel_event,
                     )
+                    if not clean_report.ok:
+                        raise VideoMergerError(
+                            clean_report.message or "Das subtitle-freie MainVideo konnte nicht erstellt werden."
+                        )
                     render_settings = replace(render_settings, subtitle_enabled=True)
                     burn_started = time.perf_counter()
                     try:

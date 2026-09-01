@@ -39,6 +39,10 @@ class MediaInfo:
     # visible ``duration`` is the timeline duration; source_duration remains
     # the actual decodable source length for trim/hold/loop decisions.
     source_duration: float = 0.0
+    # Canonical source identity used by folder-aware selection. It is the
+    # resolved directory containing this clip, not merely the display name.
+    # Empty values from older metadata caches migrate to ``path.parent``.
+    source_folder: str = ""
     # 1.3.0: per-occurrence playback rate (global Main Video speed and/or the
     # Smart Last-Clip Stretch). 1.0 = untouched source timing; < 1.0 slows the
     # clip down (stretch), > 1.0 speeds it up. The render graph applies this
@@ -134,10 +138,17 @@ class ExportSettings:
     # never to Hold Last Frame.
     duration_fit_mode: str = "cut"  # cut | stretch
     max_stretch_percent: float = 10.0  # 5 | 10 | 15 | 20 | custom (1–50)
-    # 1.3.0 global Main Video playback speed (0.50–2.00, default 1.00). The
-    # voiceover remains the timing authority: subtitle timing, voiceover and
-    # music behavior are never altered; only the clip playback rate changes
-    # and the required clip selection adapts to still cover the voiceover.
+    # Canonical independent merge-duration controls. The values are playback
+    # multipliers, so ``source_duration / duration_before_merge`` is the
+    # timeline duration. Before Merge is intentionally active by default;
+    # After Merge is a separate, disabled post-merge operation.
+    duration_before_merge: float = 0.70
+    duration_after_merge: float = 1.00
+    duration_after_merge_enabled: bool = False
+    # Deprecated compatibility input for projects/CLI callers from 1.3.0.
+    # It is migrated to duration_before_merge by SettingsStore and is never
+    # used as a second GUI setting. Keeping the field avoids breaking old JSON
+    # and direct API callers while the canonical setting remains singular.
     video_speed: float = 1.0
 
     subtitle_enabled: bool = False
@@ -145,7 +156,7 @@ class ExportSettings:
     subtitle_style: str = "long_1"
     subtitle_animation: str = "static_phrase"  # 1.2.4: Static Phrase is the default
     subtitle_font: str = "modern_sans_bold"
-    subtitle_position: str = "Bottom"
+    subtitle_position: str = "Center"
     subtitle_debug_overlay: bool = False
     subtitle_model: str = "small"
     allow_alignment_warnings: bool = False
@@ -169,7 +180,13 @@ class ExportSettings:
     quote_artwork_path: str = ""
     quote_pdf_page: int = 1  # one-based page number for a multi-page PDF
     quote_artwork_fit_mode: str = "fit"  # fit | fill | crop
-    quote_duration: float = 2.0  # seconds
+    quote_duration: float = 4.0  # seconds; new Flyer default
+
+    # Input-library configuration and explicit-order semantics. Empty
+    # ``source_folders`` preserves the legacy single input folder field; a
+    # populated list is the complete configured source set.
+    source_folders: list[str] = field(default_factory=list)
+    video_order_mode: str = "folder_alternating"  # folder_alternating | manual
 
 
     # Render-time values filled by MainProjectEngine; they are harmless if

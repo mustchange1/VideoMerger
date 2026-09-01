@@ -286,7 +286,7 @@ def test_default_settings_are_maximum_quality_and_youtube_landscape():
     assert settings.subtitle_style == "long_1"
     # 1.2.4: Default-Animation ist "Static Phrase" (vor 1.2.4 "type_reveal").
     assert settings.subtitle_animation == "static_phrase"
-    assert settings.subtitle_position == "Bottom"
+    assert settings.subtitle_position == "Center"
 
 
 def test_effective_quality_maps_presets_to_real_encoder_arguments():

@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from ..discovery import discover_videos
 from ..engine import VideoMergerEngine
 from ..main_project import MainProjectEngine
-from ..models import ExportSettings, ProgressEvent
+from ..models import ExportSettings
 from ..output_manager import make_output_path
 from ..paths import locate_ffmpeg
 from ..project_order import GeneratedOutputStore, ProjectOrderStore
@@ -50,12 +50,16 @@ class ProcessingWorker(QObject):
                 output_store.add(output)
                 self.finished.emit(str(output), report)
                 return
+            configured_sources = list(getattr(self.settings, "source_folders", []) or [])
+            discovery_input = configured_sources if configured_sources else self.input_folder
             paths = discover_videos(
-                self.input_folder,
+                discovery_input,
                 order_store=ProjectOrderStore(),
                 excluded_paths=output_store.paths(),
             )
-            self.log.emit(f"Input files found directly in selected folder: {len(paths)}")
+            self.log.emit(
+                f"Input files found in {len(configured_sources) or 1} configured source folder(s): {len(paths)}"
+            )
             self.log.emit("Captured active preview/export order: " + " → ".join(path.name for path in paths))
             analysis_started = time.perf_counter()
             media = self.engine.analyze(paths, self.log.emit)

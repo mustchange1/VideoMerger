@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -333,10 +332,18 @@ def _ass_escape(text: str) -> str:
 
 
 def _position(position: str, width: int, height: int, collection: str) -> tuple[int, int]:
-    pos = position if position in {"Bottom", "Medium-Low", "Middle", "Top"} else ("Medium-Low" if collection == "short" else "Bottom")
-    if pos == "Top": return 8, round(height * .08)
-    if pos == "Middle": return 5, 0
-    if pos == "Medium-Low": return 2, round(height * (.22 if height > width else .16))
+    # New defaults are explicit labels; old project values remain valid.
+    aliases = {"Bottom Center": "Bottom", "Center": "Middle"}
+    normalized = aliases.get(str(position), str(position))
+    pos = normalized if normalized in {"Bottom", "Medium-Low", "Middle", "Top"} else (
+        "Medium-Low" if collection == "short" else "Middle"
+    )
+    if pos == "Top":
+        return 8, round(height * .08)
+    if pos == "Middle":
+        return 5, 0
+    if pos == "Medium-Low":
+        return 2, round(height * (.22 if height > width else .16))
     return 2, round(height * .07)
 
 

@@ -282,7 +282,7 @@ def test_gui_defaults_and_live_preview_updates_without_export(qapp, monkeypatch)
         assert layout.preset_key == "long_1"
         # Exakt die Renderer-Geometrie für 16:9.
         assert layout.font_size == subtitles._font_size(1920, 1080, get_preset("long_1"))
-        alignment, margin_v = subtitles._position("Bottom", 1920, 1080, "long")
+        alignment, margin_v = subtitles._position("Center", 1920, 1080, "long")
         assert (layout.alignment, layout.margin_v) == (alignment, margin_v)
 
         # --- Fontwechsel: sofort, ohne Export, echte Metrik ---
@@ -310,7 +310,7 @@ def test_gui_defaults_and_live_preview_updates_without_export(qapp, monkeypatch)
         assert not hasattr(window, "quote_text_edit")
         assert not hasattr(window, "quote_attribution_edit")
         assert not hasattr(window, "quote_mode_combo")
-        assert window.quote_duration_spin.value() == 2.0
+        assert window.quote_duration_spin.value() == 4.0
         assert [window.quote_artwork_fit_combo.itemData(i) for i in range(window.quote_artwork_fit_combo.count())] == [
             "fit", "fill", "crop"
         ]

@@ -1,4 +1,12 @@
-# Architektur – VideoMerger 1.3.0
+# Architektur – VideoMerger 1.4.0
+
+## Architektur-Zusätze 1.4.0
+
+- **Quellordner:** `discovery.discover_videos()` akzeptiert die explizit konfigurierte Ordnerliste und setzt `MediaInfo.source_folder`; der alte Ein-Ordner-Modus scannt weiterhin nur direkt enthaltene Dateien. `ProjectOrderStore` persistiert globale und ordnerspezifische aktive Reihenfolgen.
+- **Auswahl:** `video_pool.folder_aware_order()` alterniert deterministisch zufällig zwischen Ordnern, solange ein anderer Ordner noch verwendbare Clips besitzt. `folder_aware=False` ist der ausdrückliche manuelle Reihenfolgenpfad.
+- **Dauer:** `timeline.duration_before_merge_value()` skaliert jeden normalen Stage-1-Clip vor dem Timeline-Aufbau; `engine.post_process_duration()` ist die getrennte optionale After-Merge-Operation. Smart Last-Clip Stretch bleibt zwischen diesen Schritten und dem Render.
+- **Flyer:** Artwork ist ein echter stummer Stage-2-Eingang zwischen Intro und Main. Rasterbilder werden direkt, PDF-Seiten mit PyMuPDF als temporäre Renderdatei verwendet; Stage-1-Cache-Fingerprints enthalten keine Quote-only-Einstellungen.
+- **Defaults:** neue Projekte verwenden Before Merge `0,70x`, After Merge deaktiviert / `1,00x`, Flyer `4,0 s` und Long-Form Landscape `Center`; Short-Form Portrait bleibt `Bottom Center`. Gespeicherte Werte haben Vorrang.
 
 ## Additiver Aufbau
 

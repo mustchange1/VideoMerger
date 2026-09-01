@@ -15,7 +15,11 @@ from .video_merger.project_order import GeneratedOutputStore, ProjectOrderStore
 def main() -> int:
     parser = argparse.ArgumentParser(description="VideoMerger headless export")
     parser.add_argument("--stage", choices=["basic", "main", "outro", "complete"], default="basic")
-    parser.add_argument("--input", type=Path, help="video folder for basic/main stage")
+    parser.add_argument("--input", type=Path, help="legacy single input folder; use --source-folder repeatedly for multiple folders")
+    parser.add_argument(
+        "--source-folder", action="append", default=[], type=Path,
+        help="configured video source folder; repeat for multiple folders (overrides --input)",
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
     parser.add_argument("--resolution", default="Auto")
@@ -52,6 +56,10 @@ def main() -> int:
         default="natural",
         help="voiceover order before alignment and rendering",
     )
+    parser.add_argument(
+        "--video-order", choices=["folder_alternating", "manual"], default="folder_alternating",
+        help="folder-aware randomized alternation or explicit persisted manual order",
+    )
     parser.add_argument("--music", default="")
     parser.add_argument("--original-audio", choices=["mute", "low", "original"], default="mute")
     parser.add_argument("--music-volume", type=int, default=44)
@@ -60,7 +68,24 @@ def main() -> int:
         "--short-video", choices=["hold", "loop"], default="hold",
         help="hold final rendered frame or loop the complete active ordered timeline",
     )
-    # 1.3.0 smart duration fit + global video speed.
+    # Independent Before/After Merge duration controls. ``--video-speed``
+    # remains a compatibility alias for older scripts.
+    parser.add_argument(
+        "--duration-before-merge", type=float, default=0.70,
+        help="per-clip playback multiplier before merge (default 0.70; timeline = source / multiplier)",
+    )
+    parser.add_argument(
+        "--duration-after-merge", type=float, default=1.00,
+        help="whole-master playback multiplier after merge (default 1.00)",
+    )
+    parser.add_argument(
+        "--enable-duration-after-merge", action="store_true",
+        help="run the independent post-merge duration operation",
+    )
+    parser.add_argument(
+        "--video-speed", type=float, default=None,
+        help="deprecated alias for --duration-before-merge",
+    )
     parser.add_argument(
         "--duration-fit", choices=["cut", "stretch"], default="cut",
         help="cut the last selected clip (default) or stretch (slow) it within the stretch limit",
@@ -68,10 +93,6 @@ def main() -> int:
     parser.add_argument(
         "--max-stretch", type=float, default=10.0,
         help="maximum stretch of the final clip in percent (default 10)",
-    )
-    parser.add_argument(
-        "--video-speed", type=float, default=1.0,
-        help="global Main Video playback speed 0.50-2.00 (default 1.00; voiceover stays the timing authority)",
     )
     # Optional silent Quote/Flyer artwork between Intro and Main.
     parser.add_argument("--quote", action="store_true", help="enable the Quote / Flyer section")
@@ -89,15 +110,18 @@ def main() -> int:
         help="artwork framing mode; Fit preserves the complete artwork (default)",
     )
     parser.add_argument(
-        "--quote-duration", type=float, default=2.0,
-        help="Quote/Flyer duration in seconds (0.5-5.0; default 2.0)",
+        "--quote-duration", type=float, default=4.0,
+        help="Quote/Flyer duration in seconds (0.5-5.0; default 4.0)",
     )
     parser.add_argument("--subtitles", action="store_true")
     parser.add_argument("--language", choices=["German", "English", "Auto"], default="German")
     parser.add_argument("--subtitle-style", default="long_1")
-    parser.add_argument("--subtitle-animation", choices=["type_reveal", "color_change", "word_highlight", "outline_highlight", "static_phrase"], default="type_reveal")
+    parser.add_argument("--subtitle-animation", choices=["type_reveal", "color_change", "word_highlight", "outline_highlight", "static_phrase"], default="static_phrase")
     parser.add_argument("--subtitle-font", choices=["eveleth_clean", "modern_sans_bold", "clean_sans"], default="modern_sans_bold")
-    parser.add_argument("--subtitle-position", choices=["Bottom", "Medium-Low", "Middle", "Top"], default="Bottom")
+    parser.add_argument(
+        "--subtitle-position", choices=["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"],
+        default=None, help="default is Center for landscape and Bottom Center for vertical",
+    )
     parser.add_argument("--subtitle-debug-overlay", action="store_true")
     parser.add_argument("--allow-alignment-warning", action="store_true")
     parser.add_argument("--watermark", default="")
@@ -116,8 +140,12 @@ def main() -> int:
     )
     if script_mode == "single":
         script_paths = [global_script] if global_script else []
+    subtitle_position = args.subtitle_position or ("Center" if args.aspect == "16:9" else "Bottom Center")
+    configured_sources = [str(Path(value).expanduser().resolve()) for value in args.source_folder]
     settings = ExportSettings(
         aspect=args.aspect, resolution=args.resolution,
+        source_folders=configured_sources,
+        video_order_mode=args.video_order,
         transition_type=args.transition_effect, transition_ease=args.transition_ease,
         transition_duration=args.transition, encoding=args.encoding,
         crf=args.crf, quality_preset=args.quality, output_preset=args.output_preset,
@@ -133,7 +161,11 @@ def main() -> int:
         short_video_mode=args.short_video,
         duration_fit_mode=args.duration_fit,
         max_stretch_percent=max(1.0, min(50.0, args.max_stretch)),
-        video_speed=max(0.5, min(2.0, args.video_speed)),
+        duration_before_merge=max(0.25, min(4.0, args.video_speed if args.video_speed is not None else args.duration_before_merge)),
+        duration_after_merge=max(0.25, min(4.0, args.duration_after_merge)),
+        duration_after_merge_enabled=bool(args.enable_duration_after_merge),
+        # Legacy field is retained only for old cache/API compatibility.
+        video_speed=1.0,
         quote_enabled=args.quote or bool(args.quote_artwork),
         quote_input_mode="artwork",
         quote_artwork_path=args.quote_artwork,
@@ -142,7 +174,7 @@ def main() -> int:
         quote_duration=max(0.5, min(5.0, args.quote_duration)),
         subtitle_enabled=args.subtitles, subtitle_language=args.language,
         subtitle_style=args.subtitle_style, subtitle_animation=args.subtitle_animation,
-        subtitle_font=args.subtitle_font, subtitle_position=args.subtitle_position,
+        subtitle_font=args.subtitle_font, subtitle_position=subtitle_position,
         subtitle_debug_overlay=args.subtitle_debug_overlay,
         allow_alignment_warnings=args.allow_alignment_warning,
         watermark_enabled=bool(args.watermark), watermark_path=args.watermark,
@@ -157,10 +189,11 @@ def main() -> int:
     if args.stage == "outro":
         output, _report = MainProjectEngine(engine).add_outro(settings, args.output, log=print)
     else:
-        if args.input is None:
-            parser.error("--input is required for basic/main/complete stage")
+        if args.input is None and not configured_sources:
+            parser.error("--input or at least one --source-folder is required for basic/main/complete stage")
         inputs = discover_videos(
-            args.input, order_store=ProjectOrderStore(), excluded_paths=output_store.paths()
+            configured_sources or args.input,
+            order_store=ProjectOrderStore(), excluded_paths=output_store.paths()
         )
         media = engine.analyze(inputs, print)
         if args.stage == "main":

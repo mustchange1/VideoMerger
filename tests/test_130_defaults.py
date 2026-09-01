@@ -22,7 +22,7 @@ def test_output_preset_and_quality_defaults_remain():
     assert settings.quality_preset == "maximum"
     assert settings.subtitle_style == "long_1"
     assert settings.subtitle_font == "modern_sans_bold"
-    assert settings.subtitle_position == "Bottom"
+    assert settings.subtitle_position == "Center"
     assert settings.aspect == "16:9"
 
 
@@ -47,7 +47,7 @@ def test_quote_flyer_defaults():
     assert settings.quote_artwork_path == ""
     assert settings.quote_pdf_page == 1
     assert settings.quote_artwork_fit_mode == "fit"
-    assert settings.quote_duration == 2.0
+    assert settings.quote_duration == 4.0
 
 
 def test_transition_and_music_defaults_are_cinematic_but_safe():
