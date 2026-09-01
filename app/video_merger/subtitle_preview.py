@@ -489,6 +489,109 @@ if _QIMPORTS_OK:
             painter.end()
 
 
+    class ImageInsertionPreviewCanvas(_PreviewCanvasBase):
+        """Live preview for the independent Image Insertion section.
+
+        The preview uses the same contain/cover/source-crop semantics as the
+        FFmpeg image branch, including zoom and deterministic look overlays.
+        It intentionally does not display subtitles or any audio indication.
+        """
+
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            self._image: QImage | None = None
+            self._path = ""
+            self._fit_mode = "fit"
+            self._zoom = 100
+            self._filter = "natural"
+            self._width, self._height = 16, 9
+            self._error = ""
+
+        def set_image(
+            self, path: str, fit_mode: str, zoom: int, filter_name: str,
+            width: int, height: int,
+        ) -> None:
+            self._path = str(path or "").strip()
+            self._fit_mode = fit_mode if fit_mode in {"fit", "fill", "crop"} else "fit"
+            self._zoom = max(100, min(300, int(zoom or 100)))
+            self._filter = filter_name if filter_name in {
+                "natural", "cinematic", "moody", "film", "dark_editorial"
+            } else "natural"
+            self._width, self._height = max(16, int(width)), max(16, int(height))
+            self._image = None
+            self._error = ""
+            if self._path:
+                image = QImage(self._path)
+                if image.isNull():
+                    self._error = "Image preview unavailable"
+                else:
+                    self._image = image
+            self.update()
+
+        def _source_crop(self, image: QImage, target_ratio: float) -> QImage:
+            if image.height() <= 0:
+                return image
+            source_ratio = image.width() / image.height()
+            if abs(source_ratio - target_ratio) < 0.001:
+                return image
+            if source_ratio > target_ratio:
+                crop_width = max(1, round(image.height() * target_ratio))
+                return image.copy((image.width() - crop_width) // 2, 0, crop_width, image.height())
+            crop_height = max(1, round(image.width() / target_ratio))
+            return image.copy(0, (image.height() - crop_height) // 2, image.width(), crop_height)
+
+        def _paint_filter(self, painter: "QPainter", rect) -> None:
+            # Fixed translucent overlays are a preview-equivalent visual cue
+            # for the fixed FFmpeg eq/colorbalance expressions. They are not
+            # random and never alter source geometry.
+            if self._filter == "cinematic":
+                painter.fillRect(rect, QColor(24, 52, 88, 32))
+                painter.fillRect(QRectF(rect.left(), rect.top(), rect.width(), rect.height() * .34), QColor(244, 180, 96, 12))
+            elif self._filter == "moody":
+                painter.fillRect(rect, QColor(16, 25, 48, 52))
+            elif self._filter == "film":
+                painter.fillRect(rect, QColor(164, 116, 65, 28))
+            elif self._filter == "dark_editorial":
+                painter.fillRect(rect, QColor(11, 22, 42, 68))
+
+        def paintEvent(self, event) -> None:  # noqa: N802
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            video = self._video_rect(self._width, self._height)
+            if video is None:
+                self._paint_backdrop(painter, None)
+                painter.end()
+                return
+            rect, _scale = video
+            self._paint_backdrop(painter, rect)
+            if self._image is None:
+                if self._error:
+                    painter.setPen(QPen(QColor(255, 210, 100)))
+                    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._error)
+                painter.end()
+                return
+            image = self._image
+            target = QSize(max(1, round(rect.width() * self._zoom / 100)), max(1, round(rect.height() * self._zoom / 100)))
+            target_ratio = rect.width() / max(1.0, rect.height())
+            if self._fit_mode == "crop":
+                image = self._source_crop(image, target_ratio)
+                shown = image.scaled(target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            elif self._fit_mode == "fill":
+                shown = image.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            else:
+                painter.fillRect(rect, QColor(0, 0, 0))
+                shown = image.scaled(target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            x = rect.left() + (rect.width() - shown.width()) / 2
+            y = rect.top() + (rect.height() - shown.height()) / 2
+            painter.save()
+            painter.setClipRect(rect)
+            painter.drawImage(QPointF(x, y), shown)
+            self._paint_filter(painter, rect)
+            painter.restore()
+            painter.end()
+
+
 else:  # pragma: no cover - PySide6 fehlt
 
     class SubtitlePreviewCanvas(QWidget):  # type: ignore[no-redef]
@@ -504,6 +607,13 @@ else:  # pragma: no cover - PySide6 fehlt
 
         def set_artwork(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
             raise RuntimeError("PySide6 ist für die Quote-Vorschau erforderlich.")
+
+    class ImageInsertionPreviewCanvas(QWidget):  # type: ignore[no-redef]
+        def __init__(self, parent=None) -> None:
+            super().__init__()
+
+        def set_image(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            raise RuntimeError("PySide6 ist für die Image-Insertion-Vorschau erforderlich.")
 
 
 # --------------------------------------------------------------------------- #

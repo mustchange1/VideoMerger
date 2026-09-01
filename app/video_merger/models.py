@@ -51,6 +51,13 @@ class MediaInfo:
     # Quote/Flyer artwork is a real, silent Stage-2 image input.
     is_quote_artwork: bool = False
     quote_fit_mode: str = "fit"  # fit | fill | crop
+    # Independent Image Insertion is a different Stage-2 input.  Keeping a
+    # distinct flag/settings payload prevents Quote/Flyer changes from being
+    # silently applied to the user image feature.
+    is_image_insertion: bool = False
+    image_fit_mode: str = "fit"  # fit | fill | crop
+    image_zoom: int = 100
+    image_filter: str = "natural"
 
     @property
     def display_name(self) -> str:
@@ -181,6 +188,22 @@ class ExportSettings:
     quote_pdf_page: int = 1  # one-based page number for a multi-page PDF
     quote_artwork_fit_mode: str = "fit"  # fit | fill | crop
     quote_duration: float = 4.0  # seconds; new Flyer default
+
+    # Independent optional Stage-2 Image Insertion. It is always silent and
+    # never participates in Stage-1 selection, alignment, or cache keys.
+    image_enabled: bool = False
+    image_path: str = ""
+    image_position: str = "after_intro"  # after_intro | before_outro
+    image_duration: float = 4.0
+    image_transition_duration: float = 1.0
+    image_fit_mode: str = "fit"  # fit | fill | crop
+    image_zoom: int = 100
+    image_filter: str = "natural"
+
+    # Subtitle output is explicit: the default emits all three user-facing
+    # artifacts, Burned Only emits only the burned video, and Without emits a
+    # clean video without creating an alignment/sidecar output bundle.
+    subtitle_output_mode: str = "burned_and_sidecars"
 
     # Input-library configuration and explicit-order semantics. Empty
     # ``source_folders`` preserves the legacy single input folder field; a

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,12 +31,27 @@ from .project_assets import (
     read_script,
     require_asset,
 )
+from .image_insertion import (
+    clamp_image_duration,
+    clamp_image_zoom,
+    image_insertion_path,
+    normalize_image_filter,
+    normalize_image_fit_mode,
+    normalize_image_position,
+)
 from .quote_artwork import (
     cleanup_prepared_quote_artwork,
     prepare_quote_artwork,
     quote_artwork_path,
 )
 from .render_cache import Stage1RenderCache, load_cached_alignment, stage1_fingerprint
+from .subtitle_modes import (
+    SUBTITLE_OUTPUT_COMBINED,
+    SUBTITLE_OUTPUT_WITHOUT,
+    normalize_subtitle_output_mode,
+    subtitle_render_requested,
+    subtitle_sidecars_requested,
+)
 from .subtitle_verification import create_visual_verification_frames
 from .subtitles import (
     build_cues,
@@ -172,6 +188,49 @@ def _quote_fit_mode(settings: ExportSettings) -> str:
     value = str(getattr(settings, "quote_artwork_fit_mode", "fit") or "fit").strip().casefold()
     return value if value in {"fit", "fill", "crop"} else "fit"
 
+
+
+def _image_is_active(settings: ExportSettings) -> bool:
+    return bool(
+        getattr(settings, "image_enabled", False)
+        and (getattr(settings, "image_path", "") or "").strip()
+    )
+
+
+def _validate_image_settings(settings: ExportSettings) -> None:
+    if not getattr(settings, "image_enabled", False):
+        return
+    value = (getattr(settings, "image_path", "") or "").strip()
+    if not value:
+        raise VideoMergerError(
+            "Include Image Insertion ist aktiviert, aber keine Bilddatei ausgewählt."
+        )
+    image_insertion_path(value)
+    try:
+        raw_duration = float(getattr(settings, "image_duration", 4.0))
+    except (TypeError, ValueError) as exc:
+        raise VideoMergerError("Ungültige Image-Insertion-Dauer; erlaubt sind 0.5–60.0 s.") from exc
+    if not 0.5 <= raw_duration <= 60.0:
+        raise VideoMergerError("Ungültige Image-Insertion-Dauer; erlaubt sind 0.5–60.0 s.")
+
+
+def _image_position(settings: ExportSettings) -> str:
+    return normalize_image_position(getattr(settings, "image_position", "after_intro"))
+
+
+def _image_dimensions(engine: VideoMergerEngine, path: Path) -> tuple[int, int]:
+    try:
+        data = engine.analyzer.probe_raw(path)
+        stream = next(item for item in data.get("streams", []) if item.get("codec_type") == "video")
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+    except (StopIteration, TypeError, ValueError, KeyError, OSError) as exc:
+        raise VideoMergerError(
+            f"Image Insertion konnte nicht analysiert werden: {path.name}"
+        ) from exc
+    if width <= 0 or height <= 0:
+        raise VideoMergerError(f"Image Insertion hat keine gültige Auflösung: {path.name}")
+    return width, height
 
 def _quote_artwork_target(
     settings: ExportSettings, reference: MediaInfo | list[MediaInfo]
@@ -332,6 +391,7 @@ class MainProjectEngine:
         progress: ProgressCallback,
         log: LogCallback,
         cancel_event,
+        subtitle_output_mode: str = SUBTITLE_OUTPUT_COMBINED,
     ) -> MainVideoResult | None:
         """Return a validated cached Stage-1 result, or ``None`` on any miss.
 
@@ -344,9 +404,12 @@ class MainProjectEngine:
         record = self.render_cache.load(fingerprint)
         if record is None:
             return None
-        if bool(record.get("subtitle_requested")) != bool(subtitle_requested):
-            log("Stage 1 cache MISS: subtitle mode differs from the cached render.")
+        mode = normalize_subtitle_output_mode(subtitle_output_mode)
+        record_mode = normalize_subtitle_output_mode(record.get("subtitle_output_mode"))
+        if bool(record.get("subtitle_requested")) != bool(subtitle_requested) or record_mode != mode:
+            log("Stage 1 cache MISS: subtitle output mode differs from the cached render.")
             return None
+        sidecars_requested = subtitle_requested and subtitle_sidecars_requested(mode)
         self.render_cache.restore_sidecars(record)
         artifacts = self.render_cache.artifact_paths(record)
         video = artifacts.get("video")
@@ -354,12 +417,12 @@ class MainProjectEngine:
         if video is None or not video.is_file() or video.stat().st_size <= 0:
             log("Stage 1 cache MISS: cached Main Video is missing or empty.")
             return None
-        if subtitle_requested and (
+        if sidecars_requested and (
             clean_video is None or not clean_video.is_file() or clean_video.stat().st_size <= 0
         ):
             log("Stage 1 cache MISS: cached clean Main Video is missing or empty.")
             return None
-        if subtitle_requested and any(
+        if sidecars_requested and any(
             artifacts.get(key) is None
             or not artifacts[key].is_file()
             or artifacts[key].stat().st_size <= 0
@@ -367,7 +430,7 @@ class MainProjectEngine:
         ):
             log("Stage 1 cache MISS: required subtitle sidecars could not be restored.")
             return None
-        if subtitle_requested:
+        if sidecars_requested:
             try:
                 validate_subtitle_file(artifacts["srt"], "srt")
                 validate_subtitle_file(artifacts["vtt"], "vtt")
@@ -379,7 +442,7 @@ class MainProjectEngine:
         if not report.ok:
             log("Stage 1 cache MISS: cached Main Video failed FFprobe validation.")
             return None
-        if subtitle_requested:
+        if sidecars_requested:
             clean_report = validate_output(clean_video, self.engine.ffprobe_path, resolved)
             if not clean_report.ok:
                 log("Stage 1 cache MISS: cached clean Main Video failed FFprobe validation.")
@@ -412,15 +475,15 @@ class MainProjectEngine:
         ))
         return MainVideoResult(
             video=video,
-            srt=artifacts.get("srt") if subtitle_requested else None,
-            vtt=artifacts.get("vtt") if subtitle_requested else None,
+            srt=artifacts.get("srt") if sidecars_requested else None,
+            vtt=artifacts.get("vtt") if sidecars_requested else None,
             report=report,
             alignment=alignment,
             warnings=[],
             canonical_timeline=timeline if subtitle_requested else None,
             verification_frames=[],
             timings=timings,
-            video_no_subtitles=clean_video if subtitle_requested else None,
+            video_no_subtitles=clean_video if sidecars_requested else None,
         )
 
     def create_main(
@@ -464,13 +527,17 @@ class MainProjectEngine:
         music_path = optional_path(settings.music_path)
         watermark_path = optional_path(settings.watermark_path)
 
-        # A supplied script is an explicit subtitle request. When voiceover and
-        # script are assigned, subtitles are automatically enabled so the real
-        # user workflow cannot silently produce a captionless video merely
-        # because a checkbox remained unchecked.
+        subtitle_mode = normalize_subtitle_output_mode(
+            getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
+        )
+        # A supplied script is an explicit subtitle request unless the user
+        # explicitly selected Without Subtitles. The latter still keeps the
+        # voiceover as the duration/audio authority, but performs no alignment,
+        # ASS burn, SRT, or VTT work.
         global_script = global_script_path(settings) if script_mode == "single" else None
         matched_script_paths = [path for path in unit_scripts if path is not None]
-        subtitle_requested = bool(settings.subtitle_enabled or global_script or matched_script_paths)
+        source_requested = bool(settings.subtitle_enabled or global_script or matched_script_paths)
+        subtitle_requested = subtitle_render_requested(subtitle_mode, source_requested)
         if subtitle_requested and not units:
             raise _subtitle_failure(
                 "input validation",
@@ -500,9 +567,13 @@ class MainProjectEngine:
                         script_files.append(require_asset(path, "Textskript", {".txt", ".text", ".md"}))
                     except Exception as exc:
                         log(f"Script skipped for partial matched coverage: {path}: {exc}")
-        if units and (global_script or matched_script_paths) and not settings.subtitle_enabled:
-            subtitle_requested = True
-            log("Subtitles auto-enabled: Voiceover + Script are assigned; SRT, VTT and burn-in are mandatory.")
+        if subtitle_requested and units and (global_script or matched_script_paths) and not settings.subtitle_enabled:
+            log(
+                "Subtitles auto-enabled: Voiceover + Script are assigned; "
+                f"output mode is {subtitle_mode}."
+            )
+        elif subtitle_mode == SUBTITLE_OUTPUT_WITHOUT and source_requested:
+            log("Subtitle output mode Without Subtitles: no alignment, burn-in, SRT, or VTT will be generated.")
 
         audio_started = time.perf_counter()
         try:
@@ -570,6 +641,7 @@ class MainProjectEngine:
             program_duration=program_duration,
             timeline_target_duration=target,
             subtitle_enabled=subtitle_requested,
+            subtitle_output_mode=subtitle_mode,
             subtitle_ass_path="",
             subtitle_fonts_dir=str(bundled_fonts_dir()),
             voiceover_paths=[str(asset.path) for asset in voice_assets],
@@ -623,6 +695,7 @@ class MainProjectEngine:
                 progress,
                 log,
                 cancel_event,
+                subtitle_output_mode=subtitle_mode,
             )
             if cached_result is not None:
                 return cached_result
@@ -632,18 +705,28 @@ class MainProjectEngine:
         # subtitles exist, SRT, VTT). Internal evidence (verification PNGs,
         # canonical timeline JSON, staged ASS) lives under temp/ and never
         # clutters the Output folder.
+        sidecars_requested = subtitle_requested and subtitle_sidecars_requested(subtitle_mode)
         output_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = project_root() / "temp"
+        if subtitle_requested:
+            temp_dir.mkdir(parents=True, exist_ok=True)
         base_stem = f"MainVideo_{_aspect_token(settings.aspect)}"
         name_index = 1
         while True:
             actual = base_stem if name_index == 1 else f"{base_stem}_{name_index}"
-            output_video = output_dir / f"{actual}.mp4"                    # primary (burned subtitles)
-            output_video_clean = output_dir / f"{actual}_no_subtitles.mp4"  # additional clean variant
+            output_video = output_dir / f"{actual}.mp4"
+            # The clean master is user-facing only in the combined mode. In
+            # Burned Only it is a Stage-1 temporary; in Without it is unused.
+            output_video_clean = (
+                output_dir / f"{actual}_no_subtitles.mp4"
+                if sidecars_requested
+                else temp_dir / f".{actual}.clean_master_{uuid.uuid4().hex}.mp4"
+            )
             srt_candidate = output_dir / f"{actual}.srt"
             vtt_candidate = output_dir / f"{actual}.vtt"
-            reserved: list[Path] = [output_video, output_video_clean]
-            if subtitle_requested:
-                reserved += [srt_candidate, vtt_candidate]
+            reserved: list[Path] = [output_video]
+            if sidecars_requested:
+                reserved += [output_video_clean, srt_candidate, vtt_candidate]
             if not any(path.exists() for path in reserved):
                 break
             name_index += 1
@@ -653,15 +736,18 @@ class MainProjectEngine:
         alignment = None
         ass_path: Path | None = None
         verification_frames: list[Path] = []
-        temp_dir = project_root() / "temp"
         if subtitle_requested:
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            srt_path, vtt_path = srt_candidate, vtt_candidate
             timeline_path = temp_dir / f"{output_video.stem}.subtitle_timeline.json"
+            if sidecars_requested:
+                srt_path, vtt_path = srt_candidate, vtt_candidate
 
         log("Stage 1 – Create Main Video")
         log("Aktive Clip-Reihenfolge: " + " → ".join(item.path.name for item in render_media))
-        render_folders = [media_source_folder(item) for item in render_media if not item.is_quote_artwork]
+        render_folders = [
+            media_source_folder(item)
+            for item in render_media
+            if not item.is_quote_artwork and not item.is_image_insertion
+        ]
         if len(set(render_folders)) > 1:
             log("Folder-aware alternation: consecutive clips use different source folders whenever an alternative remains.")
         if settings.short_video_mode == "loop" and len(render_media) > len(media):
@@ -872,13 +958,18 @@ class MainProjectEngine:
                         combined_script, alignment, settings.subtitle_style, program_end=subtitle_program_end,
                         width=resolved.width, height=resolved.height, font_key=settings.subtitle_font,
                     )
-                    srt_path, vtt_path = srt_candidate, vtt_candidate
                     timeline_path = temp_dir / f"{output_video.stem}.subtitle_timeline.json"
-                    write_srt(cues, srt_path)
-                    write_vtt(cues, vtt_path)
+                    if sidecars_requested:
+                        srt_path, vtt_path = srt_candidate, vtt_candidate
+                        write_srt(cues, srt_path)
+                        write_vtt(cues, vtt_path)
+                        validate_subtitle_file(srt_path, "srt")
+                        validate_subtitle_file(vtt_path, "vtt")
+                    else:
+                        # Burned Only intentionally has no SRT/VTT output;
+                        # the canonical timeline remains a private cache input.
+                        srt_path = vtt_path = None
                     write_canonical_timeline(combined_script, alignment, cues, timeline_path)
-                    validate_subtitle_file(srt_path, "srt")
-                    validate_subtitle_file(vtt_path, "vtt")
                     if cues and cues[-1].end > subtitle_program_end + 0.001:
                         raise VideoMergerError("Untertitel reichen in die Quiet Pause hinein.")
                     temp = project_root() / "temp"
@@ -970,21 +1061,31 @@ class MainProjectEngine:
                         # failure.
                         verification_frames = []
                         log("Visual subtitle verification skipped: no reliable matched words.")
-                    required = [srt_path, vtt_path, timeline_path, *verification_frames]
+                    required = [timeline_path, *verification_frames]
+                    if sidecars_requested:
+                        required = [srt_path, vtt_path, *required]
                     if not all(path and path.is_file() and path.stat().st_size > 0 for path in required):
                         raise VideoMergerError("Mindestens ein Subtitle-Ausgabeartefakt fehlt.")
+                    sidecar_status = "SRT: PASS · VTT: PASS" if sidecars_requested else "SRT: not generated · VTT: not generated"
                     log(
-                        "Subtitle Generation: PASS · Word-Level Alignment: PASS · SRT: PASS · VTT: PASS · "
-                        "Burned-In Subtitles: PASS"
+                        "Subtitle Generation: PASS · Word-Level Alignment: PASS · "
+                        + sidecar_status + " · Burned-In Subtitles: PASS"
                     )
                     log(
                         "Visual verification frames (decoded from final MP4, internal evidence): "
                         + ", ".join(path.name for path in verification_frames)
                     )
-                    log(
-                        "Dual subtitle output: " + output_video.name + " (burned, primary) + "
-                        + output_video_clean.name + " (no subtitles)"
-                    )
+                    if sidecars_requested:
+                        log(
+                            "Subtitle output mode: With Burned-in Subtitles + SRT + VTT · "
+                            + output_video.name + " (burned) + "
+                            + output_video_clean.name + " (clean master)"
+                        )
+                    else:
+                        log(
+                            "Subtitle output mode: With Burned-in Subtitles only · "
+                            + output_video.name + " (burned); no SRT/VTT files generated."
+                        )
                 except Exception as exc:
                     raise _subtitle_failure("first/middle/final visual verification", exc) from exc
             timings["finalization_seconds"] = time.perf_counter() - finalization_started
@@ -1001,11 +1102,12 @@ class MainProjectEngine:
                     stage1_digest,
                     stage1_payload,
                     video=output_video,
-                    video_no_subtitles=output_video_clean if subtitle_requested else None,
+                    video_no_subtitles=output_video_clean if sidecars_requested else None,
                     srt=srt_path,
                     vtt=vtt_path,
                     canonical_timeline=timeline_path,
                     subtitle_requested=subtitle_requested,
+                    subtitle_output_mode=subtitle_mode,
                 )
                 timings["render_cache_saved"] = True
                 log(f"Stage 1 cache saved: {stage1_digest[:12]}…")
@@ -1019,7 +1121,7 @@ class MainProjectEngine:
                 canonical_timeline=timeline_path,
                 verification_frames=verification_frames,
                 timings=timings,
-                video_no_subtitles=output_video_clean if subtitle_requested else None,
+                video_no_subtitles=output_video_clean if sidecars_requested else None,
             )
             result.timings["render_reused"] = False
             result.timings["cache_hit"] = False
@@ -1034,8 +1136,12 @@ class MainProjectEngine:
                 vtt_path.unlink(missing_ok=True)
             raise
         finally:
-            if ass_path and output_video.exists():
+            # ASS and internal clean masters are process-local artifacts. Clean
+            # them even when FFmpeg fails before creating the burned output.
+            if ass_path:
                 ass_path.unlink(missing_ok=True)
+            if not sidecars_requested:
+                output_video_clean.unlink(missing_ok=True)
 
     def create_complete(
         self,
@@ -1058,9 +1164,11 @@ class MainProjectEngine:
         auch ohne Intro und ohne Outro.
         """
         _validate_quote_artwork_settings(settings)
+        _validate_image_settings(settings)
         quote_active = _quote_is_active(settings)
-        if not optional_path(settings.intro_path) and not optional_path(settings.outro_path) and not quote_active:
-            raise VideoMergerError("One-Click benötigt eine zugewiesene Intro- und/oder Outro-Datei.")
+        image_active = _image_is_active(settings)
+        if not optional_path(settings.intro_path) and not optional_path(settings.outro_path) and not quote_active and not image_active:
+            raise VideoMergerError("One-Click benötigt eine zugewiesene Intro-, Image- und/oder Outro-Datei.")
 
         # Same subtitle-expectation rule as create_main: voiceover + script
         # always produce subtitles (a checked box alone does not when no
@@ -1073,8 +1181,16 @@ class MainProjectEngine:
         )
         if str(settings.script_mode).casefold() not in {"matched", "individual"}:
             script_probe = [str(global_script_path(settings))] if global_script_path(settings) else []
-        subtitle_expected = bool(settings.subtitle_enabled or (unit_probe and script_probe))
-        parts = 3 if subtitle_expected else 2
+        subtitle_mode = normalize_subtitle_output_mode(
+            getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
+        )
+        subtitle_expected = subtitle_render_requested(
+            subtitle_mode, bool(settings.subtitle_enabled or (unit_probe and script_probe))
+        )
+        # Combined mode has a user-facing clean variant and therefore a third
+        # progress lane for its second Stage-2 composition. Burned Only and
+        # Without Subtitles each need exactly one Stage-2 pass.
+        parts = 3 if subtitle_expected and subtitle_sidecars_requested(subtitle_mode) else 2
 
         def stage_progress(part: int, parts: int, event: ProgressEvent) -> None:
             span = 100.0 / parts
@@ -1098,12 +1214,21 @@ class MainProjectEngine:
         log(f"actual MainVideo input = {actual_main}")
         stage2_settings = replace(settings, main_video_path=str(actual_main))
         log(f"Actual Stage 1 input used by Stage 2: {actual_main}")
-        # 1.3.0: reserve BOTH final names up front so the subtitled primary
-        # and the no-subtitles variant belong to the same bundle index.
+        # Reserve a paired final bundle only when the selected mode actually
+        # asks for sidecars. Burned Only and Without Subtitles produce one
+        # final video and never leave a misleading *_no_subtitles.mp4 sibling.
         output_dir.mkdir(parents=True, exist_ok=True)
-        final_primary, final_clean, metadata_path = _available_dual_video_bundle(
-            output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}"
-        )
+        if subtitle_expected and subtitle_sidecars_requested(subtitle_mode):
+            final_primary, final_clean, metadata_path = _available_dual_video_bundle(
+                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}"
+            )
+        else:
+            single_bundle = _available_bundle(
+                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4", "YouTube.txt")
+            )
+            final_primary = single_bundle["mp4"]
+            final_clean = output_dir / f".{final_primary.stem}.unused_no_subtitles.mp4"
+            metadata_path = single_bundle["YouTube.txt"]
         final_video, final_report = self.add_outro(
             stage2_settings, output_dir,
             progress=lambda event: stage_progress(2, parts, event), log=log,
@@ -1183,11 +1308,13 @@ class MainProjectEngine:
         if outro_path:
             require_asset(outro_path, "Outro", {".mp4", ".mov", ".mkv", ".m4v"})
         _validate_quote_artwork_settings(settings)
+        _validate_image_settings(settings)
         quote_artwork_value = (getattr(settings, "quote_artwork_path", "") or "").strip()
         quote_active = _quote_is_active(settings)
+        image_active = _image_is_active(settings)
         if not intro_path and not outro_path:
-            if not quote_active:
-                raise VideoMergerError("Stage 2 benötigt mindestens ein Intro- oder Outro-Video.")
+            if not quote_active and not image_active:
+                raise VideoMergerError("Stage 2 benötigt mindestens ein Intro-, Image- oder Outro-Video.")
         ordered_paths = [path for path in (intro_path, main_path, outro_path) if path]
         media = list(self.engine.analyze(ordered_paths, log))
         # PDF pages are rasterized only for this synchronous Stage-2 export.
@@ -1276,21 +1403,81 @@ class MainProjectEngine:
                 f"Position zwischen {'Intro und MainVideo' if intro_path else '(Start) und MainVideo'}"
             )
 
-        # Per-clip original-audio gain and role in composition order
-        # (intro/quote/main/outro). Quote is explicitly silent.
+        # Independent Image Insertion: unlike Quote/Flyer this is not a PDF
+        # workflow and it has its own persisted framing/look controls. Insert
+        # exactly one occurrence at the requested semantic boundary. The
+        # image is never sent through the Stage-1 media list.
+        image_position: int | None = None
+        if image_active:
+            if str(settings.resolution or "").casefold() == "auto" and stage2_resolution.casefold() == "auto":
+                image_target_width, image_target_height = _quote_artwork_target(settings, media)
+                stage2_resolution = f"{image_target_width}x{image_target_height}"
+            image_path = image_insertion_path(settings.image_path)
+            image_width, image_height = _image_dimensions(self.engine, image_path)
+            image_duration = clamp_image_duration(settings.image_duration)
+            # Quote/Flyer may already be inserted at index 0/1. Resolve the
+            # actual MainVideo reference by role rather than relying on a
+            # positional index; the reference supplies only cadence metadata.
+            image_reference = next(
+                item for item in media
+                if item.path == main_path
+                and not item.is_quote_artwork
+                and not item.is_image_insertion
+            )
+            image_item = MediaInfo(
+                path=image_path,
+                duration=image_duration,
+                width=image_width,
+                height=image_height,
+                fps=image_reference.fps,
+                effective_width=image_width,
+                effective_height=image_height,
+                fps_fraction=image_reference.fps_fraction,
+                video_codec="image",
+                pixel_format="yuv420p",
+                sar="1:1",
+                dar="",
+                source_duration=image_duration,
+                is_image_insertion=True,
+                image_fit_mode=normalize_image_fit_mode(settings.image_fit_mode),
+                image_zoom=clamp_image_zoom(settings.image_zoom),
+                image_filter=normalize_image_filter(settings.image_filter),
+            )
+            if _image_position(settings) == "after_intro":
+                # With no Intro, After Intro means the beginning of Stage 2.
+                image_position = 1 if intro_path else 0
+            else:
+                # With no Outro, Before Outro means the end of Stage 2.
+                image_position = len(media) - 1 if outro_path else len(media)
+            media.insert(image_position, image_item)
+            log(
+                f"Image Insertion aktiv: {image_path.name}, Position "
+                f"{_image_position(settings)}, Dauer {image_duration:.3f} s, "
+                f"Fit {image_item.image_fit_mode}, Zoom {image_item.image_zoom} %, "
+                f"Filter {image_item.image_filter}; Audio: stumm"
+            )
+
+        # Per-section original-audio gain and role in composition order. Both
+        # artwork features are explicit mute slots; no application voiceover,
+        # music, or original audio can attach to either still image.
         audio_modes: list[str] = []
         stage2_roles: list[str] = []
-        if intro_path:
-            audio_modes.append(settings.intro_audio_mode)
-            stage2_roles.append("intro")
-        if quote_position is not None:
-            audio_modes.append("mute")
-            stage2_roles.append("quote")
-        audio_modes.append("original")  # the generated Main Video keeps its mix
-        stage2_roles.append("main")
-        if outro_path:
-            audio_modes.append(settings.outro_audio_mode)
-            stage2_roles.append("outro")
+        for item in media:
+            if item.is_quote_artwork:
+                stage2_roles.append("quote")
+                audio_modes.append("mute")
+            elif item.is_image_insertion:
+                stage2_roles.append("image")
+                audio_modes.append("mute")
+            elif intro_path and item.path == intro_path and "intro" not in stage2_roles:
+                stage2_roles.append("intro")
+                audio_modes.append(settings.intro_audio_mode)
+            elif outro_path and item.path == outro_path and "outro" not in stage2_roles:
+                stage2_roles.append("outro")
+                audio_modes.append(settings.outro_audio_mode)
+            else:
+                stage2_roles.append("main")
+                audio_modes.append("original")
 
         outro_settings = replace(
             settings,
@@ -1323,6 +1510,30 @@ class MainProjectEngine:
                 resolved.transitions[-1] = 0.0
                 log("Übergang zum Outro deaktiviert; Quote-Übergänge bleiben aktiv.")
             if quote_position is not None:
+                resolved.expected_duration = max(
+                    0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
+                )
+            if image_position is not None:
+                # Keep the selected transition family, but let the image have
+                # its own persisted duration request. Clamp at each boundary
+                # so short sections never create duplicate/overlapping
+                # dissolves, hard cuts, black frames, or timeline gaps.
+                try:
+                    image_transition = max(
+                        0.0, min(5.0, float(getattr(settings, "image_transition_duration", 1.0)))
+                    )
+                except (TypeError, ValueError):
+                    image_transition = 1.0
+                for boundary in (image_position - 1, image_position):
+                    if 0 <= boundary < len(resolved.transitions):
+                        left = resolved.effective_durations[boundary]
+                        right = resolved.effective_durations[boundary + 1]
+                        if image_transition <= 0.0:
+                            resolved.transitions[boundary] = 0.0
+                        else:
+                            resolved.transitions[boundary] = max(
+                                0.01, min(image_transition, left * 0.45, right * 0.45)
+                            )
                 resolved.expected_duration = max(
                     0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
                 )

@@ -18,6 +18,7 @@ from typing import Any, Sequence
 
 from .models import AudioAssetInfo, ExportSettings, MediaInfo, ResolvedExport
 from .paths import project_root
+from .subtitle_modes import normalize_subtitle_output_mode
 
 CACHE_SCHEMA = 1
 FINGERPRINT_SCHEMA = 1
@@ -85,6 +86,7 @@ _SUBTITLE_SETTING_FIELDS = (
     "subtitle_debug_overlay",
     "subtitle_model",
     "allow_alignment_warnings",
+    "subtitle_output_mode",
 )
 
 
@@ -161,6 +163,10 @@ def _media_payload(item: MediaInfo) -> dict[str, Any]:
         "source_folder": str(getattr(item, "source_folder", "") or item.path.parent),
         "is_quote_artwork": bool(item.is_quote_artwork),
         "quote_fit_mode": str(item.quote_fit_mode),
+        "is_image_insertion": bool(getattr(item, "is_image_insertion", False)),
+        "image_fit_mode": str(getattr(item, "image_fit_mode", "fit")),
+        "image_zoom": int(getattr(item, "image_zoom", 100)),
+        "image_filter": str(getattr(item, "image_filter", "natural")),
     }
 
 
@@ -200,7 +206,13 @@ def build_stage1_payload(
     if subtitle_requested:
         values.update({name: getattr(settings, name) for name in _SUBTITLE_SETTING_FIELDS})
     else:
-        values.update({name: None for name in _SUBTITLE_SETTING_FIELDS})
+        values.update({
+            name: None for name in _SUBTITLE_SETTING_FIELDS
+            if name != "subtitle_output_mode"
+        })
+    values["subtitle_output_mode"] = normalize_subtitle_output_mode(
+        getattr(settings, "subtitle_output_mode", "burned_and_sidecars")
+    )
 
     # These settings only affect the render when the corresponding asset is
     # active. Avoid invalidating a render because an unused control changed.
@@ -327,6 +339,7 @@ class Stage1RenderCache:
         vtt: Path | None,
         canonical_timeline: Path | None,
         subtitle_requested: bool,
+        subtitle_output_mode: str | None = None,
     ) -> None:
         directory = self._directory(fingerprint)
         sidecars = directory / "sidecars"
@@ -352,6 +365,7 @@ class Stage1RenderCache:
             "fingerprint": fingerprint,
             "created_ns": time.time_ns(),
             "subtitle_requested": bool(subtitle_requested),
+            "subtitle_output_mode": normalize_subtitle_output_mode(subtitle_output_mode),
             "payload": payload,
             "artifacts": artifacts,
             "sidecar_snapshots": snapshots,

@@ -66,6 +66,15 @@
   "quote_pdf_page": 1,
   "quote_artwork_fit_mode": "fit",
   "quote_duration": 4.0,
+  "image_enabled": false,
+  "image_path": "",
+  "image_position": "after_intro",
+  "image_duration": 4.0,
+  "image_transition_duration": 1.0,
+  "image_fit_mode": "fit",
+  "image_zoom": 100,
+  "image_filter": "natural",
+  "subtitle_output_mode": "burned_and_sidecars",
   "quality_preset": "maximum",
   "output_preset": "youtube_landscape"
 }

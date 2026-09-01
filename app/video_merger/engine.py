@@ -29,6 +29,7 @@ from .paths import project_root
 from .platform_utils import format_command_for_log, hidden_process_flags, safe_subprocess_env
 from .progress import ProgressTracker
 from .quality import effective_quality
+from .subtitle_modes import SUBTITLE_OUTPUT_WITHOUT, normalize_subtitle_output_mode
 from .target import resolve_export
 from .timeline import after_merge_enabled, duration_after_merge_value, duration_before_merge_value
 from .transition_effects import transition_label
@@ -162,7 +163,9 @@ class VideoMergerEngine:
         # sequence that already carries per-occurrence playback rates.
         before_merge = duration_before_merge_value(settings)
         has_per_occurrence_rate = any(
-            not item.is_quote_artwork and abs(float(getattr(item, "playback_rate", 1.0) or 1.0) - 1.0) > 1e-6
+            not item.is_quote_artwork
+            and not item.is_image_insertion
+            and abs(float(getattr(item, "playback_rate", 1.0) or 1.0) - 1.0) > 1e-6
             for item in media
         )
         if settings.workflow_stage != "outro" and not has_per_occurrence_rate and str(
@@ -173,7 +176,7 @@ class VideoMergerEngine:
         if settings.workflow_stage != "outro" and abs(before_merge - 1.0) > 1e-6 and not has_per_occurrence_rate:
             prepared_media = []
             for item in media:
-                if item.is_quote_artwork:
+                if item.is_quote_artwork or item.is_image_insertion:
                     prepared_media.append(item)
                     continue
                 source = item.source_duration or item.duration
@@ -222,7 +225,12 @@ class VideoMergerEngine:
             self.last_render_graph = built.filter_graph
             command_length = len(format_command_for_log(built.command))
             log(f"FFmpeg command length: {command_length} characters")
-            if settings.workflow_stage == "main" and settings.subtitle_enabled:
+            if (
+                settings.workflow_stage == "main"
+                and settings.subtitle_enabled
+                and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+                != SUBTITLE_OUTPUT_WITHOUT
+            ):
                 if not settings.subtitle_ass_path or not Path(settings.subtitle_ass_path).is_file():
                     raise ExportError(
                         "SUBTITLE GENERATION FAILED [burn-in preparation]: ASS subtitle file is missing."
@@ -520,7 +528,12 @@ class VideoMergerEngine:
         full_duration = sum(durations) - sum(transitions)
         if full_duration <= 0:
             raise ExportError("Chunked Rendering: die visuelle Timeline ist leer.")
-        subtitle_active = settings.workflow_stage == "main" and settings.subtitle_enabled
+        subtitle_active = (
+            settings.workflow_stage == "main"
+            and settings.subtitle_enabled
+            and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+            != SUBTITLE_OUTPUT_WITHOUT
+        )
         if subtitle_active and (
             not settings.subtitle_ass_path or not Path(settings.subtitle_ass_path).is_file()
         ):

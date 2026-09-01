@@ -10,9 +10,11 @@ Add any number of configured video folders with **Add Folder**, **Remove Folder*
 
 **Duration Before Merge** defaults to `0.70x` and applies to each normal selected visual clip (`timeline_duration = source_duration / 0.70`) before timeline construction. **Duration After Merge** defaults to disabled / `1.00x` and runs as a separate post-merge operation on the complete Stage-1 master. Smart Last-Clip Stretch remains after timeline construction and before rendering; Stage-2 Intro, Flyer, and Outro are not altered by Before Merge.
 
-### Flyer and subtitle defaults
+### Flyer, Image Insertion and subtitle output defaults
 
-Quote/Flyer remains disabled unless selected and now defaults to 4.0 seconds with Cross Dissolve/Crossfade at 1.0 seconds. Landscape long-form subtitles default to **Center**; vertical short-form subtitles default to **Bottom Center**. Saved/manual position overrides remain authoritative.
+Quote/Flyer remains an independent artwork-only Stage-2 section and defaults to 4.0 seconds. **Image Insertion** is a separate optional, silent Stage-2 section: PNG/JPG/JPEG/WEBP, After Intro by default, 4.0 seconds, Fit, 100% zoom, Natural look, and the existing Cross Dissolve/Crossfade with a 1.0 second boundary request. Its settings never enter the Stage-1 render-cache fingerprint.
+
+Subtitle output is explicit and defaults to **With Burned-in Subtitles + SRT + VTT** whenever a subtitle source is requested. **With Burned-in Subtitles only** burns the same aligned ASS timeline but creates no SRT/VTT files. **Without Subtitles** skips alignment, burn-in, SRT and VTT generation while preserving voiceover/audio timing. Landscape long-form subtitles default to **Center**; vertical short-form subtitles default to **Bottom Center**. Saved/manual position overrides remain authoritative.
 
 ## New in 1.3.0
 
@@ -38,17 +40,23 @@ The short visual gap after the voiceover is now a free manual setting (0.0–5.0
 
 ### Quote / Flyer artwork (optional, silent)
 
-The optional Stage-2 section is composed as `Intro → Cross Dissolve → Quote/Flyer → Cross Dissolve → Main → Cross Dissolve → Outro`. It is disabled by default. Enable it and choose a finished PDF, PNG, JPG, JPEG, or WEBP artwork. PDFs expose their page count and selected page; Fit, Fill, and Crop preserve the artwork aspect ratio for 16:9, 9:16, 1080p, and 4K outputs. The artwork duration defaults to 2.0 seconds and uses the existing transition safety/clamping logic.
+The optional Stage-2 section is composed as `Intro → Cross Dissolve → Quote/Flyer → Cross Dissolve → Main → Cross Dissolve → Outro`. It is disabled by default. Enable it and choose a finished PDF, PNG, JPG, JPEG, or WEBP artwork. PDFs expose their page count and selected page; Fit, Fill, and Crop preserve the artwork aspect ratio for 16:9, 9:16, 1080p, and 4K outputs. The artwork duration defaults to 4.0 seconds and uses the existing transition safety/clamping logic.
 
 The Quote/Flyer is visual-only: no voiceover, music, subtitles, or Main Video audio is routed into that section. PDF pages are rasterized internally with PyMuPDF into render-time temporary files, which are removed automatically and never written to the normal Output folder. The live preview updates for artwork, PDF page, Fit/Fill/Crop, aspect ratio, and output resolution.
+
+### Image Insertion (optional, silent Stage 2)
+
+Image Insertion is independent of Quote/Flyer/PDF. Enable it in the Stage-2 panel, choose one PNG, JPG, JPEG, or WEBP, and place it **After Intro** or **Before Outro** (the default is After Intro). The image uses a practical editable duration with a 4.0 second default, the selected Cross Dissolve/Crossfade family with a separately clamped 1.0 second boundary default, Fit/Fill/Crop framing, non-distorting 100% default zoom, and five deterministic looks: Natural, Cinematic, Moody, Film, and Dark Editorial. The live preview uses the selected image, aspect, framing, zoom, and look.
+
+The image section receives no voiceover, music, original audio, or subtitle timing; the Stage-2 graph supplies matching silence and keeps every transition boundary gap-free. One-Click, Quote/Flyer, Intro/Outro, chunked rendering, landscape/portrait, 1080p/4K, and all subtitle output modes use the same real image input path. Image settings are persisted but intentionally excluded from the Stage-1 cache fingerprint, so image-only changes reuse the validated Main Video.
 
 ### Cleaner subtitle segmentation + larger preview
 
 Long-Form cues are preferably 1–2 measured lines of natural phrases; one/two-word captions are merged/rebalanced into neighbors (word-level timing untouched). The live preview and the new larger preview dialog paint through the SAME renderer geometry routine (font, size, wrapping, style, position, safe area, colors/highlights, animation staging with a word-progress slider).
 
-### Clean Output directory + dual subtitle outputs
+### Clean Output directory + flexible subtitle outputs
 
-The Output folder now contains only useful user-facing files. Whenever subtitles are generated you get BOTH the primary video WITH burned-in subtitles and an additional `_no_subtitles` variant (`FinalVideo_16x9.mp4` + `FinalVideo_16x9_no_subtitles.mp4`, likewise for explicitly rendered `MainVideo_16x9`). The subtitled version stays primary. SRT and VTT are written next to them; verification PNGs and the subtitle timeline JSON live under `temp/` (internal evidence/cache) instead of Output.
+The Output folder contains only useful user-facing files. The subtitle output mode controls the actual contract: `With Burned-in Subtitles + SRT + VTT` writes the primary burned-in video, a `_no_subtitles` master, SRT, and VTT; `With Burned-in Subtitles only` writes only the primary burned-in video; `Without Subtitles` writes only the primary clean video. Verification PNGs and the subtitle timeline JSON live under `temp/` (internal evidence/cache) instead of Output.
 
 ### Automatic local YouTube title + description (free, local, unlimited)
 
@@ -56,11 +64,11 @@ Every successful one-click final video automatically produces `FinalVideo_16x9_Y
 
 ### One-Click workflow (Video Pool + everything)
 
-`CREATE FINAL VIDEO – ONE CLICK` produces Video Pool + Voiceover(s) + Script(s) + Background Music + Subtitles + Watermark + Intro + optional Quote + Main Video + Outro = **FinalVideo** in one click; the rendered Main Video flows into Stage 2 automatically (no manual Stage-1→Stage-2 selection). Stage 1 and Stage 2 remain separately usable.
+`CREATE FINAL VIDEO – ONE CLICK` produces Video Pool + Voiceover(s) + Script(s) + Background Music + Subtitles + Watermark + Intro + optional Quote/Flyer + optional Image Insertion + Main Video + Outro = **FinalVideo** in one click; the rendered Main Video flows into Stage 2 automatically (no manual Stage-1→Stage-2 selection). Stage 1 and Stage 2 remain separately usable.
 
 ### Current defaults
 
-Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static Phrase · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant) · End Padding ≈ 1 s · Quote/Flyer disabled unless enabled (2.0 s, Fit) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
+Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static Phrase · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant) · End Padding ≈ 1 s · Quote/Flyer disabled unless enabled (4.0 s, Fit) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
 
 # VideoMerger 1.3.0 for Windows
 
@@ -74,7 +82,7 @@ The Input Folder is a source library, not a render queue. Discovery uses lightwe
 
 ### Quote / Flyer artwork (optional, silent)
 
-The optional section is composed as `Intro → (Cross Dissolve) → Quote/Flyer → (Cross Dissolve) → Main → (Cross Dissolve) → Outro`. Enable it with `[ ] Include Quote / Flyer`; it is disabled by default and lasts 0.5–5.0 seconds (default 2.0 seconds). The GUI has no text Quote field and no generated-text mode. It accepts PDF, PNG, JPG, JPEG, and WEBP artwork, with selected PDF page, Fit/Fill/Crop framing, and output-aware preview. PDF pages are rasterized internally with PyMuPDF and temporary rasters are removed after export.
+The optional section is composed as `Intro → (Cross Dissolve) → Quote/Flyer → (Cross Dissolve) → Main → (Cross Dissolve) → Outro`. Enable it with `[ ] Include Quote / Flyer`; it is disabled by default and lasts 0.5–5.0 seconds (default 4.0 seconds). The GUI has no text Quote field and no generated-text mode. It accepts PDF, PNG, JPG, JPEG, and WEBP artwork, with selected PDF page, Fit/Fill/Crop framing, and output-aware preview. PDF pages are rasterized internally with PyMuPDF and temporary rasters are removed after export.
 
 **Quote/Flyer Audio is silent by design**: no voiceover, music, subtitles, or Main Video audio is routed into the section. It never enters the SRT/VTT/burn-in timeline. The live GUI preview updates for artwork, PDF page, Fit/Fill/Crop, aspect ratio, and output resolution.
 

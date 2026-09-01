@@ -5,8 +5,18 @@ from pathlib import Path
 
 from .filter_escape import filter_file_value
 from .hardware import encoder_arguments
+from .image_insertion import (
+    clamp_image_zoom,
+    image_filter_expression,
+    normalize_image_filter,
+    normalize_image_fit_mode,
+)
 from .models import ExportSettings, MediaSequence, ResolvedExport
 from .paths import project_root
+from .subtitle_modes import (
+    SUBTITLE_OUTPUT_WITHOUT,
+    normalize_subtitle_output_mode,
+)
 from .transition_effects import normalize_transition, transition_blur_sigma, xfade_expression
 
 
@@ -125,7 +135,55 @@ class FFmpegCommandBuilder:
             duration = resolved.effective_durations[index]
             base = f"base{index}"
             visual_base = base
-            if item.is_quote_artwork:
+            if item.is_image_insertion:
+                # Image Insertion is a real looped Stage-2 input, not a text
+                # card and not Quote/Flyer. It is deliberately silent: the
+                # audio branch below creates only a matching null source.
+                source = f"[{real_input[index]}:v:0]"
+                pre = f"pre{index}"
+                lines.append(
+                    f"{source}fps={resolved.fps_expr}:round=near,"
+                    f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
+                )
+                fit_mode = normalize_image_fit_mode(
+                    getattr(item, "image_fit_mode", getattr(settings, "image_fit_mode", "fit"))
+                )
+                zoom = clamp_image_zoom(
+                    getattr(item, "image_zoom", getattr(settings, "image_zoom", 100))
+                ) / 100.0
+                zoom_width = max(16, int(round(width * zoom / 2.0) * 2))
+                zoom_height = max(16, int(round(height * zoom / 2.0) * 2))
+                if fit_mode == "fit":
+                    framing = (
+                        f"scale=w={zoom_width}:h={zoom_height}:"
+                        f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
+                        f"pad=w=max(iw\\,{zoom_width}):h=max(ih\\,{zoom_height}):"
+                        f"x=(ow-iw)/2:y=(oh-ih)/2:color=black,"
+                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                    )
+                elif fit_mode == "fill":
+                    framing = (
+                        f"scale=w={zoom_width}:h={zoom_height}:"
+                        f"force_original_aspect_ratio=increase:force_divisible_by=2:flags=lanczos,"
+                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                    )
+                else:
+                    crop_w = f"min(iw\\,ih*{width}/{height})"
+                    crop_h = f"min(ih\\,iw*{height}/{width})"
+                    framing = (
+                        f"crop=w={crop_w}:h={crop_h}:x=(iw-ow)/2:y=(ih-oh)/2,"
+                        f"scale=w={zoom_width}:h={zoom_height}:flags=lanczos,"
+                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                    )
+                image_filter = image_filter_expression(
+                    normalize_image_filter(
+                        getattr(item, "image_filter", getattr(settings, "image_filter", "natural"))
+                    )
+                )
+                if image_filter:
+                    framing += "," + image_filter
+                lines.append(f"[{pre}]{framing},setsar=1,format=yuv420p[{base}]")
+            elif item.is_quote_artwork:
                 # Uploaded artwork is looped at input level and trimmed to the
                 # exact Quote duration. It never receives text overlays, audio,
                 # subtitles, voiceover, or music. Every fit mode preserves the
@@ -299,7 +357,12 @@ class FFmpegCommandBuilder:
                 clip_gain = _mode_gain(settings.outro_audio_mode)
             else:
                 clip_gain = 1.0
-            if item.audio.present and real_input[index] is not None:
+            if (
+                item.audio.present
+                and real_input[index] is not None
+                and not item.is_quote_artwork
+                and not item.is_image_insertion
+            ):
                 # 1.3.0: the clip's own audio follows its playback rate so a
                 # stretched/sped-up clip keeps internal A/V sync. Voiceover,
                 # music and subtitles are never affected.
@@ -371,7 +434,10 @@ class FFmpegCommandBuilder:
             f"format=yuv420p,setsar=1[{visual_label}]"
         )
         if (
-            settings.workflow_stage == "main" and settings.subtitle_enabled
+            settings.workflow_stage == "main"
+            and settings.subtitle_enabled
+            and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+            != SUBTITLE_OUTPUT_WITHOUT
             and settings.subtitle_ass_path
         ):
             output = "vsubtitles"
@@ -572,7 +638,7 @@ class FFmpegCommandBuilder:
         )
         command = [self.ffmpeg_path, "-hide_banner", "-y"]
         for item in media:
-            if item.is_quote_artwork:
+            if item.is_quote_artwork or item.is_image_insertion:
                 # One still-image input is looped for the exact Quote duration;
                 # the filter graph trims it and keeps the section silent.
                 command += ["-loop", "1", "-i", str(item.path)]

@@ -24,7 +24,8 @@ PySide6 GUI / CLI
   │   ├─ atomarer bestehender VideoMergerEngine-Export
   │   └─ First/Middle/Final-Verifikationsframes
   ├─ Stage 2: MainProjectEngine.add_outro
-  │   └─ bestehender Export mit Main + Outro
+  │   ├─ Main + optionale Intro/Quote-Flyer/Image-Insertion + Outro
+  │   └─ pro Sektion isolierte Audio-Rollen und sichere Übergänge
   └─ One Click: MainProjectEngine.create_complete
       ├─ echte Stage 1 ausführen/validieren
       └─ exakt erzeugtes MainVideo an echte Stage 2 übergeben/validieren
@@ -119,13 +120,17 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 
 `timeline.fit_media_to_duration(..., duration_fit_mode, max_stretch_percent, playback_rate)` bleibt die eine Auswahl-Mathematik. `cut` = exaktes 1.2.4-Verhalten; `stretch` zieht das Präfix bevorzugt einen Clip kürzer und dehnt nur den letzten (relativ zur geschwindigkeitsskalierten Timeline-Dauer, begrenzt). `video_pool` spiegelt dieselbe Entscheidung in O(n) (eine Präfix-Berechnung pro Status). `MediaInfo.playback_rate` wird im Graph via `setpts=PTS/rate` + `atempo` umgesetzt (nur Clip-Audio; Voiceover/Musik/Untertitel unberührt). `final_pause` bleibt die autoritative End-Padding-Größe (GUI: freier Spin, Standard 1,0 s).
 
-### Doppelte Untertitel-Ausgaben + sauberer Output
+### Flexible Subtitle-Ausgaben + sauberer Output
 
-`create_main` rendert zuerst das saubere Master (`_no_subtitles.mp4`), dann brennt `engine.burn_subtitles()` die ASS in die primäre Datei (libass-Pass, Audio Stream-Copy, identische Encoder-Argumente). SRT/VTT liegen im Output; Timeline-JSON und Verifikations-PNGs bleiben unter `temp/`. `create_complete` reserviert beide FinalVideo-Namen vorab, rendert die primäre (untertitelte) Komposition aus dem untertitelten Main und die Clean-Variante aus dem sauberen Main.
+`subtitle_output_mode` ist ein echter Pipeline-Vertrag: `burned_and_sidecars` rendert sauberes Master → genau ein ASS-Burn und schreibt SRT/VTT; `burned_only` rendert dasselbe saubere Master → genau ein ASS-Burn, legt aber keine SRT/VTT an; `without_subtitles` überspringt Alignment und Burn-in vollständig. Im kombinierten Modus bleibt die Clean-Variante user-facing; in den beiden anderen Modi wird ein interner Master aus `temp/` nach dem Burn entfernt. Chunked Rendering segmentiert immer zuerst den clean master und brennt höchstens einmal nach der Assembly. Stage 2 erhält anschließend genau die gewählte Main-Variante.
 
 ### Quote-/Flyer-Artwork
 
 `quote_artwork.quote_artwork_path()` akzeptiert ausschließlich PDF, PNG, JPG, JPEG und WEBP und meldet fehlende, nicht lesbare oder nicht unterstützte Dateien explizit. Rasterbilder werden direkt als ein realer, geloopter Stage-2-Bildeingang verwendet. PDFs werden seitengeprüft und mit PyMuPDF output-aware in eine render-only PNG-Datei gerastert; `cleanup_prepared_quote_artwork()` entfernt diese Datei in `finally`, ohne die Quelle anzutasten. `command_builder` verwendet Fit (Contain + Letterbox), Fill (Cover + Center-Crop) oder Crop (zuerst aspect-safe zuschneiden, dann skalieren), nie eine nicht-uniforme Dehnung. Der Abschnitt hat eine eigene `anullsrc`-Audiospur und erhält keine Voiceover-, Musik-, Subtitle- oder Main-Audio-Spur. `add_outro` fügt ihn nur bei aktiviertem, gültigem Artwork zwischen Intro und Main ein; ohne Artwork bleibt der alte Textpfad ausgeschlossen und es gibt keinen generierten Fallback. Quote-only-Einstellungen sind nicht Bestandteil von `render_cache.stage1_fingerprint()`.
+
+### Unabhängige Image Insertion
+
+`image_insertion.py` validiert ausschließlich PNG/JPG/JPEG/WEBP und normalisiert Position, Dauer, Fit, Zoom und die fünf deterministischen Looks. `MainProjectEngine.add_outro()` fügt genau eine `MediaInfo(is_image_insertion=True)` nach Intro oder vor Outro ein; bei fehlendem Intro/Outro werden die Grenzen auf Start/Ende abgebildet. `command_builder` looped nur den Videoeingang, verwendet aspect-safe Fit/Fill/Crop plus Zoom/Filter und erzeugt für die Bildposition ausschließlich `anullsrc`. Die Stage-2-Transitionen werden an beiden Bildgrenzen separat sicher geklemmt. Die Felder werden von SettingsStore gespeichert, sind aber in `render_cache` absichtlich nicht enthalten.
 
 ### Lokale YouTube-Metadaten
 

@@ -113,7 +113,26 @@ def main() -> int:
         "--quote-duration", type=float, default=4.0,
         help="Quote/Flyer duration in seconds (0.5-5.0; default 4.0)",
     )
+    # Independent silent Stage-2 Image Insertion (never Quote/Flyer/PDF).
+    parser.add_argument("--image", "--image-insertion", dest="image_path", default="",
+        help="Stage-2 image insertion (.png, .jpg, .jpeg or .webp)")
+    parser.add_argument("--image-position", choices=["after_intro", "before_outro"], default="after_intro")
+    parser.add_argument("--image-duration", type=float, default=4.0,
+        help="Image Insertion duration in seconds (default 4.0)")
+    parser.add_argument("--image-transition-duration", type=float, default=1.0,
+        help="Image boundary transition duration in seconds (default 1.0)")
+    parser.add_argument("--image-fit-mode", "--image-fit", dest="image_fit_mode",
+        choices=["fit", "fill", "crop"], default="fit")
+    parser.add_argument("--image-zoom", type=int, default=100,
+        help="Image Insertion zoom in percent (100-300; default 100)")
+    parser.add_argument("--image-filter", choices=["natural", "cinematic", "moody", "film", "dark_editorial"], default="natural")
     parser.add_argument("--subtitles", action="store_true")
+    parser.add_argument(
+        "--subtitle-output-mode", "--subtitle-output", dest="subtitle_output_mode",
+        default="burned_and_sidecars",
+        choices=["burned_and_sidecars", "burned_only", "without_subtitles"],
+        help="With Burned-in Subtitles + SRT + VTT (default), burned_only, or without_subtitles",
+    )
     parser.add_argument("--language", choices=["German", "English", "Auto"], default="German")
     parser.add_argument("--subtitle-style", default="long_1")
     parser.add_argument("--subtitle-animation", choices=["type_reveal", "color_change", "word_highlight", "outline_highlight", "static_phrase"], default="static_phrase")
@@ -172,6 +191,13 @@ def main() -> int:
         quote_pdf_page=args.quote_pdf_page,
         quote_artwork_fit_mode=args.quote_fit_mode,
         quote_duration=max(0.5, min(5.0, args.quote_duration)),
+        image_enabled=bool(args.image_path), image_path=args.image_path,
+        image_position=args.image_position,
+        image_duration=max(0.5, min(60.0, args.image_duration)),
+        image_transition_duration=max(0.0, min(5.0, args.image_transition_duration)),
+        image_fit_mode=args.image_fit_mode, image_zoom=max(100, min(300, args.image_zoom)),
+        image_filter=args.image_filter,
+        subtitle_output_mode=args.subtitle_output_mode,
         subtitle_enabled=args.subtitles, subtitle_language=args.language,
         subtitle_style=args.subtitle_style, subtitle_animation=args.subtitle_animation,
         subtitle_font=args.subtitle_font, subtitle_position=subtitle_position,

@@ -18,6 +18,7 @@ from ..diagnostics import run_diagnostics, run_project_diagnostics
 from ..errors import VideoMergerError
 from ..logging_utils import configure_file_logger
 from ..font_manager import FONT_OPTIONS, register_bundled_fonts_with_qt, resolve_font
+from ..image_insertion import clamp_image_duration, clamp_image_zoom, normalize_image_filter, normalize_image_fit_mode, normalize_image_position
 from ..models import ExportSettings, ProgressEvent
 from ..project_order import natural_order, natural_sort_key, randomize_order
 from ..project_assets import probe_audio
@@ -28,7 +29,14 @@ from ..paths import ensure_project_directories, locate_ffmpeg, project_root
 from ..project_order import ProjectOrderStore
 from ..settings_store import SettingsStore
 from ..voiceover_order import normalize_voiceover_order_mode, voiceover_order_indices
-from ..subtitle_preview import QuotePreviewCanvas, SubtitlePreviewCanvas, sample_subtitle_text
+from ..subtitle_modes import (
+    SUBTITLE_OUTPUT_BURNED_ONLY,
+    SUBTITLE_OUTPUT_COMBINED,
+    SUBTITLE_OUTPUT_LABELS,
+    SUBTITLE_OUTPUT_WITHOUT,
+    normalize_subtitle_output_mode,
+)
+from ..subtitle_preview import ImageInsertionPreviewCanvas, QuotePreviewCanvas, SubtitlePreviewCanvas, sample_subtitle_text
 from ..timeline import duration_before_merge_value
 from ..video_pool import compute_pool_status
 from ..transition_effects import EASE_OPTIONS, TRANSITION_OPTIONS, transition_description
@@ -403,6 +411,16 @@ class MainWindow(QMainWindow):
             "Enable Burned-In Subtitles + SRT + VTT (automatic when Voiceover + Script are assigned)"
         )
         subtitle_layout.addWidget(self.subtitle_check, 0, 0, 1, 3)
+        self.subtitle_output_combo = QComboBox()
+        self.subtitle_output_combo.addItem(SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_COMBINED], SUBTITLE_OUTPUT_COMBINED)
+        self.subtitle_output_combo.addItem(SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_BURNED_ONLY], SUBTITLE_OUTPUT_BURNED_ONLY)
+        self.subtitle_output_combo.addItem(SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_WITHOUT], SUBTITLE_OUTPUT_WITHOUT)
+        self.subtitle_output_combo.setToolTip(
+            "The selected mode controls actual subtitle rendering and which output files are created."
+        )
+        self.subtitle_output_combo.currentIndexChanged.connect(self._subtitle_output_mode_changed)
+        subtitle_layout.addWidget(QLabel("Output Mode"), 1, 0)
+        subtitle_layout.addWidget(self.subtitle_output_combo, 1, 1, 1, 2)
         self.subtitle_language_combo = QComboBox()
         self.subtitle_language_combo.addItems(["German", "English", "Auto"])
         self.subtitle_style_combo = QComboBox()
@@ -424,23 +442,23 @@ class MainWindow(QMainWindow):
         self._subtitle_style_overridden = False
         self._subtitle_animation_overridden = False
         self.subtitle_debug_check = QCheckBox("Subtitle Debug Overlay – current word + exact start/end (default OFF)")
-        subtitle_layout.addWidget(QLabel("Language"), 1, 0)
-        subtitle_layout.addWidget(self.subtitle_language_combo, 1, 1)
-        subtitle_layout.addWidget(QLabel("Style"), 2, 0)
-        subtitle_layout.addWidget(self.subtitle_style_combo, 2, 1)
-        subtitle_layout.addWidget(QLabel("Animation"), 3, 0)
-        subtitle_layout.addWidget(self.subtitle_animation_combo, 3, 1)
-        subtitle_layout.addWidget(QLabel("Font"), 4, 0)
-        subtitle_layout.addWidget(self.subtitle_font_combo, 4, 1)
-        subtitle_layout.addWidget(QLabel("Position"), 5, 0)
-        subtitle_layout.addWidget(self.subtitle_position_combo, 5, 1)
-        subtitle_layout.addWidget(self.subtitle_debug_check, 6, 0, 1, 3)
+        subtitle_layout.addWidget(QLabel("Language"), 2, 0)
+        subtitle_layout.addWidget(self.subtitle_language_combo, 2, 1)
+        subtitle_layout.addWidget(QLabel("Style"), 3, 0)
+        subtitle_layout.addWidget(self.subtitle_style_combo, 3, 1)
+        subtitle_layout.addWidget(QLabel("Animation"), 4, 0)
+        subtitle_layout.addWidget(self.subtitle_animation_combo, 4, 1)
+        subtitle_layout.addWidget(QLabel("Font"), 5, 0)
+        subtitle_layout.addWidget(self.subtitle_font_combo, 5, 1)
+        subtitle_layout.addWidget(QLabel("Position"), 6, 0)
+        subtitle_layout.addWidget(self.subtitle_position_combo, 6, 1)
+        subtitle_layout.addWidget(self.subtitle_debug_check, 7, 0, 1, 3)
         # 1.2.4: echte Subtitle-Preview – dieselbe Layout-Logik wie der
         # Burn-In-Renderer (Zeilenumbrüche, Font-Metriken, Safe-Area,
         # Position, Wort-Highlight). Kein fakes GUI-Text.
         self.subtitle_live_preview = SubtitlePreviewCanvas()
         self.subtitle_live_preview.setMinimumHeight(130)
-        subtitle_layout.addWidget(self.subtitle_live_preview, 7, 0, 1, 3)
+        subtitle_layout.addWidget(self.subtitle_live_preview, 8, 0, 1, 3)
         for control in (
             self.subtitle_font_combo, self.subtitle_style_combo,
             self.subtitle_animation_combo, self.subtitle_position_combo,
@@ -453,9 +471,9 @@ class MainWindow(QMainWindow):
         self.subtitle_animation_combo.currentIndexChanged.connect(self._subtitle_animation_changed)
         self.subtitle_preview_button = QPushButton("Open Larger Subtitle Preview")
         self.subtitle_preview_button.clicked.connect(self._preview_subtitle_style)
-        subtitle_layout.addWidget(self.subtitle_preview_button, 8, 1)
+        subtitle_layout.addWidget(self.subtitle_preview_button, 9, 1)
         self.alignment_warning_check = QCheckBox("Continue After Alignment Warning (manual confirmation)")
-        subtitle_layout.addWidget(self.alignment_warning_check, 9, 0, 1, 3)
+        subtitle_layout.addWidget(self.alignment_warning_check, 10, 0, 1, 3)
         outer.addWidget(subtitle_group)
 
         format_group = QGroupBox("4 · Video Format & Transition")
@@ -464,7 +482,9 @@ class MainWindow(QMainWindow):
         self.radio_9 = QRadioButton("9:16 · Shorts / Reels / TikTok")
         self.radio_16.toggled.connect(self._update_resolution_choices)
         self.radio_16.toggled.connect(self._update_quote_preview)
+        self.radio_16.toggled.connect(self._update_image_preview)
         self.radio_9.toggled.connect(self._update_quote_preview)
+        self.radio_9.toggled.connect(self._update_image_preview)
         format_layout.addWidget(self.radio_16, 0, 0)
         format_layout.addWidget(self.radio_9, 0, 1)
         format_layout.addWidget(QLabel("Resolution"), 1, 0)
@@ -716,6 +736,62 @@ class MainWindow(QMainWindow):
         self.quote_artwork_fit_combo.currentIndexChanged.connect(self._update_quote_preview)
         self.quote_duration_spin.valueChanged.connect(self._update_quote_preview)
 
+        # Independent Image Insertion (Stage 2 only). This is intentionally a
+        # separate control namespace from Quote/Flyer, including its own
+        # framing, zoom, filter, duration and position state.
+        self.image_group = QGroupBox("Independent Image Insertion (silent Stage 2)")
+        image_layout = QGridLayout(self.image_group)
+        self.image_check = QCheckBox("Include Image")
+        self.image_path_edit = QLineEdit()
+        self.image_path_edit.setPlaceholderText("PNG, JPG, JPEG oder WEBP auswählen …")
+        self.image_choose = QPushButton("Choose Image …")
+        self.image_choose.clicked.connect(lambda: self._browse_asset(self.image_path_edit, "image_insertion"))
+        self.image_position_combo = QComboBox()
+        self.image_position_combo.addItem("After Intro", "after_intro")
+        self.image_position_combo.addItem("Before Outro", "before_outro")
+        self.image_duration_combo = QComboBox()
+        self.image_duration_combo.addItem("2.0 sec", 2.0)
+        self.image_duration_combo.addItem("4.0 sec (Standard)", 4.0)
+        self.image_duration_combo.addItem("6.0 sec", 6.0)
+        self.image_duration_combo.addItem("Custom", -1.0)
+        self.image_duration_spin = QDoubleSpinBox()
+        self.image_duration_spin.setRange(0.5, 60.0)
+        self.image_duration_spin.setSingleStep(0.5)
+        self.image_duration_spin.setDecimals(1)
+        self.image_duration_spin.setSuffix(" sec")
+        self.image_duration_spin.setValue(4.0)
+        self.image_transition_spin = QDoubleSpinBox()
+        self.image_transition_spin.setRange(0.0, 5.0)
+        self.image_transition_spin.setSingleStep(0.25)
+        self.image_transition_spin.setDecimals(2)
+        self.image_transition_spin.setSuffix(" sec")
+        self.image_transition_spin.setValue(1.0)
+        self.image_fit_combo = QComboBox()
+        self.image_fit_combo.addItem("Fit", "fit")
+        self.image_fit_combo.addItem("Fill", "fill")
+        self.image_fit_combo.addItem("Crop", "crop")
+        self.image_zoom_spin = QSpinBox()
+        self.image_zoom_spin.setRange(100, 300)
+        self.image_zoom_spin.setSuffix(" %")
+        self.image_zoom_spin.setValue(100)
+        self.image_filter_combo = QComboBox()
+        for label, key in (("Natural", "natural"), ("Cinematic", "cinematic"),
+                           ("Moody", "moody"), ("Film", "film"),
+                           ("Dark Editorial", "dark_editorial")):
+            self.image_filter_combo.addItem(label, key)
+        self.image_preview = ImageInsertionPreviewCanvas()
+        self.image_preview.setMinimumHeight(180)
+        self.image_check.toggled.connect(self._sync_image_visibility)
+        self.image_path_edit.textChanged.connect(self._sync_image_controls)
+        self.image_duration_combo.currentIndexChanged.connect(self._image_duration_preset_changed)
+        for control in (self.image_position_combo, self.image_duration_spin,
+                        self.image_transition_spin, self.image_fit_combo,
+                        self.image_zoom_spin, self.image_filter_combo):
+            if hasattr(control, "valueChanged"):
+                control.valueChanged.connect(self._update_image_preview)
+            else:
+                control.currentIndexChanged.connect(self._update_image_preview)
+
         self.final_button = QPushButton("CREATE FINAL VIDEO")
         self.final_button.setObjectName("mergeButton")
         self.final_button.clicked.connect(lambda: self._start("outro"))
@@ -745,7 +821,29 @@ class MainWindow(QMainWindow):
         outro_layout.addWidget(self.quote_duration_spin, 10, 1)
         outro_layout.addWidget(QLabel("Preview"), 11, 0)
         outro_layout.addWidget(self.quote_preview, 11, 1, 1, 2)
-        outro_layout.addWidget(self.final_button, 12, 1)
+        image_layout.addWidget(self.image_check, 0, 0, 1, 3)
+        image_layout.addWidget(QLabel("Image File"), 1, 0)
+        image_layout.addWidget(self.image_path_edit, 1, 1)
+        image_layout.addWidget(self.image_choose, 1, 2)
+        image_layout.addWidget(QLabel("Position"), 2, 0)
+        image_layout.addWidget(self.image_position_combo, 2, 1)
+        image_layout.addWidget(QLabel("Duration"), 3, 0)
+        image_duration_row = QHBoxLayout()
+        image_duration_row.addWidget(self.image_duration_combo)
+        image_duration_row.addWidget(self.image_duration_spin)
+        image_layout.addLayout(image_duration_row, 3, 1, 1, 2)
+        image_layout.addWidget(QLabel("Boundary Transition"), 4, 0)
+        image_layout.addWidget(self.image_transition_spin, 4, 1)
+        image_layout.addWidget(QLabel("Framing"), 5, 0)
+        image_layout.addWidget(self.image_fit_combo, 5, 1)
+        image_layout.addWidget(QLabel("Zoom"), 6, 0)
+        image_layout.addWidget(self.image_zoom_spin, 6, 1)
+        image_layout.addWidget(QLabel("Filter"), 7, 0)
+        image_layout.addWidget(self.image_filter_combo, 7, 1)
+        image_layout.addWidget(QLabel("Preview"), 8, 0)
+        image_layout.addWidget(self.image_preview, 8, 1, 1, 2)
+        outro_layout.addWidget(self.image_group, 13, 0, 1, 3)
+        outro_layout.addWidget(self.final_button, 14, 1)
         outer.addWidget(outro_group)
 
         summary_group = QGroupBox("Projekt-Reihenfolge · Videos – natürlich, manuell oder randomisiert (persistent)")
@@ -988,6 +1086,12 @@ class MainWindow(QMainWindow):
         self.duration_after_merge_check.setChecked(bool(getattr(self.saved, "duration_after_merge_enabled", False)))
         self._sync_stretch_controls()
         self.subtitle_check.setChecked(self.saved.subtitle_enabled)
+        subtitle_mode_index = self.subtitle_output_combo.findData(
+            normalize_subtitle_output_mode(getattr(self.saved, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED))
+        )
+        self.subtitle_output_combo.setCurrentIndex(
+            subtitle_mode_index if subtitle_mode_index >= 0 else 0
+        )
         self.alignment_warning_check.setChecked(self.saved.allow_alignment_warnings)
         self.subtitle_language_combo.setCurrentText(self.saved.subtitle_language)
         self.subtitle_position_combo.setCurrentText(self.saved.subtitle_position)
@@ -1012,6 +1116,24 @@ class MainWindow(QMainWindow):
         self.quote_artwork_fit_combo.setCurrentIndex(fit_index if fit_index >= 0 else 0)
         self.quote_duration_spin.setValue(max(0.5, min(5.0, float(self.saved.quote_duration))))
         self._sync_quote_visibility()
+        self.image_check.setChecked(bool(getattr(self.saved, "image_enabled", False)))
+        self.image_path_edit.setText(getattr(self.saved, "image_path", ""))
+        image_position_index = self.image_position_combo.findData(
+            normalize_image_position(getattr(self.saved, "image_position", "after_intro"))
+        )
+        self.image_position_combo.setCurrentIndex(image_position_index if image_position_index >= 0 else 0)
+        self.image_duration_spin.setValue(clamp_image_duration(getattr(self.saved, "image_duration", 4.0)))
+        image_duration_index = self.image_duration_combo.findData(float(self.image_duration_spin.value()))
+        self.image_duration_combo.setCurrentIndex(
+            image_duration_index if image_duration_index >= 0 else self.image_duration_combo.findData(-1.0)
+        )
+        self.image_transition_spin.setValue(max(0.0, min(5.0, float(getattr(self.saved, "image_transition_duration", 1.0)))))
+        image_fit_index = self.image_fit_combo.findData(normalize_image_fit_mode(getattr(self.saved, "image_fit_mode", "fit")))
+        self.image_fit_combo.setCurrentIndex(image_fit_index if image_fit_index >= 0 else 0)
+        self.image_zoom_spin.setValue(clamp_image_zoom(getattr(self.saved, "image_zoom", 100)))
+        image_filter_index = self.image_filter_combo.findData(normalize_image_filter(getattr(self.saved, "image_filter", "natural")))
+        self.image_filter_combo.setCurrentIndex(image_filter_index if image_filter_index >= 0 else 0)
+        self._sync_image_visibility()
         self._sync_subtitle_request()
         self._update_subtitle_live_preview()
         self._update_quote_preview()
@@ -1101,6 +1223,15 @@ class MainWindow(QMainWindow):
             quote_pdf_page=int(self.quote_pdf_page_spin.value()),
             quote_artwork_fit_mode=str(self.quote_artwork_fit_combo.currentData()),
             quote_duration=float(self.quote_duration_spin.value()),
+            image_enabled=self.image_check.isChecked(),
+            image_path=self.image_path_edit.text().strip(),
+            image_position=normalize_image_position(self.image_position_combo.currentData()),
+            image_duration=float(self.image_duration_spin.value()),
+            image_transition_duration=float(self.image_transition_spin.value()),
+            image_fit_mode=normalize_image_fit_mode(self.image_fit_combo.currentData()),
+            image_zoom=clamp_image_zoom(self.image_zoom_spin.value()),
+            image_filter=normalize_image_filter(self.image_filter_combo.currentData()),
+            subtitle_output_mode=normalize_subtitle_output_mode(self.subtitle_output_combo.currentData()),
         )
 
     def _max_stretch_value(self) -> float:
@@ -1154,6 +1285,67 @@ class MainWindow(QMainWindow):
             self.transition_description.setText(
                 transition_description(str(self.transition_combo.currentData()))
             )
+
+    def _subtitle_output_mode_changed(self, *_args) -> None:
+        """Persist the explicit output contract without hiding its controls."""
+        if not getattr(self, "_loading", False):
+            self._append_log(
+                "Subtitle output mode: "
+                + SUBTITLE_OUTPUT_LABELS.get(
+                    normalize_subtitle_output_mode(self.subtitle_output_combo.currentData()),
+                    SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_COMBINED],
+                )
+            )
+        self._sync_subtitle_request()
+
+
+    def _image_duration_preset_changed(self, *_args) -> None:
+        try:
+            value = float(self.image_duration_combo.currentData())
+        except (TypeError, ValueError):
+            value = -1.0
+        custom = value < 0.0
+        self.image_duration_spin.setEnabled(custom and not getattr(self, "busy", False))
+        if not custom:
+            self.image_duration_spin.blockSignals(True)
+            self.image_duration_spin.setValue(clamp_image_duration(value))
+            self.image_duration_spin.blockSignals(False)
+        self._update_image_preview()
+
+
+    def _sync_image_controls(self, *_args) -> None:
+        enabled = self.image_check.isChecked()
+        # The chooser is intentionally enabled whenever Include Image is on,
+        # even before a path exists. Every other setting is disabled with the
+        # feature and cannot accidentally affect a Stage-2 render.
+        for widget in (
+            self.image_path_edit, self.image_choose, self.image_position_combo,
+            self.image_duration_combo, self.image_transition_spin,
+            self.image_fit_combo, self.image_zoom_spin, self.image_filter_combo,
+            self.image_preview,
+        ):
+            widget.setEnabled(enabled)
+        if enabled:
+            self._image_duration_preset_changed()
+        self._update_image_preview()
+
+
+    def _sync_image_visibility(self, *_args) -> None:
+        self._sync_image_controls()
+
+
+    def _update_image_preview(self, *_args) -> None:
+        if not hasattr(self, "image_preview"):
+            return
+        frame = (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
+        self.image_preview.set_image(
+            self.image_path_edit.text().strip(),
+            normalize_image_fit_mode(self.image_fit_combo.currentData()),
+            clamp_image_zoom(self.image_zoom_spin.value()),
+            normalize_image_filter(self.image_filter_combo.currentData()),
+            frame[0], frame[1],
+        )
+
 
     def _subtitle_position_changed(self, *_args) -> None:
         if not getattr(self, "_loading", False):
@@ -1231,6 +1423,7 @@ class MainWindow(QMainWindow):
             "script": "Text Script (*.txt *.text *.md);;All files (*)",
             "image": "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;All files (*)",
             "quote_artwork": "Quote/Flyer (*.pdf *.png *.jpg *.jpeg *.webp);;All files (*)",
+            "image_insertion": "Image Insertion (*.png *.jpg *.jpeg *.webp);;All files (*)",
             "video": "Videos (*.mp4 *.mov *.mkv *.m4v *.avi *.webm);;All files (*)",
         }
         selected, _ = QFileDialog.getOpenFileName(
@@ -2022,13 +2215,14 @@ class MainWindow(QMainWindow):
         settings.workflow_stage = "main" if mode in {"main", "complete"} else ("outro" if mode == "outro" else "basic")
         if mode in {"main", "complete"}:
             has_units = bool(settings.voiceover_paths)
-            if settings.subtitle_enabled and not has_units:
+            subtitle_mode = normalize_subtitle_output_mode(settings.subtitle_output_mode)
+            if settings.subtitle_enabled and subtitle_mode != SUBTITLE_OUTPUT_WITHOUT and not has_units:
                 QMessageBox.warning(
                     self, "Subtitle Inputs fehlen",
                     "Burned-In Subtitles benötigen mindestens eine Voiceover-Datei und ein Script."
                 )
                 return
-            if settings.subtitle_enabled and settings.script_mode == "single" and not settings.global_script_path:
+            if settings.subtitle_enabled and subtitle_mode != SUBTITLE_OUTPUT_WITHOUT and settings.script_mode == "single" and not settings.global_script_path:
                 QMessageBox.warning(
                     self, "Script fehlt",
                     "Single Global Script Mode benötigt eine Textdatei für die komplette Timeline."
@@ -2054,7 +2248,23 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Quote / Flyer ungültig", str(exc))
                 return
             quote_active = True
-        if mode == "complete" and not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active:
+        image_active = False
+        if settings.image_enabled:
+            image_value = (settings.image_path or "").strip()
+            if not image_value:
+                QMessageBox.warning(
+                    self, "Image Insertion fehlt",
+                    "Include Image ist aktiviert, aber keine Bilddatei ausgewählt.",
+                )
+                return
+            try:
+                from ..image_insertion import image_insertion_path
+                image_insertion_path(image_value)
+            except VideoMergerError as exc:
+                QMessageBox.warning(self, "Image Insertion ungültig", str(exc))
+                return
+            image_active = True
+        if mode == "complete" and not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active and not image_active:
             QMessageBox.warning(
                 self, "Intro/Outro/Quote fehlen",
                 "One-Click benötigt mindestens ein gültiges Intro- oder Outro-Video oder eine aktive Quote-/Flyer-Datei.",
@@ -2066,10 +2276,10 @@ class MainWindow(QMainWindow):
                     self, "Stage 2 Inputs fehlen", "Bitte ein gültiges MainVideo auswählen."
                 )
                 return
-            if not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active:
+            if not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active and not image_active:
                 QMessageBox.warning(
                     self, "Stage 2 Inputs fehlen",
-                    "Bitte mindestens ein Intro- oder Outro-Video auswählen oder eine aktive Quote-/Flyer-Datei auswählen.",
+                    "Bitte mindestens ein Intro- oder Outro-Video auswählen oder eine aktive Quote-/Flyer-/Image-Datei auswählen.",
                 )
                 return
         self.store.save(settings)
@@ -2131,11 +2341,17 @@ class MainWindow(QMainWindow):
             self.quote_check, self.quote_artwork_path_edit, self.quote_artwork_choose,
             self.quote_pdf_page_spin, self.quote_artwork_fit_combo,
             self.quote_duration_spin, self.quote_preview,
+            self.image_check, self.image_path_edit, self.image_choose,
+            self.image_position_combo, self.image_duration_combo,
+            self.image_duration_spin, self.image_transition_spin,
+            self.image_fit_combo, self.image_zoom_spin, self.image_filter_combo,
+            self.image_preview,
         ):
             widget.setEnabled(not busy)
         if not busy:
             self._sync_script_mode_controls()
             self._sync_quote_visibility()
+            self._sync_image_visibility()
 
     def _cancel(self) -> None:
         if self.worker:
@@ -2262,6 +2478,11 @@ class MainWindow(QMainWindow):
             if self.thread:
                 self.thread.quit()
                 self.thread.wait(6000)
+        # Persist the complete project, including Stage-2 Image Insertion and
+        # subtitle output mode, even when the user closes without starting a
+        # render. This also preserves the existing settings-store contract for
+        # every other GUI control.
+        self._save_project()
         event.accept()
 
 
