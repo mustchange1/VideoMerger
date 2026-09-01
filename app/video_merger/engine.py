@@ -1,24 +1,37 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import threading
 import time
 import uuid
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 
-from .command_builder import FFmpegCommandBuilder
+from .chunked_render import (
+    SAFE_COMMAND_TARGET,
+    WINDOWS_COMMAND_LIMIT,
+    ChunkingError,
+    plan_segments,
+)
+from .command_builder import BuiltCommand, FFmpegCommandBuilder
 from .errors import ExportCancelled, ExportError, ValidationError, VideoMergerError
 from .file_stability import wait_for_files_stable
 from .hardware import encoder_arguments, resolve_encoder
 from .media_analyzer import MediaAnalyzer
-from .models import ExportSettings, LogCallback, MediaInfo, ProgressCallback, ResolvedExport, ValidationReport
+from .models import (
+    ExportSettings, LogCallback, MediaInfo, ProgressCallback, ProgressEvent,
+    ResolvedExport, ValidationReport,
+)
 from .paths import project_root
 from .platform_utils import format_command_for_log, hidden_process_flags, safe_subprocess_env
 from .progress import ProgressTracker
 from .quality import effective_quality
+from .subtitle_modes import SUBTITLE_OUTPUT_WITHOUT, normalize_subtitle_output_mode
 from .target import resolve_export
+from .timeline import after_merge_enabled, duration_after_merge_value, duration_before_merge_value
 from .transition_effects import transition_label
 from .validation import validate_output
 
@@ -139,15 +152,57 @@ class VideoMergerEngine:
         log: LogCallback = lambda _message: None,
         cancel_event: threading.Event | None = None,
         working_directory: Path | str | None = None,
+        allow_chunking: bool = True,
+        video_order_applied: bool = False,
+        video_order_rng=None,
+        video_order_seed: int | None = None,
     ) -> ValidationReport:
         export_started = time.perf_counter()
         self.last_timings = {}
         cancel_event = cancel_event or threading.Event()
+        # Direct/basic callers may pass raw MediaInfo instead of the fitted
+        # Stage-1 sequence produced by MainProjectEngine. Apply the canonical
+        # Before Merge multiplier here as a safety net, but never touch a
+        # sequence that already carries per-occurrence playback rates.
+        before_merge = duration_before_merge_value(settings)
+        has_per_occurrence_rate = any(
+            not item.is_quote_artwork
+            and not item.is_image_insertion
+            and abs(float(getattr(item, "playback_rate", 1.0) or 1.0) - 1.0) > 1e-6
+            for item in media
+        )
+        if settings.workflow_stage != "outro" and not has_per_occurrence_rate and not video_order_applied:
+            from .video_pool import order_media_for_video_order
+            original_paths = [item.path for item in media]
+            media = order_media_for_video_order(
+                media,
+                getattr(settings, "video_order_mode", "natural"),
+                rng=video_order_rng,
+                seed=video_order_seed,
+            )
+            if [item.path for item in media] != original_paths:
+                # Transition math depends on neighboring durations. Re-resolve
+                # after an automatic mode changes sequence so the command graph
+                # and actual media order stay in lockstep for direct callers.
+                resolved = self.make_plan(media, settings, log)
+        if settings.workflow_stage != "outro" and abs(before_merge - 1.0) > 1e-6 and not has_per_occurrence_rate:
+            prepared_media = []
+            for item in media:
+                if item.is_quote_artwork or item.is_image_insertion:
+                    prepared_media.append(item)
+                    continue
+                source = item.source_duration or item.duration
+                prepared_media.append(replace(
+                    item, source_duration=source, duration=max(0.12, source / before_merge),
+                    playback_rate=before_merge,
+                ))
+            media = prepared_media
+            resolved = self.make_plan(media, settings, log)
         preflight_started = time.perf_counter()
         self.preflight(log)
         self.last_timings["preflight_seconds"] = time.perf_counter() - preflight_started
         # 1.3.0: FFmpeg runs with cwd = project root by default. The
-        # filtergraph's file references (staged ASS, fonts dir, quote font)
+        # filtergraph's file references (staged ASS and fonts dir)
         # are then plain relative ASCII paths — the root-cause Windows fix
         # for drive colons/backslashes/spaces/umlauts in filter values.
         # Every input/output path is absolute, so the cwd never changes what
@@ -180,7 +235,14 @@ class VideoMergerEngine:
             self.last_timings["command_build_seconds"] = time.perf_counter() - build_started
             self.last_filter_graph = built.filter_graph
             self.last_render_graph = built.filter_graph
-            if settings.workflow_stage == "main" and settings.subtitle_enabled:
+            command_length = len(format_command_for_log(built.command))
+            log(f"FFmpeg command length: {command_length} characters")
+            if (
+                settings.workflow_stage == "main"
+                and settings.subtitle_enabled
+                and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+                != SUBTITLE_OUTPUT_WITHOUT
+            ):
                 if not settings.subtitle_ass_path or not Path(settings.subtitle_ass_path).is_file():
                     raise ExportError(
                         "SUBTITLE GENERATION FAILED [burn-in preparation]: ASS subtitle file is missing."
@@ -190,6 +252,28 @@ class VideoMergerEngine:
                         "SUBTITLE GENERATION FAILED [FFmpeg filter graph]: burned-in subtitle filter is missing."
                     )
                 log("Burned-In Subtitle Guard: ASS file present and subtitles filter included in the one-pass graph.")
+            if allow_chunking and self._chunking_required(built.command):
+                log(
+                    f"FFmpeg command is above the conservative {SAFE_COMMAND_TARGET:,}-character "
+                    f"target ({command_length:,}); automatic Chunked Rendering enabled."
+                )
+                chunk_report = self._export_chunked(
+                    media, settings, resolved, output_path, built.command,
+                    progress, log, cancel_event, workdir,
+                )
+                if settings.workflow_stage == "main" and after_merge_enabled(settings):
+                    final_expected = resolved.expected_duration / duration_after_merge_value(settings)
+                    resolved.expected_duration = final_expected
+                    self.post_process_duration(
+                        output_path, resolved, settings, media,
+                        progress=progress, log=log, cancel_event=cancel_event,
+                    )
+                    chunk_report = validate_output(output_path, self.ffprobe_path, resolved)
+                    if not chunk_report.ok:
+                        raise ValidationError("After Merge validation failed. " + " ".join(chunk_report.details))
+                self.last_timings["engine_total_seconds"] = time.perf_counter() - export_started
+                export_succeeded = True
+                return chunk_report
             # Diagnostic copy only. FFmpeg receives the graph directly through
             # -filter_complex and never reads this file.
             graph_path.write_text(built.filter_graph, encoding="utf-8", newline="\n")
@@ -218,6 +302,15 @@ class VideoMergerEngine:
             self.last_timings["ffmpeg_rendering_seconds"] = time.perf_counter() - render_started
             if cancel_event.is_set():
                 raise ExportCancelled("Export wurde abgebrochen.")
+            if settings.workflow_stage == "main" and after_merge_enabled(settings):
+                # Keep the pre-post timeline target for the normal graph; the
+                # public resolved plan is then advanced to the actual final
+                # duration for validation, subtitle burn-in, and cache reuse.
+                resolved.expected_duration = resolved.expected_duration / duration_after_merge_value(settings)
+                self.post_process_duration(
+                    output_path, resolved, settings, media,
+                    progress=progress, log=log, cancel_event=cancel_event,
+                )
             log("Validiere Ausgabedatei mit FFprobe …")
             validation_started = time.perf_counter()
             report = validate_output(output_path, self.ffprobe_path, resolved)
@@ -248,6 +341,70 @@ class VideoMergerEngine:
                 graph_path.unlink(missing_ok=True)
             elif graph_path.exists():
                 log(f"Diagnose-Filtergraph wurde nach dem Fehler aufbewahrt: {graph_path}")
+
+    def post_process_duration(
+        self,
+        input_path: Path,
+        resolved: ResolvedExport,
+        settings: ExportSettings,
+        media: list[MediaInfo],
+        progress: ProgressCallback = lambda _event: None,
+        log: LogCallback = lambda _message: None,
+        cancel_event: threading.Event | None = None,
+    ) -> ValidationReport:
+        """Apply the independent After Merge multiplier to a finished master.
+
+        This is deliberately a second FFmpeg operation. It changes the
+        complete already-merged program (video, voiceover, music and any
+        burned subtitles together), unlike Before Merge which changes each
+        selected visual occurrence during timeline construction.
+        """
+        cancel_event = cancel_event or threading.Event()
+        rate = duration_after_merge_value(settings)
+        if not after_merge_enabled(settings):
+            return validate_output(input_path, self.ffprobe_path, resolved)
+        source = Path(input_path).expanduser().resolve()
+        temporary = source.with_name(f".{source.stem}.after-merge-{uuid.uuid4().hex}.mp4")
+        remaining = max(0.25, min(4.0, rate))
+        atempo: list[str] = []
+        while remaining < 0.5 - 1e-9:
+            atempo.append("atempo=0.5")
+            remaining /= 0.5
+        while remaining > 2.0 + 1e-9:
+            atempo.append("atempo=2.0")
+            remaining /= 2.0
+        atempo.append(f"atempo={remaining:.6f}".rstrip("0").rstrip("."))
+        audio_chain = ",".join(atempo)
+        graph = (
+            f"[0:v]setpts=PTS/{rate:.6f},fps={resolved.fps_expr}:round=near,"
+            f"settb=AVTB,setsar=1,format=yuv420p[vout];"
+            f"[0:a]aresample=48000:async=1,{audio_chain},"
+            f"asetpts=PTS-STARTPTS[aout]"
+        )
+        command = [
+            str(self.ffmpeg_path), "-hide_banner", "-y", "-i", str(source),
+            "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]",
+            *encoder_arguments(resolved.encoder, resolved.crf, resolved.preset),
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-c:a", "aac",
+            "-profile:a", "aac_low", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart", "-metadata:s:v:0", "rotate=0",
+            "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+            "-color_range", "tv", "-max_muxing_queue_size", "4096",
+            "-progress", "pipe:1", "-nostats", str(temporary),
+        ]
+        log(f"Duration After Merge: {rate:.2f}x – kompletter Stage-1-Master wird separat verarbeitet.")
+        try:
+            self._execute(
+                command, media, resolved, progress, log, cancel_event,
+                transition_label(settings.transition_type), project_root(),
+            )
+            report = validate_output(temporary, self.ffprobe_path, resolved)
+            if not report.ok:
+                raise ValidationError("After Merge validation failed. " + " ".join(report.details))
+            temporary.replace(source)
+            return validate_output(source, self.ffprobe_path, resolved)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def burn_subtitles(
         self,
@@ -337,6 +494,263 @@ class VideoMergerEngine:
                 except OSError as cleanup_error:
                     log(f"WARNUNG: Ungültige Untertitel-Ausgabe konnte nicht entfernt werden: {cleanup_error}")
 
+    @staticmethod
+    def _is_windows() -> bool:
+        return os.name == "nt"
+
+    def _chunking_required(self, command: list[str]) -> bool:
+        """Return whether a Windows command needs the conservative chunk path."""
+        return self._is_windows() and len(format_command_for_log(command)) > SAFE_COMMAND_TARGET
+
+    @staticmethod
+    def _concat_manifest_line(path: Path) -> str:
+        # ffconcat's single-quoted path form is UTF-8 safe. Escape an embedded
+        # apostrophe using the syntax understood by its parser and normalize
+        # Windows separators without changing the actual file path.
+        value = str(path.expanduser().resolve()).replace("\\", "/")
+        value = value.replace("'", "'\\''")
+        return f"file '{value}'"
+
+    def _export_chunked(
+        self,
+        media: list[MediaInfo],
+        settings: ExportSettings,
+        resolved: ResolvedExport,
+        output_path: Path,
+        oversized_command: list[str],
+        progress: ProgressCallback,
+        log: LogCallback,
+        cancel_event: threading.Event,
+        workdir: Path,
+    ) -> ValidationReport:
+        """Render an oversized timeline as large, transition-aware segments.
+
+        The ordinary builder remains the source of truth. Intermediate segment
+        commands contain one overlap clip so the preceding segment renders the
+        complete transition; the next segment trims that overlap prefix. Final
+        assembly uses the concat demuxer with stream copy, so it introduces no
+        second video/audio encode and no visible or audible seam.
+        """
+        from .chunked_render import ChunkPlan
+
+        chunk_root = project_root() / "temp" / f"chunked_{uuid.uuid4().hex}"
+        chunk_root.mkdir(parents=True, exist_ok=True)
+        durations = list(resolved.effective_durations)
+        transitions = list(resolved.transitions)
+        full_duration = sum(durations) - sum(transitions)
+        if full_duration <= 0:
+            raise ExportError("Chunked Rendering: die visuelle Timeline ist leer.")
+        subtitle_active = (
+            settings.workflow_stage == "main"
+            and settings.subtitle_enabled
+            and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+            != SUBTITLE_OUTPUT_WITHOUT
+        )
+        if subtitle_active and (
+            not settings.subtitle_ass_path or not Path(settings.subtitle_ass_path).is_file()
+        ):
+            raise ExportError(
+                "SUBTITLE GENERATION FAILED [burn-in preparation]: ASS subtitle file is missing."
+            )
+
+        def segment_inputs(
+            plan: ChunkPlan, destination: Path,
+        ) -> tuple[list[MediaInfo], ExportSettings, ResolvedExport, BuiltCommand]:
+            segment_media = media[plan.media_start:plan.media_stop]
+            segment_resolved = replace(
+                resolved,
+                effective_durations=durations[plan.media_start:plan.media_stop],
+                transitions=transitions[plan.media_start:plan.media_stop - 1],
+                expected_duration=plan.duration,
+            )
+            # Subtitle events are authored on the complete timeline and are
+            # burned only once after assembly. This prevents per-segment clock
+            # resets and keeps the clean/no-subtitle output authoritative.
+            segment_settings = replace(
+                settings,
+                program_duration=plan.duration,
+                timeline_target_duration=plan.duration,
+                subtitle_enabled=False,
+                subtitle_ass_path="",
+                stage2_audio_modes=settings.stage2_audio_modes[
+                    plan.media_start:plan.media_stop
+                ],
+                stage2_roles=settings.stage2_roles[plan.media_start:plan.media_stop],
+            )
+            audio_start = plan.logical_start if settings.workflow_stage == "main" else plan.video_window_start
+            built = self.builder.build(
+                segment_media,
+                segment_settings,
+                segment_resolved,
+                destination,
+                video_window_start=plan.video_window_start,
+                audio_window_start=audio_start,
+                window_duration=plan.duration,
+            )
+            return segment_media, segment_settings, segment_resolved, built
+
+        probe_destination = chunk_root / "chunk_probe.mp4"
+
+        def fits(
+            media_start: int,
+            media_stop: int,
+            logical_start: float,
+            logical_end: float,
+            video_window_start: float,
+            duration: float,
+        ) -> bool:
+            plan = ChunkPlan(
+                number=0,
+                media_start=media_start,
+                media_stop=media_stop,
+                logical_start=logical_start,
+                logical_end=logical_end,
+                duration=duration,
+                video_window_start=video_window_start,
+                audio_window_start=logical_start,
+            )
+            try:
+                _segment_media, _segment_settings, _segment_resolved, built = segment_inputs(
+                    plan, probe_destination
+                )
+                return len(format_command_for_log(built.command)) <= SAFE_COMMAND_TARGET
+            except (OSError, ValueError, TypeError):
+                return False
+
+        try:
+            if cancel_event.is_set():
+                raise ExportCancelled("Export wurde vom Benutzer abgebrochen.")
+            try:
+                plans = plan_segments(durations, transitions, fits)
+            except ChunkingError as exc:
+                raise ExportError(f"Chunked Rendering konnte keinen sicheren Segmentplan erstellen: {exc}") from exc
+            log(
+                f"Chunked Rendering: {len(plans)} große Segmente geplant "
+                f"(Ziel je Befehl {SAFE_COMMAND_TARGET:,} Zeichen; ursprünglicher Befehl "
+                f"{len(format_command_for_log(oversized_command)):,} Zeichen)."
+            )
+            def render_segments() -> list[Path]:
+                rendered_paths: list[Path] = []
+                for index, plan in enumerate(plans, start=1):
+                    if cancel_event.is_set():
+                        raise ExportCancelled("Export wurde vom Benutzer abgebrochen.")
+                    segment_path = chunk_root / f"segment_{index:04d}.mp4"
+                    segment_media, _segment_settings, segment_resolved, built = segment_inputs(plan, segment_path)
+                    command_length = len(format_command_for_log(built.command))
+                    if command_length > WINDOWS_COMMAND_LIMIT:
+                        raise ExportError(
+                            f"Chunked Rendering erzeugte trotz Planung einen unsicheren Segmentbefehl "
+                            f"({command_length:,} Zeichen)."
+                        )
+                    log(
+                        f"Chunk {index}/{len(plans)}: Clips {plan.media_start + 1}–{plan.media_stop}, "
+                        f"Timeline {plan.logical_start:.3f}–{plan.logical_end:.3f} s, "
+                        f"Befehl {command_length:,} Zeichen"
+                    )
+
+                    def segment_progress(event: ProgressEvent, current=plan, chunk_number=index) -> None:
+                        fraction = current.duration / max(full_duration, 1e-9)
+                        base = current.logical_start / max(full_duration, 1e-9)
+                        progress(replace(
+                            event,
+                            percent=max(0.0, min(90.0, (base + event.percent / 100.0 * fraction) * 90.0)),
+                            total_time=full_duration,
+                            stage=f"Chunk {chunk_number}/{len(plans)} – {event.stage}",
+                        ))
+
+                    self._execute(
+                        built.command, segment_media, segment_resolved, segment_progress, log,
+                        cancel_event, transition_label(settings.transition_type), workdir,
+                    )
+                    segment_report = validate_output(segment_path, self.ffprobe_path, segment_resolved)
+                    if not segment_report.ok:
+                        raise ValidationError(
+                            f"Chunk {index}/{len(plans)} failed validation: "
+                            + " ".join(segment_report.details)
+                        )
+                    rendered_paths.append(segment_path)
+                return rendered_paths
+
+            try:
+                segment_paths = render_segments()
+            except ExportError as first_error:
+                if isinstance(first_error, ExportCancelled):
+                    raise
+                if settings.encoding != "Auto" or resolved.encoder == "libx264":
+                    raise
+                log(f"WARNUNG: Hardware-Encode fehlgeschlagen ({first_error}). CPU-Fallback wird gestartet.")
+                resolved.encoder = "libx264"
+                resolved.encoder_label = "CPU (libx264)"
+                for path in chunk_root.glob("segment_*.mp4"):
+                    path.unlink(missing_ok=True)
+                segment_paths = render_segments()
+
+            assembled_clean = output_path if not subtitle_active else chunk_root / "assembled_clean.mp4"
+            manifest = chunk_root / "segments.ffconcat"
+            manifest.write_text(
+                "ffconcat version 1.0\n" + "\n".join(
+                    self._concat_manifest_line(path) for path in segment_paths
+                ) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            assembly_command = [
+                str(self.ffmpeg_path), "-hide_banner", "-y",
+                "-f", "concat", "-safe", "0", "-i", str(manifest),
+                "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                "-movflags", "+faststart", "-max_muxing_queue_size", "4096",
+                "-progress", "pipe:1", "-nostats", str(assembled_clean),
+            ]
+            assembly_length = len(format_command_for_log(assembly_command))
+            if assembly_length > WINDOWS_COMMAND_LIMIT:
+                raise ExportError(
+                    f"Chunked Rendering assembly command is unexpectedly unsafe ({assembly_length:,} Zeichen)."
+                )
+            log(
+                f"Chunk assembly: {len(segment_paths)} Segmente ohne Re-Encode, "
+                f"Befehl {assembly_length:,} Zeichen."
+            )
+
+            def assembly_progress(event: ProgressEvent) -> None:
+                progress(replace(
+                    event,
+                    percent=90.0 + max(0.0, min(100.0, event.percent)) * 0.1,
+                    total_time=resolved.expected_duration,
+                    stage=f"Chunk assembly – {event.stage}",
+                ))
+
+            self._execute(
+                assembly_command, media, resolved, assembly_progress, log,
+                cancel_event, transition_label(settings.transition_type), workdir,
+            )
+            assembled_report = validate_output(assembled_clean, self.ffprobe_path, resolved)
+            if not assembled_report.ok:
+                raise ValidationError(
+                    "Chunk assembly failed validation. " + " ".join(assembled_report.details)
+                )
+            if subtitle_active:
+                log("Chunked Rendering: burn subtitles once on the assembled clean master.")
+                return self.burn_subtitles(
+                    assembled_clean,
+                    Path(settings.subtitle_ass_path),
+                    settings.subtitle_fonts_dir,
+                    output_path,
+                    resolved,
+                    media,
+                    progress=progress,
+                    log=log,
+                    cancel_event=cancel_event,
+                )
+            return assembled_report
+        except Exception:
+            # Keep failed chunked exports from leaving a stale user-facing
+            # master behind, including when this helper is exercised directly
+            # rather than through export()'s outer cleanup guard.
+            output_path.unlink(missing_ok=True)
+            raise
+        finally:
+            shutil.rmtree(chunk_root, ignore_errors=True)
+
     def _execute(
         self,
         command: list[str],
@@ -349,7 +763,7 @@ class VideoMergerEngine:
         working_directory: Path | str | None = None,
     ) -> None:
         rendered_command = format_command_for_log(command)
-        if os.name == "nt" and len(rendered_command) > 30_000:
+        if self._is_windows() and len(rendered_command) > WINDOWS_COMMAND_LIMIT:
             raise ExportError(
                 "Der direkte FFmpeg-Befehl überschreitet mit diesem sehr großen Projekt das sichere Windows-Limit. "
                 "Bitte das Projekt in kleinere Teile aufteilen."

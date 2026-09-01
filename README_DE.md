@@ -1,31 +1,59 @@
-# VideoMerger 1.3.0 für Windows
+# VideoMerger 1.4.0 für Windows
+
+## Neu in 1.4.0
+
+### Mehrere Quellordner und ordnerbewusste Auswahl
+
+Mit **Add Folder**, **Remove Folder** und **Clear All** lassen sich beliebig viele Video-Quellordner hinzufügen; die Liste wird in den Projekteinstellungen gespeichert. Jeder Clip behält seine aufgelöste Quellordner-Identität. Die automatische Auswahl nutzt eine reproduzierbare Zufalls-Alternierung: Solange ein anderer Quellordner brauchbare Clips hat, wird kein Ordner direkt wiederholt; erst danach ist der gleiche Ordner als Fallback erlaubt. Eine explizite manuelle Reihenfolge deaktiviert diese Alternierung; Required-Only, Hold Last Frame, Full-Timeline Loop und Smart Last-Clip Stretch bleiben unverändert.
+
+### Unabhängige Merge-Dauer
+
+**Duration Before Merge** ist standardmäßig `0,70x` und gilt für jeden normalen ausgewählten Visual-Clip (`timeline_duration = source_duration / 0,70`) vor dem Timeline-Aufbau. **Duration After Merge** ist standardmäßig deaktiviert / `1,00x` und wird als eigener Post-Merge-Schritt auf den vollständigen Stage-1-Master angewendet. Smart Last-Clip Stretch bleibt zwischen Timeline-Aufbau und Render; Stage-2-Intro, Flyer und Outro werden von Before Merge nicht verändert.
+
+### Flyer und Untertitel-Defaults
+
+Quote/Flyer bleibt nur nach Auswahl aktiv und nutzt jetzt standardmäßig 4,0 Sekunden, Cross Dissolve/Crossfade und 1,0 Sekunden Übergang. Long-Form im Querformat nutzt standardmäßig **Center**, Short-Form im Hochformat weiterhin **Bottom Center**. Gespeicherte/manuelle Positionswerte bleiben maßgeblich.
 
 ## Neu in 1.3.0
 
-- **Windows-Untertitel-Fix (Ursache behoben):** FFmpeg läuft immer mit dem Projekt-Root als Arbeitsverzeichnis; alle Render-Dateien im Filtergraph (ASS, Fonts-Ordner, Quote-Font) liegen dort mit ASCII-Namen. Die Filter-Werte sind reine relative POSIX-Pfade — Laufwerks-Doppelpunkt, Backslashes, Leerzeichen und Umlaute können auf keinem Windows-Rechner mehr im Wert auftauchen (auch nicht bei `C:\\Users\\Jürgen Müller\\Downloads\\…`). Pfade außerhalb des Ankers werden UNQUOTED mit Vorwärts-Slashes und der verifizierten Zwei-Stufen-Escapetabelle ausgegeben (Apostrophe wie `O'Brien` sind darstellbar; die alte Quoting-Form brach dort ab). Echte Libass-Burn-Regressionstests über feindliche Pfade laufen in der Suite.
+- **Windows-Untertitel-Fix (Ursache behoben):** FFmpeg läuft immer mit dem Projekt-Root als Arbeitsverzeichnis; alle Render-Dateien im Filtergraph (ASS und Fonts-Ordner) liegen dort mit ASCII-Namen. Die Filter-Werte sind reine relative POSIX-Pfade — Laufwerks-Doppelpunkt, Backslashes, Leerzeichen und Umlaute können auf keinem Windows-Rechner mehr im Wert auftauchen (auch nicht bei `C:\\Users\\Jürgen Müller\\Downloads\\…`). Pfade außerhalb des Ankers werden UNQUOTED mit Vorwärts-Slashes und der verifizierten Zwei-Stufen-Escapetabelle ausgegeben (Apostrophe wie `O'Brien` sind darstellbar; die alte Quoting-Form brach dort ab). Echte Libass-Burn-Regressionstests über feindliche Pfade laufen in der Suite.
+- **Automatisches Chunked Rendering für große Windows-Projekte:** Unter dem konservativen Befehlsziel bleibt der bestehende einzelne FFmpeg-Aufruf aktiv. Größere Projekte werden automatisch an sicheren Übergangsgrenzen in große Segmente geteilt; Cross Dissolve wird nicht dupliziert, der aktive Video-Pool bleibt Required-Only, und die Segmente werden ohne erneutes Re-Encoding zusammengesetzt. Untertitel werden erst einmal auf dem vollständigen Clean Master gebrannt; der bisherige Guard bei ungefähr 30.000 Zeichen bleibt als letzte Sicherheitsgrenze bestehen.
 - **Smart Last-Clip Stretch:** Dauer-Fit-Modus `Cut Last Clip` (Standard) oder `Stretch Last Clip` — nur der letzte ausgewählte Clip läuft minimal langsamer (Limit 5/10 (Standard)/15/20/Custom %). Transitions und Kontinuität bleiben erhalten; über dem Limit gilt das normale Kürzen, niemals Hold Last Frame.
-- **Globale Video-Geschwindigkeit:** 0,50x–2,00x (Standard 1,00x). Voiceover bleibt die Timing-Autorität — Untertitel, Voiceover und Musik ändern sich nicht (SRT byte-identisch nachgewiesen).
+- **Phase-2-Mix-Defaults:** `Cross Dissolve` mit 1,0 Sekunden (sicher geklemmt bei kurzen Clips) und Musik 44 % / `Balanced` (ca. +6 dB gegenüber 22 %, weiterhin unter Voiceover). Ducking, Limiter, Looping und manuelle Regler bleiben aktiv.
+- **Globale Video-Geschwindigkeit (Legacy-Kompatibilität): 0,50x–2,00x. Duration Before Merge ist jetzt separat 0,70x Standard; Duration After Merge ist deaktiviert / 1,00x. Voiceover bleibt die Timing-Autorität — Untertitel, Voiceover und Musik ändern sich nicht (SRT byte-identisch nachgewiesen).
 - **Main Video End Padding:** freie manuelle Einstellung 0,0–5,0 s; der bestehende Standard von ca. 1 Sekunde bleibt exakt erhalten.
-- **Quote-Karten-System (komplett repariert):** `Intro → Quote → Main → Outro` rendert jetzt eine echte visuelle Karte in nativer Auflösung (1080p/4K, 16:9/9:16). Fünf polierte Stile: **Clean Editorial** (Standard: warmweiß/weich-beige, elegante Serifen, Haarlinie, subtile Vignette), **Warm Cinematic** (warm + Filmkorn), **Soft Paper**, **Minimal Film**, **Elegant Contrast**. Manuelle Regler: Text, Attribution, Font, Größe, Gewicht, Farben, Zoom (0–10 %), Position, Safe-Area, Dauer (frei 0,5–5,0 s, Standard 2,0 s), eigene Übergangsdauer um die Karte. Die Karte bleibt stumm (≤ −60 dB gemessen) und erhält niemals Voiceover, Untertitel oder fremdes Audio.
+- **Quote-/Flyer-Upload (optional, stumm):** `Intro → Cross Dissolve → Quote/Flyer → Cross Dissolve → Main → Cross Dissolve → Outro` verwendet eine fertige PDF-, PNG-, JPG-, JPEG- oder WEBP-Datei. Die Funktion ist standardmäßig aus, die Dauer beträgt standardmäßig 4,0 Sekunden, und die vorhandene Transition-Sicherheitsklemmung bleibt aktiv. PDFs bieten Seitenzählung und Seitenauswahl; Fit, Fill und Crop bewahren das Seitenverhältnis in 16:9, 9:16, 1080p und 4K. Es gibt keine Text-Quote und keinen generierten Quote-Modus mehr. PDF-Seiten werden intern mit PyMuPDF in eine temporäre Renderdatei gerastert und danach automatisch entfernt.
 - **Bessere Untertitel-Segmentierung:** Long-Form bevorzugt 1–2 Zeilen natürlicher Phrasen; Ein-/Zwei-Wort-Captions werden zusammengeführt (Wort-Timing unangetastet). Live-Vorschau UND der neue große Vorschau-Dialog malen mit derselben Renderer-Geometrie (inkl. Animations-Wortfortschritt).
-- **Sauberer Output-Ordner + doppelte Untertitel-Ausgaben:** Bei Untertiteln entstehen IMMER beide Varianten — `FinalVideo_16x9.mp4` (mit gebrannten Untertiteln, primär) und `FinalVideo_16x9_no_subtitles.mp4`; ebenso beim expliziten Main-Video. SRT/VTT liegen daneben; Verifikations-PNGs und Timeline-JSON bleiben intern unter `temp/`.
+- **Sauberer Output-Ordner + wählbare Untertitel-Ausgabe:** Der Untertitel-Ausgabemodus steuert den tatsächlichen Vertrag: `With Burned-in Subtitles + SRT + VTT` erzeugt das primäre Video mit eingebrannten Untertiteln, zusätzlich den `_no_subtitles`-Master sowie SRT und VTT; `With Burned-in Subtitles only` erzeugt nur das primäre Video; `Without Subtitles` erzeugt nur das saubere primäre Video. Verifikations-PNGs und Timeline-JSON bleiben intern unter `temp/`.
 - **Automatische YouTube-Metadaten (lokal, gratis, unbegrenzt):** Nach jedem erfolgreichen One-Click-Finalvideo entsteht `FinalVideo_16x9_YouTube.txt` (TITLE/DESCRIPTION/LANGUAGE) aus dem autoritativen Voiceover-Transkript: starker Einstieg, nützliche Zusammenfassung in den eigenen Worten, Themen als wörtliche Schlüsselphrasen, natürlicher Kanal-CTA; deutsch → deutsch, englisch → englisch. Deterministischer Pure-Python-Generator (immer offline verfügbar, nichts wird erfunden); ein optional vorhandenes lokales Ollama kann unter strenger Validierung polieren. Keine OpenAI-/Claude-/Gemini-/Bezahl-API. Metadaten-Probleme blockieren nie das Rendern.
-- **One-Click:** Video-Pool + Voiceover(s) + Script(s) + Musik + Untertitel + Watermark + Intro + optionale Quote + Main + Outro = FinalVideo mit einem Klick; das gerenderte MainVideo fließt automatisch in Stage 2.
-- **Alle Defaults bleiben:** Original Audio, Static Phrase, YouTube Landscape, Maximum Quality, End-Padding ≈ 1 s, Quote aus (2,0 s, Clean Editorial), Cut Last Clip, 10 % Stretch, 1,00x Speed. 327 Tests (95 neu) ohne unerwartete Fehler.
+- **One-Click:** Video-Pool + Voiceover(s) + Script(s) + Musik + Untertitel + Watermark + Intro + optionale Quote/Flyer + optionale Image Insertion + Main + Outro = FinalVideo mit einem Klick; das gerenderte MainVideo fließt automatisch in Stage 2.
+- **Neue Phase-2-Defaults:** Cross Dissolve mit 1,0 s (bei kurzen Clips sicher geklemmt) und Music Volume 44 % / Balanced (ca. +6 dB gegenüber 22 %, weiterhin unter Voiceover). Ducking, Limiter, Looping und manuelle Regler bleiben aktiv. Die übrigen Defaults bleiben: Original Audio, Static Phrase, YouTube Landscape, Maximum Quality, End-Padding ≈ 1 s, Quote-/Flyer-Upload aus (4,0 s, Fit), Cut Last Clip, 10 % Stretch, 1,00x Speed. Explizit gespeicherte Transition-/Audio-Werte bleiben erhalten.
 
 # VideoMerger 1.3.0 für Windows
 
 VideoMerger 1.2.4 ist ein additives Release auf Basis des exakt getesteten 1.2.3-Artefakts. Basic Merge, getrennte Stage-1-/Stage-2-Flows, aktive manuelle Reihenfolge, vier Übergänge, Audio, Watermark, Validierung, Hardwareauswahl und nicht überschreibende Exporte bleiben erhalten.
 
-## 1.2.4 – Großer Video-Pool (Required-Only), Quote-Karte, echte Subtitle-Preview, 4 neue Fonts
+## 1.2.4 – Großer Video-Pool (Required-Only), Quote-/Flyer-Artwork, echte Subtitle-Preview, 4 neue Fonts
 
 ### Großer Video-Pool – nur benötigte Clips
 
-Der Input-Ordner ist eine Quellbibliothek, keine Render-Warteschlange. Die Erkennung nutzt nur leichtgewichtiges `ffprobe`-Metadaten (Dauer, Auflösung, fps, Codec, Audiopräsenz, Größe – nie ein vollständiges Decodieren aller Dateien) und cached das Ergebnis. Die Auswahl stoppt, sobald die **aktive Reihenfolge** (Natürlich / Manuell / Zufällig) die aus dem Voiceover abgeleitete Zieldauer abdeckt: nur die benötigten Clips werden gerendert. Bei 300 verfügbaren und ~14 benötigten Clips gelangen genau ~14 Clips in die Pipeline – die übrigen tauchen in keinem Decode-, Filter-, Transition- oder Encode-Schritt auf. Der letzte Clip wird passend zutrimmt; ist das Material zu kurz, wiederholt die Full-Timeline-Loop die ausgewählte A-B-C-Sequenz und Hold Last Frame hält nur den letzten Frame. Die Vorverarbeitungsdauer skaliert nicht mit der Größe des ungenutzten Pools, und Änderungen an Subtitle-Stil/Quote-Text/Intro/Outro analysieren den Pool nie erneut. Die GUI zeigt `Videos im Input-Ordner / Benötigt / Ausgewählt / Nicht genutzt / Zieldauer` und aktualisiert sich nach Analyse, Voiceover-Änderungen, Zufall und manueller Sortierung.
+Der Input-Ordner ist eine Quellbibliothek, keine Render-Warteschlange. Die Erkennung nutzt nur leichtgewichtiges `ffprobe`-Metadaten (Dauer, Auflösung, fps, Codec, Audiopräsenz, Größe – nie ein vollständiges Decodieren aller Dateien) und cached das Ergebnis. Die Auswahl stoppt, sobald die **aktive Reihenfolge** (Natürlich / Manuell / Zufällig) die aus dem Voiceover abgeleitete Zieldauer abdeckt: nur die benötigten Clips werden gerendert. Bei 300 verfügbaren und ~14 benötigten Clips gelangen genau ~14 Clips in die Pipeline – die übrigen tauchen in keinem Decode-, Filter-, Transition- oder Encode-Schritt auf. Der letzte Clip wird passend zutrimmt; ist das Material zu kurz, wiederholt die Full-Timeline-Loop die ausgewählte A-B-C-Sequenz und Hold Last Frame hält nur den letzten Frame. Die Vorverarbeitungsdauer skaliert nicht mit der Größe des ungenutzten Pools, und Änderungen an Subtitle-Stil/Quote-/Flyer-Datei/Intro/Outro analysieren den Pool nie erneut. Die GUI zeigt `Videos im Input-Ordner / Benötigt / Ausgewählt / Nicht genutzt / Zieldauer` und aktualisiert sich nach Analyse, Voiceover-Änderungen, Zufall und manueller Sortierung.
 
-### Quote-Karte (optional, stumm)
+### Quote-/Flyer-Artwork (optional, stumm)
 
-Eine neue optionale Sektion zwischen Intro und Main: `Intro → (Übergang) → Quote → (Übergang) → Main → (Übergang) → Outro`. Aktivierbar über `[ ] Quote hinzufügen`; Dauer 1,0–3,0 s (Standard 2,0 s). Kinoreife/editorial Design: dunkler neutraler Hintergrund mit dezentem Vignette, das Zitat als einziger Fokuspunkt leicht über dem mathematischen Zentrum, automatisch ausgewogene Zeilenumbrüche (Wort-/Phrasegrenzen, nie ein gebrochenes Wort, keine einzelnen Wort-Zeilen) und auflösungsbewusste Schriftgröße in nativer Auflösung (1080p / 1440p / 4K, 16:9 und 9:16). Verwendet das bestehende Transition-System. **Quote-Karten-Audio ist standardmäßig stumm**: kein Voiceover, keine generierte Musik, keine Untertitel – die Quote gelangt nie in die SRT/VTT/Burn-in-Zeitleiste und verschiebt niemals die Main-Video-Subtitle-Timing. Die Live-GUI-Vorschau wendet dieselbe Layout- und Umbruchlogik an wie der Renderer.
+Die optionale Sektion wird als `Intro → (Cross Dissolve) → Quote/Flyer → (Cross Dissolve) → Main → (Cross Dissolve) → Outro` komponiert. Sie ist standardmäßig deaktiviert und dauert 0,5–5,0 Sekunden (Standard 4,0 Sekunden). Die GUI enthält ausschließlich Include Quote / Flyer, Dateiauswahl, PDF-Seite, Artwork Fit und Dauer — keine Text-Quote und keinen generierten Modus. Unterstützt werden PDF, PNG, JPG, JPEG und WEBP. PDFs werden intern mit PyMuPDF gerastert; die temporäre Rasterdatei wird nach dem Export sicher entfernt und nicht im Output-Ordner abgelegt. Fit, Fill und Crop bewahren das Seitenverhältnis und funktionieren für 16:9, 9:16, 1080p und 4K.
+
+**Quote-/Flyer-Audio bleibt absichtlich stumm**: Voiceover, generierte Musik, Untertitel und Main-Video-Audio werden nicht in die Karte geroutet. Die Karte gelangt nie in die SRT/VTT/Burn-in-Zeitleiste. Die Live-GUI-Vorschau unterstützt Bild-Artwork, ausgewählte PDF-Seiten, Fit/Fill/Crop und das gewählte Ausgabeformat.
+
+### Unabhängige Image Insertion (optional, stumm, Stage 2)
+
+Image Insertion ist vollständig von Quote/Flyer/PDF getrennt. In der Stage-2-Sektion kann genau ein PNG, JPG, JPEG oder WEBP ausgewählt und **After Intro** oder **Before Outro** platziert werden; Standard ist After Intro. Die Dauer ist über Presets und Custom editierbar (Standard 4,0 s), die bestehende Cross-Dissolve/Crossfade-Familie nutzt an den Bildgrenzen standardmäßig 1,0 s mit sicherer Klemmung. Fit, Fill und Crop bewahren das Seitenverhältnis; Zoom startet bei 100 %, und Natural, Cinematic, Moody, Film sowie Dark Editorial sind feste, reproduzierbare Looks. Die echte Vorschau spiegelt Datei, Format, Framing, Zoom und Filter.
+
+Das Bild erhält kein Voiceover, keine Musik, kein Original-Audio und keine künstlichen Untertitelzeiten. Der Stage-2-Graph erzeugt für die Bildsektion ausschließlich passende Stille und hält die Übergänge ohne Lücken oder doppelte Crossfades. Alle Einstellungen werden gespeichert, aber nicht in den Stage-1-Cache aufgenommen; reine Bildänderungen invalidieren den Main-Render daher nicht. One-Click, Quote/Flyer, Intro/Outro, Chunking, 16:9/9:16, 1080p/4K und die Subtitle-Ausgabemodi werden unterstützt.
+
+### Subtitle-Ausgabemodi
+
+Der Standard **With Burned-in Subtitles + SRT + VTT** erzeugt einen sauberen Master, brennt genau einmal die ausgerichtete ASS-Spur und schreibt SRT/VTT. **With Burned-in Subtitles only** führt denselben einzelnen Burn aus, legt aber keine SRT/VTT-Dateien an. **Without Subtitles** führt weder Alignment noch Burn-in/SRT/VTT aus; Voiceover-, Musik- und Videodauer bleiben unverändert.
 
 ### Echte Subtitle-Preview (Preview ≈ Final Render)
 
@@ -39,12 +67,19 @@ Inter, Manrope, Lora und Roboto (Regular + Bold) ergänzen die bestehende Noto-S
 
 Intro/Main/Outro Original Audio alle standardmäßig auf **Original** (Mute/Low/Original bleiben, unabhängig wählbar); Subtitle-Animation-Standard ist **Static Phrase** (Long-Form / YouTube Landscape, alle 5 Animationen wählbar); Output Preset **YouTube Landscape** + Qualität **Maximum** bleiben unverändert.
 
-## 1.2.3 – Zufallsreihenfolge, Maximum Quality, Intro und mehrere Voiceovers
+## Flexible Video-Reihenfolge
+
+Der projektweite **Video Order**-Selektor bietet **Natural**, **Alphabetical**, **Random** und **Manual**. Natural berücksichtigt numerische Segmente (`1, 2, 3, 10`), Alphabetical sortiert Dateinamen unabhängig von Groß-/Kleinschreibung; bei mehreren Quellordnern bleibt die Ordner-Alternierung aktiv, solange Alternativen vorhanden sind. Random erzeugt vor der Required-Only-Dauerauswahl eine echte Fisher-Yates-Permutation und wendet danach dieselbe Ordnerregel an. Random wird nicht automatisch zu Manual und schreibt keine Zufallsfolge in die manuelle Persistenz. Für deterministische Tests akzeptiert der gemeinsame Order-Helper einen Seed/RNG; normale Exporte verwenden eine neue Zufallsquelle.
+
+Der bestehende Button **Randomize Order** bleibt als explizite Einmal-Aktion erhalten und speichert die erzeugte Liste aus Kompatibilitätsgründen als Manual. **Reset to Default Order** stellt die natürliche numerische/alphabetische Reihenfolge wieder her und schaltet auf Natural zurück. Manuelles Ziehen bleibt die höchste Autorität.
+
+## 1.2.3 – Maximum Quality, Intro und mehrere Voiceovers
 
 - **Randomize Order** mischt die aktive Clip-Liste per echtem unverzerrtem Fisher-Yates – nur die aktuelle Liste, keine wieder hinzugefügten Dateien. Die Mischung wird sofort aktive Exportreihenfolge und bleibt gespeichert. **Reset to Default Order** stellt die natürliche numerische/alphabetische Reihenfolge wieder her (1, 2, 3, 10 – nie 1, 10, 2, 3), nie die letzte Zufallsreihenfolge. Manuelles Ziehen bleibt die höchste Steuerung.
 - **Maximum Quality** ist Standard: echtes `libx264` mit CRF 16, Preset `slow`, High Profile und yuv420p. Standard-Ausgabepreset **YouTube Landscape**: 16:9, Auto-Auflösung (höchste passende Quelle), Maximum Quality, Quell-/Auto-FPS, AAC-LC 48 kHz, Fast Start. 4K bleibt 4K, Quell-FPS bleibt erhalten, außer explizit geändert.
 - **Optionaler Intro**: Endkomposition **Intro → Main → Outro**. Intro und Outro erhalten weder Main-Voiceover noch Main-Musik noch Untertitel; jede Sektion behält ihr eigenes Original-Audio mit unabhängigem Mute/Low/**Original** (Standard).
-- **Mehrere Voiceover/Skript-Dateien**: eigene **Voiceover-Reihenfolge**-Liste (Hinzufügen/Entfernen/Hoch/Runter/Anfang/Ende/Reset), natürliche Standardreihenfolge, unabhängig von der Video-Reihenfolge, gespeichert. Skripte werden per normalisiertem Basisnamen automatisch zugeordnet und können manuell überschrieben werden. **Single Global Script** (Standard) oder **Multiple Matched Scripts** (fehlendes Skript = klare `SUBTITLE GENERATION FAILED [script matching]`-Fehlermeldung, nie stilles Bild ohne Untertitel). Jedes Paar wird separat ausgerichtet und mit kumulativen Offsets zu **einer kanonischen Untertitel-Timeline** für SRT/VTT/Burn-In verbunden.
+- **Mehrere Voiceover/Skript-Dateien**: Die effektive **Voiceover-Reihenfolge** kann **Natural / Alphabetical**, Änderungsdatum **älteste zuerst**, Änderungsdatum **neueste zuerst** oder **Manual** (Hinzufügen/Entfernen/Hoch/Runter/Anfang/Ende) sein. Sie wird mit dem Projekt gespeichert; Manual bewahrt die explizite Liste exakt. Skripte werden per normalisiertem Basisnamen automatisch zugeordnet und können manuell überschrieben werden. **One Global Script** (Standard) speichert genau eine maßgebliche Datei für die komplette geordnete Voiceover-Timeline, nie eine Kopie pro Zeile. **Individual Scripts** richtet jedes passende Paar aus; fehlendes Skript = klare `SUBTITLE GENERATION FAILED [script matching]`-Fehlermeldung, nie stilles Bild ohne Untertitel.
+- **Pause Between Voiceovers**: Presets `0.0`, `0.25`, `0.5`, `0.7` (Standard), `1.0`, `1.5`, `2.0` Sekunden plus Custom. Die Pause ist echte Stille zwischen den Dateien und fließt in Voiceover-Zieldauer, Main Video und kumulative Untertitel-Offsets ein. Untertitel bleiben während der Stille unsichtbar. **Main Video End Padding** bleibt davon getrennt und standardmäßig 1.0 Sekunde. Globales Alignment verwendet eine gemeinsame Mapping-Operation über die vollständige logische Timeline; Individual Scripts werden zu einer kanonischen SRT/VTT/Burn-In-Timeline verbunden.
 - **CREATE FINAL VIDEO – ONE CLICK** rendert weiterhin die echte `MainVideo.mp4` und übergibt exakt diese Datei automatisch an die Intro→Main→Outro-Komposition. Ausgaben: `MainVideo.mp4`, `MainVideo.srt`, `MainVideo.vtt`, `FinalVideo.mp4`.
 - Nur Video-Reihenfolge, Untertitel-Stil/-Animation, Intro oder Outro ändern? ASR/Ausrichtung laufen nicht erneut; alle Caches bleiben intakt.
 
@@ -89,7 +124,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ProjectRoot 
 
 1. findet Python 3.10–3.13 oder installiert Python 3.12 per winget im Benutzerkonto;
 2. erstellt `<ProjectRoot>\.venv`;
-3. installiert PySide6, faster-whisper und fontTools;
+3. installiert PySide6, faster-whisper, fontTools und PyMuPDF (PDF-Seiten für Quote-Artwork);
 4. lädt das lokale faster-whisper-Modell `small` nach `tools\alignment_models`;
 5. lädt FFmpeg/FFprobe, sucht die EXE-Dateien rekursiv und normalisiert sie nach `tools\ffmpeg\bin`;
 6. führt beide Programme, den direkten `-filter_complex`-Preflight, Selbsttest und Diagnose aus.
@@ -141,7 +176,7 @@ Original Video Audio + Voiceover + Background Music = Main Audio Mix
 - Original Video Audio: **Mute** (Standard), Low, Original
 - Voiceover: einmalig, primäre Sprache, eigener Lautstärkeregler
 - Musik: wird am Input geloopt und exakt am Ende des gesprochenen Programms getrimmt
-- Music Volume: Very Quiet, Quiet/Background (Standard), Balanced, Medium, Custom
+- Music Volume: Very Quiet, Quiet/Background, Balanced (Standard, 44 %), Medium, Custom
 - Voiceover Ducking: weicher FFmpeg-Sidechain-Kompressor, Standard AN
 - Attack/Release liegen unter Advanced Settings
 - `amix` + Limiter verhindern digitales Clipping; optionale Loudness-Normalisierung bleibt erhalten

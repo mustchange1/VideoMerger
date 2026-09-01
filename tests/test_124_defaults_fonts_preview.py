@@ -260,7 +260,6 @@ def qapp():
 def test_gui_defaults_and_live_preview_updates_without_export(qapp, monkeypatch):
     """GUI-Defaults 1.2.4 und Sofort-Update der echten Vorschau (kein FFmpeg)."""
     from app.video_merger.gui.main_window import MainWindow
-    from app.video_merger import quote
     from app.video_merger.subtitle_preview import SAMPLE_TEXTS
 
     def forbidden(*_args, **_kwargs):  # pragma: no cover - darf nie aufgerufen werden
@@ -283,7 +282,7 @@ def test_gui_defaults_and_live_preview_updates_without_export(qapp, monkeypatch)
         assert layout.preset_key == "long_1"
         # Exakt die Renderer-Geometrie für 16:9.
         assert layout.font_size == subtitles._font_size(1920, 1080, get_preset("long_1"))
-        alignment, margin_v = subtitles._position("Bottom", 1920, 1080, "long")
+        alignment, margin_v = subtitles._position("Center", 1920, 1080, "long")
         assert (layout.alignment, layout.margin_v) == (alignment, margin_v)
 
         # --- Fontwechsel: sofort, ohne Export, echte Metrik ---
@@ -306,19 +305,20 @@ def test_gui_defaults_and_live_preview_updates_without_export(qapp, monkeypatch)
         alignment, margin_v = subtitles._position("Top", 1920, 1080, "long")
         assert (layout.alignment, layout.margin_v) == (alignment, margin_v)
 
-        # --- Quote-Preview: exakt die layout_quote()-Geometrie ---
+        # --- Quote/Flyer artwork defaults and artwork-only GUI ---
+        assert window.quote_check.isChecked() is False
+        assert not hasattr(window, "quote_text_edit")
+        assert not hasattr(window, "quote_attribution_edit")
+        assert not hasattr(window, "quote_mode_combo")
+        assert window.quote_duration_spin.value() == 4.0
+        assert [window.quote_artwork_fit_combo.itemData(i) for i in range(window.quote_artwork_fit_combo.count())] == [
+            "fit", "fill", "crop"
+        ]
+        assert window.quote_pdf_page_spin.value() == 1
         window.quote_check.setChecked(True)
-        quote_text = "„Klarer Fokus.\nEchte Qualität.\n– ohne leere Worte“"
-        window.quote_text_edit.setPlainText(quote_text)
-        window.quote_attribution_edit.setText("– Test")
-        font_key = str(window.quote_font_combo.currentData())
-        expected = quote.layout_quote(quote_text, "– Test", font_key, 1920, 1080)
-        got = window.quote_preview.current_layout()
-        assert got is not None
-        assert list(got.lines) == list(expected.lines)
-        assert got.font_size == expected.font_size
-        assert got.line_top == expected.line_top
-        assert got.line_height == expected.line_height
-        assert got.attribution_size == expected.attribution_size
+        assert window.quote_artwork_path_edit.isEnabled()
+        assert window.quote_artwork_choose.isEnabled()
+        assert window.quote_artwork_fit_combo.isEnabled()
+        assert window.quote_pdf_page_spin.isEnabled() is False
     finally:
         window.close()

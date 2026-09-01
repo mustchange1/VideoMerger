@@ -101,6 +101,7 @@ class MediaAnalyzer:
         audio = AudioInfo(**dict(data.pop("audio", {})))
         data["path"] = path
         data["audio"] = audio
+        data.setdefault("source_folder", str(path.expanduser().resolve().parent))
         return MediaInfo(**data)
 
     def probe_raw(self, path: Path | str) -> dict[str, Any]:
@@ -124,13 +125,19 @@ class MediaAnalyzer:
         except json.JSONDecodeError as exc:
             raise MediaAnalysisError(f"FFprobe lieferte ungültige Daten für {media_path.name}.") from exc
 
-    def analyze(self, path: Path | str) -> MediaInfo:
+    def analyze(self, path: Path | str, source_folder: Path | str | None = None) -> MediaInfo:
         media_path = Path(path).expanduser().resolve()
+        source_identity = str(
+            Path(source_folder).expanduser().resolve()
+            if source_folder is not None else media_path.parent
+        )
         cache_key, signature = self._signature(media_path)
         entry = self._cache.get(cache_key)
         if entry and entry.get("signature") == signature:
             try:
                 result = self._from_cached(media_path, entry["media"])
+                if result.source_folder != source_identity:
+                    result.source_folder = source_identity
                 self.last_cache_hit = True
                 return result
             except (TypeError, ValueError, KeyError):
@@ -178,6 +185,7 @@ class MediaAnalyzer:
             )
         result = MediaInfo(
             path=media_path, duration=duration, width=width, height=height,
+            source_folder=source_identity,
             effective_width=effective_width, effective_height=effective_height,
             fps=fps, fps_fraction=str(fps_fraction),
             video_codec=str(video.get("codec_name") or ""),

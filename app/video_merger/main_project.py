@@ -2,40 +2,132 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
 from .alignment import LocalWordAligner
 from .engine import VideoMergerEngine
 from .errors import VideoMergerError
-from .models import (
-    AlignmentResult, CompleteWorkflowResult, ExportSettings, LogCallback, MainVideoResult,
-    MediaInfo, ProgressCallback, ProgressEvent, ValidationReport, WordTiming,
-)
 from .font_manager import bundled_fonts_dir
+from .models import (
+    AlignmentResult,
+    CompleteWorkflowResult,
+    ExportSettings,
+    LogCallback,
+    MainVideoResult,
+    MediaInfo,
+    ProgressCallback,
+    ProgressEvent,
+    ValidationReport,
+    WordTiming,
+)
 from .paths import project_root
 from .project_assets import (
-    AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, optional_path, probe_audio, read_script, require_asset,
+    AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    optional_path,
+    probe_audio,
+    read_script,
+    require_asset,
+)
+from .image_insertion import (
+    clamp_image_duration,
+    clamp_image_zoom,
+    image_insertion_path,
+    normalize_image_filter,
+    normalize_image_fit_mode,
+    normalize_image_position,
+)
+from .quote_artwork import (
+    cleanup_prepared_quote_artwork,
+    prepare_quote_artwork,
+    quote_artwork_path,
+)
+from .render_cache import Stage1RenderCache, load_cached_alignment, stage1_fingerprint
+from .subtitle_modes import (
+    SUBTITLE_OUTPUT_COMBINED,
+    SUBTITLE_OUTPUT_WITHOUT,
+    normalize_subtitle_output_mode,
+    subtitle_render_requested,
+    subtitle_sidecars_requested,
 )
 from .subtitle_verification import create_visual_verification_frames
 from .subtitles import (
-    build_cues, validate_subtitle_file, write_ass, write_canonical_timeline, write_srt, write_vtt,
+    build_cues,
+    validate_subtitle_file,
+    write_ass,
+    write_canonical_timeline,
+    write_srt,
+    write_vtt,
 )
-from .target import choose_fps
-from .timeline import fit_media_to_duration
+from .target import choose_fps, parse_resolution, resolve_export
+from .timeline import (
+    after_merge_enabled,
+    duration_after_merge_value,
+    duration_before_merge_value,
+    fit_media_to_duration,
+)
+from .validation import validate_output
+from .video_pool import media_source_folder, order_media_for_video_order
+from .voiceover_order import (
+    normalize_voiceover_order_mode,
+    order_voiceover_paths,
+    voiceover_order_indices,
+)
 from .youtube_metadata import generate_youtube_metadata_file
 
 
-def voiceover_paths(settings: ExportSettings) -> list[Path]:
-    """Return the ordered voiceover units for Stage 1.
-
-    The 1.2.3 list is authoritative; the legacy single ``voiceover_path`` is
-    accepted for compatibility with CLI calls and persisted older projects.
-    """
+def _raw_voiceover_paths(settings: ExportSettings) -> list[Path]:
     raw = list(settings.voiceover_paths)
     if not raw and settings.voiceover_path.strip():
         raw = [settings.voiceover_path]
     return [Path(value).expanduser().resolve() for value in raw if value.strip()]
+
+
+def voiceover_paths(settings: ExportSettings) -> list[Path]:
+    """Return the effective, deterministic Stage-1 voiceover order.
+
+    ``manual`` preserves the persisted list exactly. All automatic modes are
+    also applied headlessly so CLI and GUI exports cannot disagree about the
+    acoustic timeline.
+    """
+    raw = _raw_voiceover_paths(settings)
+    return order_voiceover_paths(raw, getattr(settings, "voiceover_order_mode", "natural"))
+
+
+def ordered_voiceover_units(settings: ExportSettings) -> tuple[list[Path], list[Path | None]]:
+    """Return ordered audio and (when matched) scripts as one paired sequence.
+
+    Exact basename matches win, which preserves the existing GUI behavior even
+    when a CLI/persisted project supplied the script list in a different order.
+    Missing scripts stay as ``None`` so validation reports the affected audio
+    unit instead of silently shifting the following scripts.
+    """
+    raw_units = _raw_voiceover_paths(settings)
+    mode = normalize_voiceover_order_mode(getattr(settings, "voiceover_order_mode", "natural"))
+    script_mode = "matched" if str(settings.script_mode).casefold() in {"matched", "individual"} else "single"
+    indices = voiceover_order_indices(raw_units, mode)
+    units = [raw_units[index] for index in indices]
+    raw_scripts = script_paths(settings)
+    if script_mode != "matched":
+        return units, raw_scripts
+    by_stem = {path.stem.casefold(): path for path in raw_scripts}
+    ordered_scripts: list[Path | None] = []
+    # A complete positional list remains compatible with the GUI's explicit
+    # row assignments (the same permutation is applied to audio and scripts).
+    # Partial lists use basename matching only: falling back by index would
+    # silently assign the following script to a missing middle voiceover.
+    positional = len(raw_scripts) == len(raw_units)
+    for original_index, unit in zip(indices, units):
+        matched = by_stem.get(unit.stem.casefold())
+        if matched is not None:
+            ordered_scripts.append(matched)
+        elif positional and original_index < len(raw_scripts):
+            ordered_scripts.append(raw_scripts[original_index])
+        else:
+            ordered_scripts.append(None)
+    return units, ordered_scripts
 
 
 def script_paths(settings: ExportSettings) -> list[Path]:
@@ -43,6 +135,125 @@ def script_paths(settings: ExportSettings) -> list[Path]:
     if not raw and settings.script_path.strip():
         raw = [settings.script_path]
     return [Path(value).expanduser().resolve() for value in raw if value.strip()]
+
+
+def global_script_path(settings: ExportSettings) -> Path | None:
+    """Resolve one authoritative global script without duplicating it per unit."""
+    value = str(getattr(settings, "global_script_path", "") or "").strip()
+    if value:
+        return Path(value).expanduser().resolve()
+    scripts = script_paths(settings)
+    return scripts[0] if scripts else None
+
+
+def voiceover_pause(settings: ExportSettings) -> float:
+    """Return the bounded inter-voiceover silence in seconds."""
+    try:
+        return max(0.0, min(10.0, float(getattr(settings, "voiceover_pause", 0.7))))
+    except (TypeError, ValueError):
+        return 0.7
+
+
+def voiceover_timeline_duration(durations: list[float], pause: float) -> float:
+    """Return spoken audio plus exactly one gap between adjacent units."""
+    return sum(max(0.0, float(value)) for value in durations) + max(0.0, float(pause)) * max(0, len(durations) - 1)
+
+
+def _quote_is_active(settings: ExportSettings) -> bool:
+    """Return whether the optional artwork section has been requested."""
+    return bool(
+        settings.quote_enabled
+        and (getattr(settings, "quote_artwork_path", "") or "").strip()
+    )
+
+
+def _validate_quote_artwork_settings(settings: ExportSettings) -> None:
+    """Validate the source path before any Stage-1 work begins.
+
+    This keeps an invalid Stage-2-only choice from needlessly invalidating or
+    rerendering the Main Video cache. PDF parsing/rasterization remains lazy
+    until Stage 2, when the selected page is actually needed.
+    """
+    if not settings.quote_enabled:
+        return
+    value = (getattr(settings, "quote_artwork_path", "") or "").strip()
+    if not value:
+        raise VideoMergerError(
+            "Include Quote / Flyer ist aktiviert, aber keine Artwork-Datei ausgewählt."
+        )
+    quote_artwork_path(value)
+
+
+def _quote_fit_mode(settings: ExportSettings) -> str:
+    value = str(getattr(settings, "quote_artwork_fit_mode", "fit") or "fit").strip().casefold()
+    return value if value in {"fit", "fill", "crop"} else "fit"
+
+
+
+def _image_is_active(settings: ExportSettings) -> bool:
+    return bool(
+        getattr(settings, "image_enabled", False)
+        and (getattr(settings, "image_path", "") or "").strip()
+    )
+
+
+def _validate_image_settings(settings: ExportSettings) -> None:
+    if not getattr(settings, "image_enabled", False):
+        return
+    value = (getattr(settings, "image_path", "") or "").strip()
+    if not value:
+        raise VideoMergerError(
+            "Include Image Insertion ist aktiviert, aber keine Bilddatei ausgewählt."
+        )
+    image_insertion_path(value)
+    try:
+        raw_duration = float(getattr(settings, "image_duration", 4.0))
+    except (TypeError, ValueError) as exc:
+        raise VideoMergerError("Ungültige Image-Insertion-Dauer; erlaubt sind 0.5–60.0 s.") from exc
+    if not 0.5 <= raw_duration <= 60.0:
+        raise VideoMergerError("Ungültige Image-Insertion-Dauer; erlaubt sind 0.5–60.0 s.")
+
+
+def _image_position(settings: ExportSettings) -> str:
+    return normalize_image_position(getattr(settings, "image_position", "after_intro"))
+
+
+def _image_dimensions(engine: VideoMergerEngine, path: Path) -> tuple[int, int]:
+    try:
+        data = engine.analyzer.probe_raw(path)
+        stream = next(item for item in data.get("streams", []) if item.get("codec_type") == "video")
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+    except (StopIteration, TypeError, ValueError, KeyError, OSError) as exc:
+        raise VideoMergerError(
+            f"Image Insertion konnte nicht analysiert werden: {path.name}"
+        ) from exc
+    if width <= 0 or height <= 0:
+        raise VideoMergerError(f"Image Insertion hat keine gültige Auflösung: {path.name}")
+    return width, height
+
+def _quote_artwork_target(
+    settings: ExportSettings, reference: MediaInfo | list[MediaInfo]
+) -> tuple[int, int]:
+    """Choose the actual output dimensions for PDF rasterization.
+
+    The final target is still resolved by :mod:`target`; these dimensions only
+    determine how much detail a vector PDF receives before FFmpeg fits it. In
+    particular, Auto must honor a portrait project even when the Main Video is
+    landscape (and vice versa), rather than using the source video's shape as
+    the raster target.  When the complete Stage-2 sequence is available, use
+    it so a 4K Intro or Outro also promotes an Auto project to a 4K raster.
+    """
+    if str(settings.resolution or "").casefold() != "auto":
+        return parse_resolution(settings.resolution)
+    references = reference if isinstance(reference, list) else [reference]
+    target_settings = replace(
+        settings,
+        workflow_stage="outro",
+        timeline_target_duration=0.0,
+    )
+    resolved = resolve_export(references, target_settings)
+    return resolved.width, resolved.height
 
 
 def _offset_words(words: list[WordTiming], time_offset: float, char_offset: int) -> list[WordTiming]:
@@ -67,17 +278,22 @@ def _concatenate_alignment(
     """Merge per-unit alignments into one canonical spoken timeline.
 
     ``parts`` are (alignment, time_offset, char_offset). Time offsets are the
-    cumulative probed durations of the previous units; character offsets point
-    into the combined script. The merged timeline is the single authoritative
-    timing source for SRT/VTT/burn-in and for the video duration.
+    cumulative logical durations of previous units, including configured
+    inter-unit silence; character offsets point into the combined script. The
+    merged timeline is the single authoritative timing source for SRT/VTT/
+    burn-in and for the video duration.
     """
     merged: list[WordTiming] = []
     compatibilities: list[float] = []
     confidences: list[float] = []
     warnings: list[str] = []
     methods: list[str] = []
-    for alignment, time_offset, char_offset in parts:
+    hard_breaks: list[float] = []
+    for part_index, (alignment, time_offset, char_offset) in enumerate(parts):
         merged.extend(_offset_words(alignment.words, time_offset, char_offset))
+        hard_breaks.extend(float(boundary) + time_offset for boundary in alignment.hard_breaks)
+        if part_index > 0:
+            hard_breaks.append(time_offset)
         compatibilities.append(alignment.compatibility)
         confidences.extend(word.confidence for word in alignment.words)
         warnings.extend(alignment.warnings)
@@ -90,6 +306,7 @@ def _concatenate_alignment(
         compatibility=min(compatibilities) if compatibilities else 1.0,
         average_confidence=average,
         warnings=warnings,
+        hard_breaks=sorted(set(hard_breaks)),
     )
 
 
@@ -140,11 +357,134 @@ def _seconds(value) -> float:
         return 0.0
 
 
+def _scale_alignment(alignment: AlignmentResult, speed: float) -> AlignmentResult:
+    """Scale subtitle timing together with an explicit post-merge speed."""
+    if abs(speed - 1.0) <= 1e-9:
+        return alignment
+    words = [
+        replace(word, start=word.start / speed, end=word.end / speed)
+        for word in alignment.words
+    ]
+    return replace(
+        alignment,
+        words=words,
+        hard_breaks=[boundary / speed for boundary in alignment.hard_breaks],
+    )
+
+
 class MainProjectEngine:
     """Two-stage orchestration layered on the proven merge engine."""
 
-    def __init__(self, engine: VideoMergerEngine):
+    def __init__(
+        self,
+        engine: VideoMergerEngine,
+        render_cache: Stage1RenderCache | None = None,
+    ):
         self.engine = engine
+        self.render_cache = render_cache or Stage1RenderCache()
+
+    def _try_reuse_cached_main(
+        self,
+        fingerprint: str,
+        resolved,
+        subtitle_requested: bool,
+        progress: ProgressCallback,
+        log: LogCallback,
+        cancel_event,
+        subtitle_output_mode: str = SUBTITLE_OUTPUT_COMBINED,
+    ) -> MainVideoResult | None:
+        """Return a validated cached Stage-1 result, or ``None`` on any miss.
+
+        Cache lookup is deliberately fail-closed: an unreadable manifest,
+        missing artifact, invalid FFprobe result, or missing subtitle timeline
+        becomes a normal fresh render rather than a silent reuse of bad data.
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        record = self.render_cache.load(fingerprint)
+        if record is None:
+            return None
+        mode = normalize_subtitle_output_mode(subtitle_output_mode)
+        record_mode = normalize_subtitle_output_mode(record.get("subtitle_output_mode"))
+        if bool(record.get("subtitle_requested")) != bool(subtitle_requested) or record_mode != mode:
+            log("Stage 1 cache MISS: subtitle output mode differs from the cached render.")
+            return None
+        sidecars_requested = subtitle_requested and subtitle_sidecars_requested(mode)
+        self.render_cache.restore_sidecars(record)
+        artifacts = self.render_cache.artifact_paths(record)
+        video = artifacts.get("video")
+        clean_video = artifacts.get("video_no_subtitles")
+        if video is None or not video.is_file() or video.stat().st_size <= 0:
+            log("Stage 1 cache MISS: cached Main Video is missing or empty.")
+            return None
+        if sidecars_requested and (
+            clean_video is None or not clean_video.is_file() or clean_video.stat().st_size <= 0
+        ):
+            log("Stage 1 cache MISS: cached clean Main Video is missing or empty.")
+            return None
+        if sidecars_requested and any(
+            artifacts.get(key) is None
+            or not artifacts[key].is_file()
+            or artifacts[key].stat().st_size <= 0
+            for key in ("srt", "vtt", "canonical_timeline")
+        ):
+            log("Stage 1 cache MISS: required subtitle sidecars could not be restored.")
+            return None
+        if sidecars_requested:
+            try:
+                validate_subtitle_file(artifacts["srt"], "srt")
+                validate_subtitle_file(artifacts["vtt"], "vtt")
+            except Exception as exc:
+                log(f"Stage 1 cache MISS: cached subtitle sidecar validation failed: {exc}")
+                return None
+
+        report = validate_output(video, self.engine.ffprobe_path, resolved)
+        if not report.ok:
+            log("Stage 1 cache MISS: cached Main Video failed FFprobe validation.")
+            return None
+        if sidecars_requested:
+            clean_report = validate_output(clean_video, self.engine.ffprobe_path, resolved)
+            if not clean_report.ok:
+                log("Stage 1 cache MISS: cached clean Main Video failed FFprobe validation.")
+                return None
+
+        alignment = None
+        timeline = artifacts.get("canonical_timeline")
+        if subtitle_requested and timeline is not None:
+            try:
+                alignment = load_cached_alignment(timeline)
+            except (OSError, ValueError, TypeError, KeyError):
+                log("Stage 1 cache MISS: cached subtitle timeline is unreadable.")
+                return None
+
+        timings: dict[str, float | str | bool] = {
+            "cache_hit": True,
+            "render_reused": True,
+            "ffmpeg_rendering_seconds": 0.0,
+            "total_pipeline_seconds": 0.0,
+        }
+        log(f"Stage 1 cache HIT: reusing validated Main Video {video.name}; FFmpeg skipped.")
+        progress(ProgressEvent(
+            100.0,
+            report.duration,
+            report.duration,
+            0.0,
+            0.0,
+            "Stage 1 – Reused Main Video",
+            video.name,
+        ))
+        return MainVideoResult(
+            video=video,
+            srt=artifacts.get("srt") if sidecars_requested else None,
+            vtt=artifacts.get("vtt") if sidecars_requested else None,
+            report=report,
+            alignment=alignment,
+            warnings=[],
+            canonical_timeline=timeline if subtitle_requested else None,
+            verification_frames=[],
+            timings=timings,
+            video_no_subtitles=clean_video if sidecars_requested else None,
+        )
 
     def create_main(
         self,
@@ -155,45 +495,99 @@ class MainProjectEngine:
         log: LogCallback = lambda _message: None,
         cancel_event=None,
         aligner: LocalWordAligner | None = None,
+        reuse_cached: bool = False,
+        video_order_rng=None,
+        video_order_seed: int | None = None,
+        order_already_applied: bool = False,
     ) -> MainVideoResult:
         total_started = time.perf_counter()
         timings: dict[str, float | str | bool] = {}
         if not media:
             raise VideoMergerError("Stage 1 benötigt mindestens einen Videoclip.")
-        units = voiceover_paths(settings)
-        unit_scripts = script_paths(settings)
+        if not order_already_applied:
+            media = order_media_for_video_order(
+                media,
+                getattr(settings, "video_order_mode", "natural"),
+                rng=video_order_rng,
+                seed=video_order_seed,
+            )
+        log(
+            "Effective video order: "
+            + " → ".join(item.path.name for item in media)
+        )
+        script_mode = "matched" if str(settings.script_mode).casefold() in {"matched", "individual"} else "single"
+        units, unit_scripts = ordered_voiceover_units(settings)
+        # A configured-but-missing voiceover is not a real acoustic timeline
+        # unit. Drop it before probing and alignment so no phantom audio or
+        # inter-unit pause is introduced; preserve every available file.
+        available_units: list[Path] = []
+        available_scripts: list[Path | None] = []
+        missing_units: list[Path] = []
+        for index, unit in enumerate(units):
+            if unit.is_file():
+                available_units.append(unit)
+                if script_mode == "matched":
+                    available_scripts.append(unit_scripts[index] if index < len(unit_scripts) else None)
+            else:
+                missing_units.append(unit)
+        if missing_units:
+            log(
+                "Voiceover files skipped because they are unavailable (no audio or pause added): "
+                + ", ".join(unit.name for unit in missing_units)
+            )
+        units = available_units
+        if script_mode == "matched":
+            unit_scripts = available_scripts
         music_path = optional_path(settings.music_path)
         watermark_path = optional_path(settings.watermark_path)
-        script_mode = settings.script_mode if settings.script_mode in {"single", "matched"} else "single"
 
-        # A supplied script is an explicit subtitle request. When voiceover and
-        # script are assigned, subtitles are automatically enabled so the real
-        # user workflow cannot silently produce a captionless video merely
-        # because a checkbox remained unchecked.
-        global_script = unit_scripts[0] if (script_mode == "single" and unit_scripts) else None
-        subtitle_requested = bool(settings.subtitle_enabled or global_script or unit_scripts)
+        subtitle_mode = normalize_subtitle_output_mode(
+            getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
+        )
+        # A supplied script is an explicit subtitle request unless the user
+        # explicitly selected Without Subtitles. The latter still keeps the
+        # voiceover as the duration/audio authority, but performs no alignment,
+        # ASS burn, SRT, or VTT work.
+        global_script = global_script_path(settings) if script_mode == "single" else None
+        matched_script_paths = [path for path in unit_scripts if path is not None]
+        source_requested = bool(settings.subtitle_enabled or global_script or matched_script_paths)
+        subtitle_requested = subtitle_render_requested(subtitle_mode, source_requested)
         if subtitle_requested and not units:
             raise _subtitle_failure(
                 "input validation",
                 "Voiceover audio and the authoritative script.txt are both required.",
             )
-        if subtitle_requested and script_mode == "matched":
-            # Every spoken unit must have its own script; never fall back to a
-            # captionless render or to an accidentally mismatched global text.
-            for index, unit in enumerate(units):
-                if index >= len(unit_scripts):
-                    raise _subtitle_failure(
-                        "script matching",
-                        f"Missing script for voiceover:\n{unit.name}",
-                    )
         if subtitle_requested and script_mode == "single" and not global_script:
             raise _subtitle_failure(
                 "script matching",
                 "Single Global Script mode requires one script for the complete voiceover timeline.",
             )
-        if units and (global_script or unit_scripts) and not settings.subtitle_enabled:
-            subtitle_requested = True
-            log("Subtitles auto-enabled: Voiceover + Script are assigned; SRT, VTT and burn-in are mandatory.")
+        script_files: list[Path] = []
+        if subtitle_requested:
+            if script_mode == "single":
+                try:
+                    script_files = [require_asset(global_script, "Textskript", {".txt", ".text", ".md"})]
+                except Exception as exc:
+                    raise _subtitle_failure("script matching", exc) from exc
+            else:
+                # Individual script coverage is intentionally sparse. Missing
+                # assignments are silent audio-only units, while a present but
+                # invalid path is reported and omitted without shifting later
+                # voiceover/script pairings.
+                for path in unit_scripts:
+                    if path is None:
+                        continue
+                    try:
+                        script_files.append(require_asset(path, "Textskript", {".txt", ".text", ".md"}))
+                    except Exception as exc:
+                        log(f"Script skipped for partial matched coverage: {path}: {exc}")
+        if subtitle_requested and units and (global_script or matched_script_paths) and not settings.subtitle_enabled:
+            log(
+                "Subtitles auto-enabled: Voiceover + Script are assigned; "
+                f"output mode is {subtitle_mode}."
+            )
+        elif subtitle_mode == SUBTITLE_OUTPUT_WITHOUT and source_requested:
+            log("Subtitle output mode Without Subtitles: no alignment, burn-in, SRT, or VTT will be generated.")
 
         audio_started = time.perf_counter()
         try:
@@ -207,7 +601,14 @@ class MainProjectEngine:
             raise
         timings["voiceover_processing_seconds"] = time.perf_counter() - audio_started
         voice = voice_assets[0] if voice_assets else None
-        voice_total = sum(asset.duration for asset in voice_assets)
+        # The voiceover sequence is the timing authority. Inter-unit silence
+        # is real program audio, so it belongs in the Main target and all
+        # cumulative alignment offsets; the existing final_pause remains the
+        # separate end padding after the complete voiceover timeline.
+        inter_voiceover_pause = voiceover_pause(settings)
+        voice_total = voiceover_timeline_duration(
+            [asset.duration for asset in voice_assets], inter_voiceover_pause
+        )
 
         music_started = time.perf_counter()
         music = (
@@ -225,9 +626,12 @@ class MainProjectEngine:
         # remains the timing authority — the target duration, subtitle
         # timeline, voiceover and music behavior never change; only the clip
         # playback rate (and therefore how much material is required).
-        video_speed = max(0.5, min(2.0, float(getattr(settings, "video_speed", 1.0) or 1.0)))
-        if abs(video_speed - 1.0) > 1e-6:
-            log(f"Global Video Speed: {video_speed:.2f}x – Voiceover, Untertitel und Musik bleiben unverändert.")
+        duration_before_merge = duration_before_merge_value(settings)
+        if abs(duration_before_merge - 1.0) > 1e-6:
+            log(
+                f"Duration Before Merge: {duration_before_merge:.2f}x – "
+                "jeder normale ausgewählte Clip wird vor der Timeline entsprechend angepasst."
+            )
         duration_fit_mode = settings.duration_fit_mode if settings.duration_fit_mode in {"cut", "stretch"} else "cut"
         max_stretch = max(1.0, min(50.0, float(getattr(settings, "max_stretch_percent", 10.0) or 10.0)))
         if voice_assets:
@@ -236,7 +640,11 @@ class MainProjectEngine:
                 media, target, settings.transition_duration, fps, settings.short_video_mode,
                 duration_fit_mode=duration_fit_mode,
                 max_stretch_percent=max_stretch,
-                playback_rate=video_speed,
+                playback_rate=duration_before_merge,
+                # The effective project sequence was chosen above. Do not run
+                # a second automatic folder shuffle after Required-Only
+                # selection has begun; that could select a different prefix.
+                folder_aware=False,
             )
             warnings.extend(timing_warnings)
             program_duration = voice_total
@@ -250,10 +658,24 @@ class MainProjectEngine:
             program_duration=program_duration,
             timeline_target_duration=target,
             subtitle_enabled=subtitle_requested,
+            subtitle_output_mode=subtitle_mode,
+            # The Stage-1 export receives an already ordered/fitted sequence;
+            # its explicit hand-off flag prevents a second order pass while
+            # retaining the selected project mode on the render settings.
             subtitle_ass_path="",
             subtitle_fonts_dir=str(bundled_fonts_dir()),
             voiceover_paths=[str(asset.path) for asset in voice_assets],
             voiceover_path=str(voice.path) if voice else "",
+            script_paths=(
+                [str(path) for path in unit_scripts if path]
+                if script_mode == "matched"
+                else ([str(global_script)] if global_script else [])
+            ),
+            script_path=(
+                str(unit_scripts[0]) if script_mode == "matched" and unit_scripts and unit_scripts[0]
+                else (str(global_script) if global_script else "")
+            ),
+            global_script_path=str(global_script) if global_script else "",
             music_path=str(music.path) if music else "",
             watermark_path=str(watermark_path) if watermark_path else "",
         )
@@ -265,23 +687,66 @@ class MainProjectEngine:
                 f"Zielabweichung nach Frame-Rundung: {resolved.expected_duration - target:+.3f} s."
             )
 
+        # The cache validates the final Stage-1 artifact, not the temporary
+        # pre-post-merge master. Keep After Merge in Stage 1 while leaving the
+        # clip-selection/timeline target above untouched.
+        cache_resolved = resolved
+        if after_merge_enabled(settings):
+            after_speed = duration_after_merge_value(settings)
+            cache_resolved = replace(
+                resolved,
+                expected_duration=resolved.expected_duration / after_speed,
+            )
+        stage1_digest, stage1_payload = stage1_fingerprint(
+            render_media,
+            settings,
+            cache_resolved,
+            voice_assets=voice_assets,
+            script_files=script_files,
+            subtitle_requested=subtitle_requested,
+            music_asset=music,
+            watermark_path=watermark_path,
+        )
+        if reuse_cached:
+            cached_result = self._try_reuse_cached_main(
+                stage1_digest,
+                cache_resolved,
+                subtitle_requested,
+                progress,
+                log,
+                cancel_event,
+                subtitle_output_mode=subtitle_mode,
+            )
+            if cached_result is not None:
+                return cached_result
+
         # 1.3.0 Clean Output Directory: the user-facing folder receives only
         # useful artifacts (MainVideo.mp4, MainVideo_no_subtitles.mp4 when
         # subtitles exist, SRT, VTT). Internal evidence (verification PNGs,
         # canonical timeline JSON, staged ASS) lives under temp/ and never
         # clutters the Output folder.
+        sidecars_requested = subtitle_requested and subtitle_sidecars_requested(subtitle_mode)
         output_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = project_root() / "temp"
+        if subtitle_requested:
+            temp_dir.mkdir(parents=True, exist_ok=True)
         base_stem = f"MainVideo_{_aspect_token(settings.aspect)}"
         name_index = 1
         while True:
             actual = base_stem if name_index == 1 else f"{base_stem}_{name_index}"
-            output_video = output_dir / f"{actual}.mp4"                    # primary (burned subtitles)
-            output_video_clean = output_dir / f"{actual}_no_subtitles.mp4"  # additional clean variant
+            output_video = output_dir / f"{actual}.mp4"
+            # The clean master is user-facing only in the combined mode. In
+            # Burned Only it is a Stage-1 temporary; in Without it is unused.
+            output_video_clean = (
+                output_dir / f"{actual}_no_subtitles.mp4"
+                if sidecars_requested
+                else temp_dir / f".{actual}.clean_master_{uuid.uuid4().hex}.mp4"
+            )
             srt_candidate = output_dir / f"{actual}.srt"
             vtt_candidate = output_dir / f"{actual}.vtt"
-            reserved: list[Path] = [output_video, output_video_clean]
-            if subtitle_requested:
-                reserved += [srt_candidate, vtt_candidate]
+            reserved: list[Path] = [output_video]
+            if sidecars_requested:
+                reserved += [output_video_clean, srt_candidate, vtt_candidate]
             if not any(path.exists() for path in reserved):
                 break
             name_index += 1
@@ -291,14 +756,20 @@ class MainProjectEngine:
         alignment = None
         ass_path: Path | None = None
         verification_frames: list[Path] = []
-        temp_dir = project_root() / "temp"
         if subtitle_requested:
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            srt_path, vtt_path = srt_candidate, vtt_candidate
             timeline_path = temp_dir / f"{output_video.stem}.subtitle_timeline.json"
+            if sidecars_requested:
+                srt_path, vtt_path = srt_candidate, vtt_candidate
 
         log("Stage 1 – Create Main Video")
         log("Aktive Clip-Reihenfolge: " + " → ".join(item.path.name for item in render_media))
+        render_folders = [
+            media_source_folder(item)
+            for item in render_media
+            if not item.is_quote_artwork and not item.is_image_insertion
+        ]
+        if len(set(render_folders)) > 1:
+            log("Folder-aware alternation: consecutive clips use different source folders whenever an alternative remains.")
         if settings.short_video_mode == "loop" and len(render_media) > len(media):
             log("Full-Timeline Loop sequence: " + " → ".join(item.path.name for item in render_media))
         elif settings.short_video_mode == "hold":
@@ -308,13 +779,14 @@ class MainProjectEngine:
             if len(voice_assets) == 1:
                 log(
                     f"Voiceover: {voice_total:.3f} s, {voice.sample_rate} Hz, {voice.channels} Kanal/Kanäle; "
-                    f"Ziel Main Video: {resolved.expected_duration:.3f} s inkl. {settings.final_pause:.1f} s Pause"
+                    f"Ziel Main Video: {resolved.expected_duration:.3f} s inkl. {settings.final_pause:.1f} s End-Padding"
                 )
             else:
                 log(
                     "Voiceover: " + " → ".join(asset.path.name for asset in voice_assets)
-                    + f" (gesamte Sprech-Timeline {voice_total:.3f} s); "
-                    f"Ziel Main Video: {resolved.expected_duration:.3f} s inkl. {settings.final_pause:.1f} s Pause"
+                    + f" (gesamte Sprech-Timeline {voice_total:.3f} s, "
+                    f"{inter_voiceover_pause:.2f} s Pause zwischen Einheiten); "
+                    f"Ziel Main Video: {resolved.expected_duration:.3f} s inkl. {settings.final_pause:.1f} s End-Padding"
                 )
             log(
                 f"Script Mode: {'Multiple Matched Scripts' if script_mode == 'matched' else 'Single Global Script'}"
@@ -349,74 +821,115 @@ class MainProjectEngine:
                         char_cursor = 0
                         time_cursor = 0.0
                         languages: list[str] = []
-                        for asset, script_path_unit in zip(voice_assets, unit_scripts):
-                            script_unit = read_script(require_asset(
-                                script_path_unit, "Textskript", {".txt", ".text", ".md"}
-                            ))
-                            segment = script_unit.strip()
-                            if segment:
-                                segments.append(segment)
-                            try:
-                                unit_alignment = aligner.align(
-                                    segment, asset.path, settings.subtitle_language
-                                )
-                            except Exception as exc:
-                                raise _subtitle_failure(
-                                    "local ASR / word alignment", exc
-                                ) from exc
+                        for unit_index, (asset, script_path_unit) in enumerate(zip(voice_assets, unit_scripts)):
+                            segment = ""
+                            unit_alignment = AlignmentResult(
+                                words=[], language="auto", method="no script coverage",
+                                compatibility=1.0, average_confidence=0.0,
+                                warnings=[f"No script coverage for voiceover: {asset.path.name}"],
+                            )
+                            if script_path_unit is not None and script_path_unit.is_file():
+                                try:
+                                    segment = read_script(require_asset(
+                                        script_path_unit, "Textskript", {".txt", ".text", ".md"}
+                                    )).strip()
+                                except VideoMergerError as exc:
+                                    log(
+                                        f"Script skipped for {asset.path.name}; audio remains authoritative: {exc}"
+                                    )
+                                if segment:
+                                    try:
+                                        unit_alignment = aligner.align(
+                                            segment, asset.path, settings.subtitle_language
+                                        )
+                                    except Exception as exc:
+                                        # ASR/alignment engine failures are
+                                        # genuine global/system failures and are
+                                        # not silently converted into captions.
+                                        raise _subtitle_failure(
+                                            "local ASR / word alignment", exc
+                                        ) from exc
+                            else:
+                                log(f"No script assigned for {asset.path.name}; audio remains unsubtitled for this unit.")
+                            # Keep one logical script slot per audio unit so
+                            # later matched units retain their exact character
+                            # offsets even when this unit has no script.
+                            segments.append(segment)
                             languages.append(unit_alignment.language)
                             parts.append((unit_alignment, time_cursor, char_cursor))
-                            char_cursor += len(segment) + (2 if segments and segment else 0)
+                            char_cursor += len(segment)
+                            if unit_index < len(voice_assets) - 1:
+                                # The combined script uses exactly two newline
+                                # characters between matched segments.
+                                char_cursor += 2
                             time_cursor += asset.duration
+                            if unit_index < len(voice_assets) - 1:
+                                time_cursor += inter_voiceover_pause
                         combined_script = "\n\n".join(segments)
                         combined_alignment = _concatenate_alignment(parts, combined_script, languages)
                         log(
-                            f"Scripts: {len(segments)} matched Textskripte ("
+                            f"Scripts: {sum(bool(segment) for segment in segments)} of {len(segments)} matched Textskripte ("
                             + ", ".join(asset.path.name for asset in voice_assets)
                             + f"); gesamt {len(script_word_spans(combined_script))} Wörter"
                         )
                     else:
-                        # Single global script: transcribe every unit once and
-                        # force the authoritative script onto the concatenated
-                        # acoustic timeline. Units remain cached individually.
+                        # Single global script: one authoritative text is
+                        # mapped once onto the complete ordered acoustic
+                        # timeline. LocalWordAligner keeps each unit's ASR
+                        # transcription cacheable, then caches this composed
+                        # mapping by unit order, durations and pause. It is
+                        # never duplicated into per-voiceover script files.
                         script = read_script(require_asset(
                             global_script, "Textskript", {".txt", ".text", ".md"}
                         ))
                         combined_script = script
-                        recognized_all: list = []
-                        detected_languages: list[str] = []
-                        time_cursor = 0.0
-                        for asset in voice_assets:
-                            try:
-                                recognized, detected = aligner.recognize(
-                                    asset.path, settings.subtitle_language
-                                )
-                            except Exception as exc:
-                                raise _subtitle_failure(
-                                    "local ASR / word alignment", exc
-                                ) from exc
-                            offset_words = _offset_words(
-                                [WordTiming(
-                                    text=word.text, start=word.start, end=word.end,
-                                    confidence=word.confidence,
-                                ) for word in recognized],
-                                time_cursor, 0,
-                            )
-                            recognized_all.extend(offset_words)
-                            detected_languages.append(detected)
-                            time_cursor += asset.duration
                         try:
-                            combined_alignment = aligner.align_from_recognized(
-                                script, recognized_all,
-                                detected_languages[0] if detected_languages else settings.subtitle_language,
-                            )
+                            if hasattr(aligner, "align_global"):
+                                combined_alignment = aligner.align_global(
+                                    script,
+                                    [(asset.path, asset.duration) for asset in voice_assets],
+                                    settings.subtitle_language,
+                                    inter_voiceover_pause,
+                                )
+                            else:
+                                # Compatibility hook for small injected test
+                                # aligners and third-party implementations.
+                                recognized_all: list = []
+                                detected_languages: list[str] = []
+                                pause_boundaries: list[float] = []
+                                time_cursor = 0.0
+                                for unit_index, asset in enumerate(voice_assets):
+                                    recognized, detected = aligner.recognize(
+                                        asset.path, settings.subtitle_language
+                                    )
+                                    recognized_all.extend(_offset_words(
+                                        [WordTiming(
+                                            text=word.text, start=word.start, end=word.end,
+                                            confidence=word.confidence,
+                                        ) for word in recognized],
+                                        time_cursor, 0,
+                                    ))
+                                    detected_languages.append(detected)
+                                    time_cursor += asset.duration
+                                    if unit_index < len(voice_assets) - 1:
+                                        time_cursor += inter_voiceover_pause
+                                        if inter_voiceover_pause > 1e-9:
+                                            pause_boundaries.append(time_cursor)
+                                combined_alignment = aligner.align_from_recognized(
+                                    script, recognized_all,
+                                    detected_languages[0] if detected_languages else settings.subtitle_language,
+                                )
+                                combined_alignment.hard_breaks = sorted(
+                                    set(combined_alignment.hard_breaks + pause_boundaries)
+                                )
                         except Exception as exc:
                             raise _subtitle_failure(
                                 "local ASR / word alignment", exc
                             ) from exc
                         log(
                             f"Script: {len(script_word_spans(script))} Wörter; ausgewählte Sprache: "
-                            f"{settings.subtitle_language}"
+                            f"{settings.subtitle_language}; globales Alignment über "
+                            f"{len(voice_assets)} Voiceover-Einheiten"
                         )
                     alignment = combined_alignment
                 except VideoMergerError:
@@ -442,44 +955,42 @@ class MainProjectEngine:
                 for warning in alignment.warnings:
                     warnings.append(warning)
                     log("WARNUNG: " + warning)
-                if alignment.compatibility < 0.35:
-                    raise _subtitle_failure(
-                        "script/voiceover compatibility",
-                        "Skript und Voiceover unterscheiden sich zu stark. Bitte Zuordnung korrigieren.",
-                    )
-                confirmation_needed = (
-                    alignment.compatibility < 0.72
-                    or (
-                        alignment.compatibility < 0.90
-                        and any("could not be confidently" in warning for warning in alignment.warnings)
-                    )
-                )
-                if confirmation_needed and not settings.allow_alignment_warnings:
-                    raise _subtitle_failure(
-                        "alignment confidence",
-                        "Some words could not be confidently aligned. Prüfen Sie Voiceover/Script oder "
-                        "aktivieren Sie 'Continue After Alignment Warning' bewusst.",
-                    )
-                if alignment.words[-1].start >= voice_total:
+                # Compatibility and unmatched-word warnings describe local
+                # caption gaps; they must never turn a usable audio render into
+                # a global subtitle failure. Only genuinely invalid/system
+                # errors raised by the ASR or file pipeline fail the workflow.
+                if alignment.words and alignment.words[-1].start >= voice_total:
                     raise _subtitle_failure(
                         "word timeline validation",
                         "Der letzte Wortbeginn liegt außerhalb der Voiceover-Timeline.",
                     )
 
+                # A post-merge speed change applies to the complete finished
+                # program, including burned subtitles. Scale the authoritative
+                # word timeline before writing SRT/VTT/ASS so sidecars and the
+                # final video remain synchronized.
+                subtitle_speed = duration_after_merge_value(settings) if after_merge_enabled(settings) else 1.0
+                alignment = _scale_alignment(alignment, subtitle_speed)
+                subtitle_program_end = voice_total / subtitle_speed
                 subtitle_creation_started = time.perf_counter()
                 try:
                     cues = build_cues(
-                        combined_script, alignment, settings.subtitle_style, program_end=voice_total,
+                        combined_script, alignment, settings.subtitle_style, program_end=subtitle_program_end,
                         width=resolved.width, height=resolved.height, font_key=settings.subtitle_font,
                     )
-                    srt_path, vtt_path = srt_candidate, vtt_candidate
                     timeline_path = temp_dir / f"{output_video.stem}.subtitle_timeline.json"
-                    write_srt(cues, srt_path)
-                    write_vtt(cues, vtt_path)
+                    if sidecars_requested:
+                        srt_path, vtt_path = srt_candidate, vtt_candidate
+                        write_srt(cues, srt_path)
+                        write_vtt(cues, vtt_path)
+                        validate_subtitle_file(srt_path, "srt")
+                        validate_subtitle_file(vtt_path, "vtt")
+                    else:
+                        # Burned Only intentionally has no SRT/VTT output;
+                        # the canonical timeline remains a private cache input.
+                        srt_path = vtt_path = None
                     write_canonical_timeline(combined_script, alignment, cues, timeline_path)
-                    validate_subtitle_file(srt_path, "srt")
-                    validate_subtitle_file(vtt_path, "vtt")
-                    if cues[-1].end > voice_total + 0.001:
+                    if cues and cues[-1].end > subtitle_program_end + 0.001:
                         raise VideoMergerError("Untertitel reichen in die Quiet Pause hinein.")
                     temp = project_root() / "temp"
                     temp.mkdir(parents=True, exist_ok=True)
@@ -490,8 +1001,8 @@ class MainProjectEngine:
                         animation=settings.subtitle_animation, font_key=settings.subtitle_font,
                         debug_overlay=settings.subtitle_debug_overlay,
                     )
-                    if not ass_path.is_file() or "Dialogue:" not in ass_path.read_text(encoding="utf-8-sig"):
-                        raise VideoMergerError("ASS burn-in track contains no subtitle events.")
+                    if not ass_path.is_file() or "[Events]" not in ass_path.read_text(encoding="utf-8-sig"):
+                        raise VideoMergerError("ASS burn-in track could not be created.")
                     render_settings = replace(render_settings, subtitle_ass_path=str(ass_path))
                     timings["subtitle_creation_seconds"] = time.perf_counter() - subtitle_creation_started
                 except Exception as exc:
@@ -501,7 +1012,8 @@ class MainProjectEngine:
                     f"Subtitle Alignment: {len(alignment.words)} Wörter, Methode {alignment.method}, "
                     f"Kompatibilität {alignment.compatibility:.1%}, Confidence {alignment.average_confidence:.1%}"
                 )
-                log(f"SRT/VTT validiert; Untertitel enden bei {cues[-1].end:.3f} s vor der Quiet Pause.")
+                subtitle_end = cues[-1].end if cues else 0.0
+                log(f"SRT/VTT validiert; Untertitel enden bei {subtitle_end:.3f} s vor der Quiet Pause.")
 
             for warning in warnings:
                 log("WARNUNG: " + warning)
@@ -518,7 +1030,12 @@ class MainProjectEngine:
                     clean_report = self.engine.export(
                         render_media, render_settings, resolved, output_video_clean,
                         progress=progress, log=log, cancel_event=cancel_event,
+                        video_order_applied=True,
                     )
+                    if not clean_report.ok:
+                        raise VideoMergerError(
+                            clean_report.message or "Das subtitle-freie MainVideo konnte nicht erstellt werden."
+                        )
                     render_settings = replace(render_settings, subtitle_enabled=True)
                     burn_started = time.perf_counter()
                     try:
@@ -534,6 +1051,7 @@ class MainProjectEngine:
                     report = self.engine.export(
                         render_media, render_settings, resolved, output_video,
                         progress=progress, log=log, cancel_event=cancel_event,
+                        video_order_applied=True,
                     )
             except Exception as exc:
                 if subtitle_requested:
@@ -553,24 +1071,43 @@ class MainProjectEngine:
                         label: temp_dir / f"{output_video.stem}.subtitle_{label}.png"
                         for label in ("first", "middle", "final")
                     }
-                    verification_frames = create_visual_verification_frames(
-                        self.engine.ffmpeg_path, output_video, alignment, frame_paths,
-                    )
-                    required = [srt_path, vtt_path, timeline_path, *verification_frames]
+                    if alignment.words:
+                        verification_frames = create_visual_verification_frames(
+                            self.engine.ffmpeg_path, output_video, alignment, frame_paths,
+                        )
+                    else:
+                        # An all-mismatch timeline is valid audio-only subtitle
+                        # output. There is no spoken word at which a visual
+                        # verification frame could be sampled, so do not turn
+                        # the intentionally empty subtitle track into a render
+                        # failure.
+                        verification_frames = []
+                        log("Visual subtitle verification skipped: no reliable matched words.")
+                    required = [timeline_path, *verification_frames]
+                    if sidecars_requested:
+                        required = [srt_path, vtt_path, *required]
                     if not all(path and path.is_file() and path.stat().st_size > 0 for path in required):
                         raise VideoMergerError("Mindestens ein Subtitle-Ausgabeartefakt fehlt.")
+                    sidecar_status = "SRT: PASS · VTT: PASS" if sidecars_requested else "SRT: not generated · VTT: not generated"
                     log(
-                        "Subtitle Generation: PASS · Word-Level Alignment: PASS · SRT: PASS · VTT: PASS · "
-                        "Burned-In Subtitles: PASS"
+                        "Subtitle Generation: PASS · Word-Level Alignment: PASS · "
+                        + sidecar_status + " · Burned-In Subtitles: PASS"
                     )
                     log(
                         "Visual verification frames (decoded from final MP4, internal evidence): "
                         + ", ".join(path.name for path in verification_frames)
                     )
-                    log(
-                        "Dual subtitle output: " + output_video.name + " (burned, primary) + "
-                        + output_video_clean.name + " (no subtitles)"
-                    )
+                    if sidecars_requested:
+                        log(
+                            "Subtitle output mode: With Burned-in Subtitles + SRT + VTT · "
+                            + output_video.name + " (burned) + "
+                            + output_video_clean.name + " (clean master)"
+                        )
+                    else:
+                        log(
+                            "Subtitle output mode: With Burned-in Subtitles only · "
+                            + output_video.name + " (burned); no SRT/VTT files generated."
+                        )
                 except Exception as exc:
                     raise _subtitle_failure("first/middle/final visual verification", exc) from exc
             timings["finalization_seconds"] = time.perf_counter() - finalization_started
@@ -582,13 +1119,34 @@ class MainProjectEngine:
             ):
                 if key in timings:
                     log(f"PERFORMANCE {key}={float(timings[key]):.3f}")
+            try:
+                self.render_cache.save(
+                    stage1_digest,
+                    stage1_payload,
+                    video=output_video,
+                    video_no_subtitles=output_video_clean if sidecars_requested else None,
+                    srt=srt_path,
+                    vtt=vtt_path,
+                    canonical_timeline=timeline_path,
+                    subtitle_requested=subtitle_requested,
+                    subtitle_output_mode=subtitle_mode,
+                )
+                timings["render_cache_saved"] = True
+                log(f"Stage 1 cache saved: {stage1_digest[:12]}…")
+            except Exception as exc:
+                # Rendering remains successful if the optional cache location
+                # is unavailable; a later One-Click run will simply render.
+                timings["render_cache_saved"] = False
+                log(f"WARNUNG: Stage 1 cache konnte nicht gespeichert werden: {exc}")
             result = MainVideoResult(
                 output_video, srt_path, vtt_path, report, alignment, warnings,
                 canonical_timeline=timeline_path,
                 verification_frames=verification_frames,
                 timings=timings,
-                video_no_subtitles=output_video_clean if subtitle_requested else None,
+                video_no_subtitles=output_video_clean if sidecars_requested else None,
             )
+            result.timings["render_reused"] = False
+            result.timings["cache_hit"] = False
             return result
         except Exception:
             # Never leave a captionless/partial bundle looking successful.
@@ -600,8 +1158,12 @@ class MainProjectEngine:
                 vtt_path.unlink(missing_ok=True)
             raise
         finally:
-            if ass_path and output_video.exists():
+            # ASS and internal clean masters are process-local artifacts. Clean
+            # them even when FFmpeg fails before creating the burned output.
+            if ass_path:
                 ass_path.unlink(missing_ok=True)
+            if not sidecars_requested:
+                output_video_clean.unlink(missing_ok=True)
 
     def create_complete(
         self,
@@ -612,6 +1174,9 @@ class MainProjectEngine:
         log: LogCallback = lambda _message: None,
         cancel_event=None,
         aligner: LocalWordAligner | None = None,
+        video_order_rng=None,
+        video_order_seed: int | None = None,
+        order_already_applied: bool = False,
     ) -> CompleteWorkflowResult:
         """Execute actual Stage 1, then hand its exact MP4 to existing Stage 2.
 
@@ -620,12 +1185,15 @@ class MainProjectEngine:
         WITHOUT burned-in subtitles is composed from the clean Main Video,
         and the YouTube metadata file is created from the authoritative
         voiceover transcript.
-        1.2.4: Eine aktivierte Quote-Karte (mit Text) ist ein gültiger
-        Grund für Stage 2, auch ohne Intro und ohne Outro.
+        Eine aktivierte Quote-/Flyer-Datei ist ein gültiger Grund für Stage 2,
+        auch ohne Intro und ohne Outro.
         """
-        quote_active = bool(settings.quote_enabled and (settings.quote_text or "").strip())
-        if not optional_path(settings.intro_path) and not optional_path(settings.outro_path) and not quote_active:
-            raise VideoMergerError("One-Click benötigt eine zugewiesene Intro- und/oder Outro-Datei.")
+        _validate_quote_artwork_settings(settings)
+        _validate_image_settings(settings)
+        quote_active = _quote_is_active(settings)
+        image_active = _image_is_active(settings)
+        if not optional_path(settings.intro_path) and not optional_path(settings.outro_path) and not quote_active and not image_active:
+            raise VideoMergerError("One-Click benötigt eine zugewiesene Intro-, Image- und/oder Outro-Datei.")
 
         # Same subtitle-expectation rule as create_main: voiceover + script
         # always produce subtitles (a checked box alone does not when no
@@ -636,8 +1204,18 @@ class MainProjectEngine:
         script_probe = list(settings.script_paths) or (
             [settings.script_path] if settings.script_path.strip() else []
         )
-        subtitle_expected = bool(settings.subtitle_enabled or (unit_probe and script_probe))
-        parts = 3 if subtitle_expected else 2
+        if str(settings.script_mode).casefold() not in {"matched", "individual"}:
+            script_probe = [str(global_script_path(settings))] if global_script_path(settings) else []
+        subtitle_mode = normalize_subtitle_output_mode(
+            getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
+        )
+        subtitle_expected = subtitle_render_requested(
+            subtitle_mode, bool(settings.subtitle_enabled or (unit_probe and script_probe))
+        )
+        # Combined mode has a user-facing clean variant and therefore a third
+        # progress lane for its second Stage-2 composition. Burned Only and
+        # Without Subtitles each need exactly one Stage-2 pass.
+        parts = 3 if subtitle_expected and subtitle_sidecars_requested(subtitle_mode) else 2
 
         def stage_progress(part: int, parts: int, event: ProgressEvent) -> None:
             span = 100.0 / parts
@@ -653,7 +1231,9 @@ class MainProjectEngine:
         main = self.create_main(
             media, settings, output_dir,
             progress=lambda event: stage_progress(1, parts, event), log=log,
-            cancel_event=cancel_event, aligner=aligner,
+            cancel_event=cancel_event, aligner=aligner, reuse_cached=True,
+            video_order_rng=video_order_rng, video_order_seed=video_order_seed,
+            order_already_applied=order_already_applied,
         )
         if not main.video.is_file() or not main.report.ok:
             raise VideoMergerError("One-Click Stage 1 lieferte keine validierte MainVideo-Datei.")
@@ -661,12 +1241,21 @@ class MainProjectEngine:
         log(f"actual MainVideo input = {actual_main}")
         stage2_settings = replace(settings, main_video_path=str(actual_main))
         log(f"Actual Stage 1 input used by Stage 2: {actual_main}")
-        # 1.3.0: reserve BOTH final names up front so the subtitled primary
-        # and the no-subtitles variant belong to the same bundle index.
+        # Reserve a paired final bundle only when the selected mode actually
+        # asks for sidecars. Burned Only and Without Subtitles produce one
+        # final video and never leave a misleading *_no_subtitles.mp4 sibling.
         output_dir.mkdir(parents=True, exist_ok=True)
-        final_primary, final_clean, metadata_path = _available_dual_video_bundle(
-            output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}"
-        )
+        if subtitle_expected and subtitle_sidecars_requested(subtitle_mode):
+            final_primary, final_clean, metadata_path = _available_dual_video_bundle(
+                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}"
+            )
+        else:
+            single_bundle = _available_bundle(
+                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4", "YouTube.txt")
+            )
+            final_primary = single_bundle["mp4"]
+            final_clean = output_dir / f".{final_primary.stem}.unused_no_subtitles.mp4"
+            metadata_path = single_bundle["YouTube.txt"]
         final_video, final_report = self.add_outro(
             stage2_settings, output_dir,
             progress=lambda event: stage_progress(2, parts, event), log=log,
@@ -745,68 +1334,182 @@ class MainProjectEngine:
             require_asset(intro_path, "Intro", {".mp4", ".mov", ".mkv", ".m4v"})
         if outro_path:
             require_asset(outro_path, "Outro", {".mp4", ".mov", ".mkv", ".m4v"})
+        _validate_quote_artwork_settings(settings)
+        _validate_image_settings(settings)
+        quote_artwork_value = (getattr(settings, "quote_artwork_path", "") or "").strip()
+        quote_active = _quote_is_active(settings)
+        image_active = _image_is_active(settings)
         if not intro_path and not outro_path:
-            if not (settings.quote_enabled and (settings.quote_text or "").strip()):
-                raise VideoMergerError("Stage 2 benötigt mindestens ein Intro- oder Outro-Video.")
+            if not quote_active and not image_active:
+                raise VideoMergerError("Stage 2 benötigt mindestens ein Intro-, Image- oder Outro-Video.")
         ordered_paths = [path for path in (intro_path, main_path, outro_path) if path]
         media = list(self.engine.analyze(ordered_paths, log))
+        # PDF pages are rasterized only for this synchronous Stage-2 export.
+        # Keep the source PDF untouched and remove the derived PNG in every
+        # normal success/failure path after FFmpeg no longer needs it.
+        prepared_quote_artwork = None
+        stage2_resolution = settings.resolution
 
-        # 1.2.4 Quote Card: optional synthetic section between Intro and
-        # MainVideo (Intro → [Quote] → MainVideo → Outro). The card is
-        # generated entirely inside the FFmpeg filter graph (color source +
-        # vignette + drawtext), is silent, and never enters the subtitle,
-        # voiceover or music timeline of the main program.
+        # Quote / Flyer: optional artwork section between Intro and Main Video.
+        # The selected image/PDF page uses the same duration and transition
+        # pipeline as every other Stage-2 section.
         quote_position: int | None = None
         if settings.quote_enabled:
-            quote_text = (settings.quote_text or "").strip()
-            if not quote_text:
-                raise VideoMergerError("Die Quote-Karte ist aktiv, aber der Quote-Text ist leer.")
             quote_duration = float(settings.quote_duration)
             if not (0.5 - 1e-9 <= quote_duration <= 5.0 + 1e-9):
                 raise VideoMergerError(
                     f"Ungültige Quote-Dauer: {settings.quote_duration}; erlaubt: 0.5–5.0 s"
                 )
             quote_index = 1 if intro_path else 0
-            reference = media[quote_index]
-            # width/height = 0 marks a generated section: no source pixels,
-            # resolution-aware layout is applied inside the filter graph.
+            # The main video is the stable quality reference, regardless of an
+            # optional Intro. It is already in ``media`` at index 1/0.
+            main_reference = media[1 if intro_path else 0]
+            reference = main_reference
+            # Uploaded PNG/JPG/JPEG/WEBP or one selected PDF page becomes
+            # a real, silent Stage-2 image input. The source file is never
+            # copied into the normal Output folder.
+            target_width, target_height = _quote_artwork_target(settings, media)
+            # An uploaded poster must be fitted into the project's target;
+            # its source pixel count must not unexpectedly promote an Auto
+            # video project to a different export resolution.
+            if str(settings.resolution or "").casefold() == "auto":
+                stage2_resolution = f"{target_width}x{target_height}"
+
+            def image_dimensions(path: Path) -> tuple[int, int]:
+                try:
+                    data = self.engine.analyzer.probe_raw(path)
+                    stream = next(
+                        item for item in data.get("streams", [])
+                        if item.get("codec_type") == "video"
+                    )
+                    width = int(stream.get("width") or 0)
+                    height = int(stream.get("height") or 0)
+                except (StopIteration, TypeError, ValueError, KeyError) as exc:
+                    raise VideoMergerError(
+                        f"Quote-Artwork konnte nicht analysiert werden: {path.name}"
+                    ) from exc
+                if width <= 0 or height <= 0:
+                    raise VideoMergerError(f"Quote-Artwork hat keine gültige Auflösung: {path.name}")
+                return width, height
+
+            prepared = prepare_quote_artwork(
+                quote_artwork_value,
+                int(getattr(settings, "quote_pdf_page", 1) or 1),
+                target_width,
+                target_height,
+                project_root() / "temp",
+                image_dimensions,
+            )
+            if prepared.pdf_page is not None:
+                prepared_quote_artwork = prepared
             quote_item = MediaInfo(
-                path=Path("<generated:quote-card>"),
-                duration=float(settings.quote_duration),
-                width=0,
-                height=0,
+                path=prepared.path,
+                duration=quote_duration,
+                width=prepared.width,
+                height=prepared.height,
                 fps=reference.fps,
-                effective_width=0,
-                effective_height=0,
+                effective_width=prepared.width,
+                effective_height=prepared.height,
                 fps_fraction=reference.fps_fraction,
-                video_codec="generated",
+                video_codec="image",
                 pixel_format="yuv420p",
                 sar="1:1",
-                dar=reference.dar,
-                source_duration=float(settings.quote_duration),
-                is_generated_quote=True,
+                dar="",
+                source_duration=quote_duration,
+                is_quote_artwork=True,
+                quote_fit_mode=_quote_fit_mode(settings),
+            )
+            log(
+                f"Quote Artwork aktiv: {prepared.source_path.name}"
+                + (f", PDF-Seite {prepared.pdf_page}" if prepared.pdf_page else "")
+                + f", Fit-Modus {quote_item.quote_fit_mode}; Audio: stumm"
             )
             media.insert(quote_index, quote_item)
             quote_position = quote_index
             log(
-                f"Quote Card aktiv: {quote_duration:.1f} s, Stil {settings.quote_style}, "
-                f"Font {settings.quote_font}, "
-                f"Position zwischen {'Intro und MainVideo' if intro_path else '(Start) und MainVideo'}; Audio: stumm"
+                f"Position zwischen {'Intro und MainVideo' if intro_path else '(Start) und MainVideo'}"
             )
 
-        # Per-clip original-audio gain in composition order (intro/quote/main/outro).
+        # Independent Image Insertion: unlike Quote/Flyer this is not a PDF
+        # workflow and it has its own persisted framing/look controls. Insert
+        # exactly one occurrence at the requested semantic boundary. The
+        # image is never sent through the Stage-1 media list.
+        image_position: int | None = None
+        if image_active:
+            if str(settings.resolution or "").casefold() == "auto" and stage2_resolution.casefold() == "auto":
+                image_target_width, image_target_height = _quote_artwork_target(settings, media)
+                stage2_resolution = f"{image_target_width}x{image_target_height}"
+            image_path = image_insertion_path(settings.image_path)
+            image_width, image_height = _image_dimensions(self.engine, image_path)
+            image_duration = clamp_image_duration(settings.image_duration)
+            # Quote/Flyer may already be inserted at index 0/1. Resolve the
+            # actual MainVideo reference by role rather than relying on a
+            # positional index; the reference supplies only cadence metadata.
+            image_reference = next(
+                item for item in media
+                if item.path == main_path
+                and not item.is_quote_artwork
+                and not item.is_image_insertion
+            )
+            image_item = MediaInfo(
+                path=image_path,
+                duration=image_duration,
+                width=image_width,
+                height=image_height,
+                fps=image_reference.fps,
+                effective_width=image_width,
+                effective_height=image_height,
+                fps_fraction=image_reference.fps_fraction,
+                video_codec="image",
+                pixel_format="yuv420p",
+                sar="1:1",
+                dar="",
+                source_duration=image_duration,
+                is_image_insertion=True,
+                image_fit_mode=normalize_image_fit_mode(settings.image_fit_mode),
+                image_zoom=clamp_image_zoom(settings.image_zoom),
+                image_filter=normalize_image_filter(settings.image_filter),
+            )
+            if _image_position(settings) == "after_intro":
+                # With no Intro, After Intro means the beginning of Stage 2.
+                image_position = 1 if intro_path else 0
+            else:
+                # With no Outro, Before Outro means the end of Stage 2.
+                image_position = len(media) - 1 if outro_path else len(media)
+            media.insert(image_position, image_item)
+            log(
+                f"Image Insertion aktiv: {image_path.name}, Position "
+                f"{_image_position(settings)}, Dauer {image_duration:.3f} s, "
+                f"Fit {image_item.image_fit_mode}, Zoom {image_item.image_zoom} %, "
+                f"Filter {image_item.image_filter}; Audio: stumm"
+            )
+
+        # Per-section original-audio gain and role in composition order. Both
+        # artwork features are explicit mute slots; no application voiceover,
+        # music, or original audio can attach to either still image.
         audio_modes: list[str] = []
-        if intro_path:
-            audio_modes.append(settings.intro_audio_mode)
-        if quote_position is not None:
-            audio_modes.append("mute")  # the generated Quote Card is silent
-        audio_modes.append("original")  # the generated Main Video keeps its mix
-        if outro_path:
-            audio_modes.append(settings.outro_audio_mode)
+        stage2_roles: list[str] = []
+        for item in media:
+            if item.is_quote_artwork:
+                stage2_roles.append("quote")
+                audio_modes.append("mute")
+            elif item.is_image_insertion:
+                stage2_roles.append("image")
+                audio_modes.append("mute")
+            elif intro_path and item.path == intro_path and "intro" not in stage2_roles:
+                stage2_roles.append("intro")
+                audio_modes.append(settings.intro_audio_mode)
+            elif outro_path and item.path == outro_path and "outro" not in stage2_roles:
+                stage2_roles.append("outro")
+                audio_modes.append(settings.outro_audio_mode)
+            else:
+                stage2_roles.append("main")
+                audio_modes.append("original")
 
         outro_settings = replace(
             settings,
             workflow_stage="outro",
+            resolution=stage2_resolution,
             subtitle_enabled=False,
             subtitle_ass_path="",
             subtitle_fonts_dir="",
@@ -817,53 +1520,75 @@ class MainProjectEngine:
             music_path="",
             original_audio_mode="original",
             stage2_audio_modes=audio_modes,
-            # The Quote Card must join the section chain with the same
+            stage2_roles=stage2_roles,
+            # The Quote/Flyer must join the section chain with the same
             # transition system, so transitions stay active when it is on.
             transition_duration=(
                 settings.transition_duration
                 if (settings.outro_transition_enabled or quote_position is not None) else 0.0
             ),
         )
-        resolved = self.engine.make_plan(media, outro_settings, log)
-        # 1.3.0: optional dedicated transition duration around the quote card
-        # (0.0 = the global transition duration applies). The clamp mirrors
-        # target.safe_transition_durations so the boundaries around the card
-        # can never exceed 45 % of either neighboring section.
-        quote_transition = float(getattr(settings, "quote_transition_duration", 0.0) or 0.0)
-        if quote_position is not None and quote_transition > 0.01:
-            for boundary in (quote_position - 1, quote_position):
-                if 0 <= boundary < len(resolved.transitions):
-                    left = resolved.effective_durations[boundary]
-                    right = resolved.effective_durations[boundary + 1]
-                    value = max(0.01, round(min(quote_transition, left * 0.45, right * 0.45), 6))
-                    resolved.transitions[boundary] = value
-            resolved.expected_duration = max(
-                0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
-            )
-            log(f"Quote transition duration: {quote_transition:.2f} s (nur um die Quote-Karte).")
-        if output_path is not None:
-            output = Path(output_path).expanduser().resolve()
-        else:
-            output = _available_bundle(
-                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4",)
-            )["mp4"]
-        if intro_path:
-            log("Stage 2 – Add Intro / Main / Outro")
+        try:
+            resolved = self.engine.make_plan(media, outro_settings, log)
+            # The existing "Use transition into Outro" switch remains
+            # authoritative.  A Quote/Flyer needs transitions on its own two
+            # boundaries, but must not silently re-enable Main → Outro.
+            if quote_position is not None and outro_path and not settings.outro_transition_enabled:
+                resolved.transitions[-1] = 0.0
+                log("Übergang zum Outro deaktiviert; Quote-Übergänge bleiben aktiv.")
+            if quote_position is not None:
+                resolved.expected_duration = max(
+                    0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
+                )
+            if image_position is not None:
+                # Keep the selected transition family, but let the image have
+                # its own persisted duration request. Clamp at each boundary
+                # so short sections never create duplicate/overlapping
+                # dissolves, hard cuts, black frames, or timeline gaps.
+                try:
+                    image_transition = max(
+                        0.0, min(5.0, float(getattr(settings, "image_transition_duration", 1.0)))
+                    )
+                except (TypeError, ValueError):
+                    image_transition = 1.0
+                for boundary in (image_position - 1, image_position):
+                    if 0 <= boundary < len(resolved.transitions):
+                        left = resolved.effective_durations[boundary]
+                        right = resolved.effective_durations[boundary + 1]
+                        if image_transition <= 0.0:
+                            resolved.transitions[boundary] = 0.0
+                        else:
+                            resolved.transitions[boundary] = max(
+                                0.01, min(image_transition, left * 0.45, right * 0.45)
+                            )
+                resolved.expected_duration = max(
+                    0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
+                )
+            if output_path is not None:
+                output = Path(output_path).expanduser().resolve()
+            else:
+                output = _available_bundle(
+                    output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4",)
+                )["mp4"]
+            if intro_path:
+                log("Stage 2 – Add Intro / Main / Outro")
+                log(
+                    f"Intro: {media[0].duration:.3f} s; audio available: "
+                    f"{'yes' if media[0].audio.present else 'no'}"
+                )
+            else:
+                log("Stage 2 – Add Outro")
             log(
-                f"Intro: {media[0].duration:.3f} s; audio available: "
-                f"{'yes' if media[0].audio.present else 'no'}"
+                f"Outro: {media[-1].duration:.3f} s; audio available: "
+                f"{'yes' if media[-1].audio.present else 'no'}"
             )
-        else:
-            log("Stage 2 – Add Outro")
-        log(
-            f"Outro: {media[-1].duration:.3f} s; audio available: "
-            f"{'yes' if media[-1].audio.present else 'no'}"
-        )
-        log("Intro/Outro receive no application voiceover, no background music, and no subtitles.")
-        log(f"Intro original audio mode: {settings.intro_audio_mode}")
-        log(f"Outro original audio mode: {settings.outro_audio_mode}")
-        report = self.engine.export(
-            media, outro_settings, resolved, output,
-            progress=progress, log=log, cancel_event=cancel_event,
-        )
-        return output, report
+            log("Intro/Outro receive no application voiceover, no background music, and no subtitles.")
+            log(f"Intro original audio mode: {settings.intro_audio_mode}")
+            log(f"Outro original audio mode: {settings.outro_audio_mode}")
+            report = self.engine.export(
+                media, outro_settings, resolved, output,
+                progress=progress, log=log, cancel_event=cancel_event,
+            )
+            return output, report
+        finally:
+            cleanup_prepared_quote_artwork(prepared_quote_artwork)

@@ -3,11 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import quote
 from .filter_escape import filter_file_value
 from .hardware import encoder_arguments
+from .image_insertion import (
+    clamp_image_zoom,
+    image_filter_expression,
+    normalize_image_filter,
+    normalize_image_fit_mode,
+)
 from .models import ExportSettings, MediaSequence, ResolvedExport
 from .paths import project_root
+from .subtitle_modes import (
+    SUBTITLE_OUTPUT_WITHOUT,
+    normalize_subtitle_output_mode,
+)
 from .transition_effects import normalize_transition, transition_blur_sigma, xfade_expression
 
 
@@ -74,26 +83,40 @@ class FFmpegCommandBuilder:
     def __init__(self, ffmpeg_path: Path | str):
         self.ffmpeg_path = str(ffmpeg_path)
 
-    def build_filter_graph(self, media: MediaSequence, settings: ExportSettings, resolved: ResolvedExport) -> str:
+    def build_filter_graph(
+        self,
+        media: MediaSequence,
+        settings: ExportSettings,
+        resolved: ResolvedExport,
+        *,
+        video_window_start: float = 0.0,
+        audio_window_start: float = 0.0,
+        window_duration: float | None = None,
+    ) -> str:
+        """Build the normal graph, optionally exposing a logical timeline window.
+
+        Chunked rendering uses the same graph with a local overlapping clip
+        sequence. The video window starts after the already-rendered boundary
+        transition, while audio is sliced at the corresponding global program
+        timestamp. The defaults preserve the original single-command graph.
+        """
         width, height = resolved.width, resolved.height
+        video_window_start = max(0.0, float(video_window_start or 0.0))
+        audio_window_start = max(0.0, float(audio_window_start or 0.0))
+        window_duration = max(
+            0.0,
+            float(resolved.expected_duration if window_duration is None else window_duration),
+        )
         lines: list[str] = []
         video_labels: list[str] = []
         audio_labels: list[str] = []
         transition_type = normalize_transition(settings.transition_type)
         transition_blur = transition_blur_sigma(transition_type, width, height)
         dissolve_expression = xfade_expression(transition_type, settings.transition_ease)
-        # 1.2.4: Erzeugte Quote-Karten erhalten bewusst KEIN -i-Input. Die
-        # echten Input-Nummern aller übrigen Medien sind deshalb versetzt
-        # um die Anzahl der vor ihnen stehenden Karten.
-        real_input: list[int | None] = []
-        running = 0
-        for item in media:
-            if item.is_generated_quote:
-                real_input.append(None)
-            else:
-                real_input.append(running)
-                running += 1
-        next_input = running
+        # Every Stage-2 section is a real media input. Uploaded Quote/Flyer
+        # artwork is looped at input level; no synthetic text-card input exists.
+        real_input = list(range(len(media)))
+        next_input = len(media)
         voice_indices: list[int] = []
         music_index: int | None = None
         watermark_index: int | None = None
@@ -111,33 +134,102 @@ class FFmpegCommandBuilder:
         for index, item in enumerate(media):
             duration = resolved.effective_durations[index]
             base = f"base{index}"
-            if item.is_generated_quote:
-                # 1.2.4/1.3.0: Die Quote-Karte wird vollständig im Graph
-                # generiert (color-Quelle + stilabhängige Behandlung +
-                # drawtext + optionaler subtiler Zoom). Sie ist stumm: das
-                # Audio-Label kommt unten über den anullsrc-Zweig
-                # (audio.present=False). Kein -i-Input, keine Quelle auf
-                # Festplatte.
-                lines.extend(
-                    quote.quote_video_chain(
-                        quote.layout_quote(
-                            settings.quote_text,
-                            settings.quote_attribution,
-                            settings.quote_font,
-                            width,
-                            height,
-                            style_key=settings.quote_style,
-                            font_size_percent=settings.quote_font_size_percent,
-                            font_weight=settings.quote_font_weight,
-                            text_color=settings.quote_text_color,
-                            background_color=settings.quote_background_color,
-                            zoom_percent=settings.quote_zoom_percent,
-                            position=settings.quote_position,
-                            safe_padding_percent=settings.quote_safe_padding_percent,
-                        ),
-                        width, height, resolved.fps, duration, base,
+            visual_base = base
+            if item.is_image_insertion:
+                # Image Insertion is a real looped Stage-2 input, not a text
+                # card and not Quote/Flyer. It is deliberately silent: the
+                # audio branch below creates only a matching null source.
+                source = f"[{real_input[index]}:v:0]"
+                pre = f"pre{index}"
+                lines.append(
+                    f"{source}fps={resolved.fps_expr}:round=near,"
+                    f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
+                )
+                fit_mode = normalize_image_fit_mode(
+                    getattr(item, "image_fit_mode", getattr(settings, "image_fit_mode", "fit"))
+                )
+                zoom = clamp_image_zoom(
+                    getattr(item, "image_zoom", getattr(settings, "image_zoom", 100))
+                ) / 100.0
+                zoom_width = max(16, int(round(width * zoom / 2.0) * 2))
+                zoom_height = max(16, int(round(height * zoom / 2.0) * 2))
+                if fit_mode == "fit":
+                    framing = (
+                        f"scale=w={zoom_width}:h={zoom_height}:"
+                        f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
+                        f"pad=w=max(iw\\,{zoom_width}):h=max(ih\\,{zoom_height}):"
+                        f"x=(ow-iw)/2:y=(oh-ih)/2:color=black,"
+                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                    )
+                elif fit_mode == "fill":
+                    framing = (
+                        f"scale=w={zoom_width}:h={zoom_height}:"
+                        f"force_original_aspect_ratio=increase:force_divisible_by=2:flags=lanczos,"
+                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                    )
+                else:
+                    crop_w = f"min(iw\\,ih*{width}/{height})"
+                    crop_h = f"min(ih\\,iw*{height}/{width})"
+                    framing = (
+                        f"crop=w={crop_w}:h={crop_h}:x=(iw-ow)/2:y=(ih-oh)/2,"
+                        f"scale=w={zoom_width}:h={zoom_height}:flags=lanczos,"
+                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                    )
+                image_filter = image_filter_expression(
+                    normalize_image_filter(
+                        getattr(item, "image_filter", getattr(settings, "image_filter", "natural"))
                     )
                 )
+                if image_filter:
+                    framing += "," + image_filter
+                lines.append(f"[{pre}]{framing},setsar=1,format=yuv420p[{base}]")
+            elif item.is_quote_artwork:
+                # Uploaded artwork is looped at input level and trimmed to the
+                # exact Quote duration. It never receives text overlays, audio,
+                # subtitles, voiceover, or music. Every fit mode preserves the
+                # source aspect ratio; only the intentional crop modes remove
+                # pixels, never non-uniformly stretch the artwork.
+                source = f"[{real_input[index]}:v:0]"
+                pre = f"pre{index}"
+                lines.append(
+                    f"{source}fps={resolved.fps_expr}:round=near,"
+                    f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
+                )
+                configured_fit = str(getattr(settings, "quote_artwork_fit_mode", "") or "").strip().casefold()
+                item_fit = str(getattr(item, "quote_fit_mode", "fit") or "fit").casefold()
+                # MainProjectEngine stamps the setting onto the item. The
+                # item still wins for direct graph callers that construct an
+                # explicit non-default artwork occurrence.
+                fit_mode = item_fit if item_fit in {"fill", "crop"} else configured_fit
+                if fit_mode not in {"fit", "fill", "crop"}:
+                    fit_mode = "fit"
+                if fit_mode == "fit":
+                    # Contain: the complete artwork remains visible and the
+                    # unused canvas is deliberately letterboxed black.
+                    lines.append(
+                        f"[{pre}]scale=w={width}:h={height}:"
+                        f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
+                        f"pad=w={width}:h={height}:x=(ow-iw)/2:y=(oh-ih)/2:color=black,"
+                        f"setsar=1,format=yuv420p[{base}]"
+                    )
+                elif fit_mode == "fill":
+                    # Cover: fill the output and center-crop the excess.
+                    lines.append(
+                        f"[{pre}]scale=w={width}:h={height}:"
+                        f"force_original_aspect_ratio=increase:force_divisible_by=2:flags=lanczos,"
+                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,setsar=1,format=yuv420p[{base}]"
+                    )
+                else:
+                    # Crop the source to the target aspect first, then scale
+                    # that already matching rectangle. Escaped commas are
+                    # required because these are FFmpeg expression commas,
+                    # not filter-option separators.
+                    crop_w = f"min(iw\\,ih*{width}/{height})"
+                    crop_h = f"min(ih\\,iw*{height}/{width})"
+                    lines.append(
+                        f"[{pre}]crop=w={crop_w}:h={crop_h}:x=(iw-ow)/2:y=(ih-oh)/2,"
+                        f"scale=w={width}:h={height}:flags=lanczos,setsar=1,format=yuv420p[{base}]"
+                    )
             else:
                 original_duration = item.source_duration or item.duration
                 # 1.3.0 playback_rate: global Main Video speed and/or Smart
@@ -215,7 +307,7 @@ class FFmpegCommandBuilder:
             outgoing = resolved.transitions[index] if index < len(resolved.transitions) else 0.0
             if transition_blur > 0 and (incoming > 0 or outgoing > 0):
                 normal, blurred = f"normal{index}", f"blurred{index}"
-                lines.append(f"[{base}]split=2[{normal}][blurin{index}]")
+                lines.append(f"[{visual_base}]split=2[{normal}][blurin{index}]")
                 # 1.2.0 blurred every frame of every clip even though transition
                 # blur is only visible at clip boundaries. Timeline-enable the
                 # expensive gblur so long programs do not pay that cost outside
@@ -252,7 +344,7 @@ class FFmpegCommandBuilder:
                 )
             else:
                 final_video = f"v{index}"
-                lines.append(f"[{base}]fps={resolved.fps_expr}:round=near,settb=AVTB[{final_video}]")
+                lines.append(f"[{visual_base}]fps={resolved.fps_expr}:round=near,settb=AVTB[{final_video}]")
             video_labels.append(final_video)
 
             audio_label = f"a{index}"
@@ -265,7 +357,12 @@ class FFmpegCommandBuilder:
                 clip_gain = _mode_gain(settings.outro_audio_mode)
             else:
                 clip_gain = 1.0
-            if item.audio.present and real_input[index] is not None:
+            if (
+                item.audio.present
+                and real_input[index] is not None
+                and not item.is_quote_artwork
+                and not item.is_image_insertion
+            ):
                 # 1.3.0: the clip's own audio follows its playback rate so a
                 # stretched/sped-up clip keeps internal A/V sync. Voiceover,
                 # music and subtitles are never affected.
@@ -326,12 +423,21 @@ class FFmpegCommandBuilder:
         # Stage-1 visual finishing remains in this single render graph: ASS
         # burn-in and image overlay do not create another lossy encode.
         visual_label = "vprogram"
+        if video_window_start <= 1e-9:
+            trim_expression = f"trim=duration={_number(window_duration)}"
+        else:
+            trim_expression = (
+                f"trim=start={_number(video_window_start)}:duration={_number(window_duration)}"
+            )
         lines.append(
-            f"[{video_chain}]trim=duration={_number(resolved.expected_duration)},"
-            f"setpts=PTS-STARTPTS,format=yuv420p,setsar=1[{visual_label}]"
+            f"[{video_chain}]{trim_expression},setpts=PTS-STARTPTS,"
+            f"format=yuv420p,setsar=1[{visual_label}]"
         )
         if (
-            settings.workflow_stage == "main" and settings.subtitle_enabled
+            settings.workflow_stage == "main"
+            and settings.subtitle_enabled
+            and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+            != SUBTITLE_OUTPUT_WITHOUT
             and settings.subtitle_ass_path
         ):
             output = "vsubtitles"
@@ -380,10 +486,18 @@ class FFmpegCommandBuilder:
         # the configurable final pause.
         final_audio = audio_chain
         if settings.workflow_stage == "main":
-            target = resolved.expected_duration
+            target = window_duration
             program = min(target, settings.program_duration or target)
+            if video_window_start <= 1e-9:
+                original_trim = f"atrim=duration={_number(program)}"
+            else:
+                # The clip-original audio chain is local to this segment,
+                # unlike voiceover/music which use the global project clock.
+                original_trim = (
+                    f"atrim=start={_number(video_window_start)}:duration={_number(program)}"
+                )
             lines.append(
-                f"[{audio_chain}]atrim=duration={_number(program)},"
+                f"[{audio_chain}]{original_trim},asetpts=PTS-STARTPTS,"
                 f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[original_main]"
             )
             mix_labels = ["original_main"]
@@ -401,17 +515,48 @@ class FFmpegCommandBuilder:
                         f"[{index}:a:0]aresample=48000:async=1:first_pts=0,"
                         f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[{label}]"
                     )
-                if len(prepared_labels) == 1:
-                    voice_chain = prepared_labels[0]
+                try:
+                    inter_voiceover_pause = max(
+                        0.0, min(10.0, float(getattr(settings, "voiceover_pause", 0.7)))
+                    )
+                except (TypeError, ValueError):
+                    inter_voiceover_pause = 0.7
+                if len(prepared_labels) == 1 or inter_voiceover_pause <= 1e-9:
+                    if len(prepared_labels) == 1:
+                        voice_chain = prepared_labels[0]
+                    else:
+                        joined_in = "".join(prepared_labels)
+                        lines.append(
+                            f"{joined_in}concat=n={len(prepared_labels)}:v=0:a=1[vvoice_all]"
+                        )
+                        voice_chain = "[vvoice_all]"
                 else:
-                    joined_in = "".join(prepared_labels)
+                    # The silence is an actual audio segment in the same
+                    # concat timeline as the voiceovers. This keeps music,
+                    # subtitle offsets, visual target duration and rendered
+                    # audio boundaries in agreement; it is not an end pad.
+                    timeline_labels: list[str] = []
+                    for unit_index, voice_label in enumerate(prepared_labels):
+                        timeline_labels.append(voice_label)
+                        if unit_index < len(prepared_labels) - 1:
+                            pause_label = f"vpause{voice_indices[unit_index]}"
+                            lines.append(
+                                f"anullsrc=r=48000:cl=stereo:d={_number(inter_voiceover_pause)},"
+                                f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[{pause_label}]"
+                            )
+                            timeline_labels.append(f"[{pause_label}]")
+                    joined_in = "".join(timeline_labels)
                     lines.append(
-                        f"{joined_in}concat=n={len(prepared_labels)}:v=0:a=1[vvoice_all]"
+                        f"{joined_in}concat=n={len(timeline_labels)}:v=0:a=1[vvoice_all]"
                     )
                     voice_chain = "[vvoice_all]"
                 voice_gain = _percent_gain(settings.voiceover_volume)
+                voice_trim = (
+                    f"atrim=start={_number(audio_window_start)}:duration={_number(program)}"
+                    if audio_window_start > 1e-9 else f"atrim=duration={_number(program)}"
+                )
                 lines.append(
-                    f"{voice_chain}volume={_number(voice_gain)},atrim=duration={_number(program)},"
+                    f"{voice_chain}volume={_number(voice_gain)},{voice_trim},asetpts=PTS-STARTPTS,"
                     f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[voice_pre]"
                 )
                 if music_index is not None and settings.ducking_enabled:
@@ -422,10 +567,14 @@ class FFmpegCommandBuilder:
                 mix_labels.append(voice_mix)
             if music_index is not None:
                 music_gain = _percent_gain(settings.music_volume)
+                music_trim = (
+                    f"atrim=start={_number(audio_window_start)}:duration={_number(program)}"
+                    if audio_window_start > 1e-9 else f"atrim=duration={_number(program)}"
+                )
                 lines.append(
                     f"[{music_index}:a:0]aresample=48000:async=1:first_pts=0,"
                     f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
-                    f"volume={_number(music_gain)},atrim=duration={_number(program)},"
+                    f"volume={_number(music_gain)},{music_trim},asetpts=PTS-STARTPTS,"
                     f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[music_pre]"
                 )
                 music_label = "music_pre"
@@ -448,15 +597,20 @@ class FFmpegCommandBuilder:
             else:
                 final_audio = mix_labels[0]
 
+        final_audio_trim = (
+            f"atrim=start={_number(video_window_start)}:duration={_number(window_duration)}"
+            if settings.workflow_stage != "main" and video_window_start > 1e-9
+            else f"atrim=duration={_number(window_duration)}"
+        )
         if settings.normalize_audio:
             lines.append(
                 f"[{final_audio}]loudnorm=I=-16:LRA=11:TP=-1.5:linear=true,"
-                f"aresample=48000:async=1,atrim=duration={_number(resolved.expected_duration)}[aout]"
+                f"aresample=48000:async=1,{final_audio_trim},asetpts=PTS-STARTPTS[aout]"
             )
         else:
             lines.append(
                 f"[{final_audio}]aresample=48000:async=1,"
-                f"atrim=duration={_number(resolved.expected_duration)}[aout]"
+                f"{final_audio_trim},asetpts=PTS-STARTPTS[aout]"
             )
         # Keep the graph as one argument without shell quoting or script-file
         # options. Python's subprocess list preserves this Unicode argument on
@@ -469,19 +623,29 @@ class FFmpegCommandBuilder:
         settings: ExportSettings,
         resolved: ResolvedExport,
         output_path: Path,
+        *,
+        video_window_start: float = 0.0,
+        audio_window_start: float = 0.0,
+        window_duration: float | None = None,
     ) -> BuiltCommand:
-        graph = self.build_filter_graph(media, settings, resolved)
+        graph = self.build_filter_graph(
+            media,
+            settings,
+            resolved,
+            video_window_start=video_window_start,
+            audio_window_start=audio_window_start,
+            window_duration=window_duration,
+        )
         command = [self.ffmpeg_path, "-hide_banner", "-y"]
         for item in media:
-            # 1.2.4: Erzeugte Quote-Karten werden im Graph generiert und
-            # erhalten keinen -i-Input.
-            if item.is_generated_quote:
-                continue
-            # Full-timeline looping is represented by repeated occurrences in
-            # ``media``. Never stream-loop an individual final clip: doing so
-            # produced the incorrect 1.2.0 behavior and skipped loop-boundary
-            # transitions.
-            command += ["-i", str(item.path)]
+            if item.is_quote_artwork or item.is_image_insertion:
+                # One still-image input is looped for the exact Quote duration;
+                # the filter graph trims it and keeps the section silent.
+                command += ["-loop", "1", "-i", str(item.path)]
+            else:
+                # Never stream-loop a normal video occurrence: repeated media
+                # occurrences are what preserve clip-boundary transitions.
+                command += ["-i", str(item.path)]
         voice_inputs = list(getattr(settings, "voiceover_paths", None) or [])
         if not voice_inputs and settings.voiceover_path:
             voice_inputs = [settings.voiceover_path]

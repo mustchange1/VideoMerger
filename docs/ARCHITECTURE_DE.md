@@ -1,4 +1,12 @@
-# Architektur – VideoMerger 1.3.0
+# Architektur – VideoMerger 1.4.0
+
+## Architektur-Zusätze 1.4.0
+
+- **Quellordner:** `discovery.discover_videos()` akzeptiert die explizit konfigurierte Ordnerliste und setzt `MediaInfo.source_folder`; der alte Ein-Ordner-Modus scannt weiterhin nur direkt enthaltene Dateien. `ProjectOrderStore` persistiert globale und ordnerspezifische aktive Reihenfolgen.
+- **Auswahl:** `video_pool.order_media_for_video_order()` ist die gemeinsame Effective-Order-Pipeline für Natural, Alphabetical, Random und Manual. Natural/Alphabetical verwenden numerische bzw. filename-basierte Queues; Random permutiert zuerst per Fisher-Yates und alterniert danach Quellordner, solange Alternativen vorhanden sind. `folder_aware=False` ist der ausdrückliche bereits-geordnete Timeline-Pfad; die Legacy-Einstellung `folder_alternating` bleibt kompatibel.
+- **Dauer:** `timeline.duration_before_merge_value()` skaliert jeden normalen Stage-1-Clip vor dem Timeline-Aufbau; `engine.post_process_duration()` ist die getrennte optionale After-Merge-Operation. Smart Last-Clip Stretch bleibt zwischen diesen Schritten und dem Render.
+- **Flyer:** Artwork ist ein echter stummer Stage-2-Eingang zwischen Intro und Main. Rasterbilder werden direkt, PDF-Seiten mit PyMuPDF als temporäre Renderdatei verwendet; Stage-1-Cache-Fingerprints enthalten keine Quote-only-Einstellungen.
+- **Defaults:** neue Projekte verwenden Before Merge `0,70x`, After Merge deaktiviert / `1,00x`, Flyer `4,0 s` und Long-Form Landscape `Center`; Short-Form Portrait bleibt `Bottom Center`. Gespeicherte Werte haben Vorrang.
 
 ## Additiver Aufbau
 
@@ -16,7 +24,8 @@ PySide6 GUI / CLI
   │   ├─ atomarer bestehender VideoMergerEngine-Export
   │   └─ First/Middle/Final-Verifikationsframes
   ├─ Stage 2: MainProjectEngine.add_outro
-  │   └─ bestehender Export mit Main + Outro
+  │   ├─ Main + optionale Intro/Quote-Flyer/Image-Insertion + Outro
+  │   └─ pro Sektion isolierte Audio-Rollen und sichere Übergänge
   └─ One Click: MainProjectEngine.create_complete
       ├─ echte Stage 1 ausführen/validieren
       └─ exakt erzeugtes MainVideo an echte Stage 2 übergeben/validieren
@@ -63,14 +72,15 @@ Bei den synchronisierten Varianten beginnen Events exakt an kanonischen Wortstar
 
 ## Stage 1
 
-1. Discovery liefert die exakte aktive Reihenfolge.
-2. MediaAnalyzer und Audio-Probes verwenden sichere Pfad/Größe/mtime-Caches.
-3. Bei Voiceover ist das Ziel `Voiceover + Quiet Pause`; Hold und Full-Timeline Loop bleiben getrennt.
-4. Voiceover + Skript erzwingt den Subtitle-Pfad.
-5. Zielauflösung und ausgewählter Font fließen vor dem Rendern in `build_cues()` ein.
-6. SRT, VTT, Timeline und ASS werden vor FFmpeg validiert.
-7. Ein direkter atomarer `-filter_complex` erzeugt Übergänge, Canvas, ASS-Burn-In, Watermark und Audiomix. `-filter_complex_script` bleibt ausgeschlossen.
-8. Das MainVideo wird mit FFprobe validiert; danach werden First/Middle/Final-PNGs aus genau diesem MP4 dekodiert.
+1. Discovery liefert den aktuellen Pool und seine persistierte Manual-Historie.
+2. `order_media_for_video_order()` erzeugt genau einmal die effektive Projektfolge; sie wird vor Required-Only-Auswahl und Duration-Fit verwendet.
+3. MediaAnalyzer und Audio-Probes verwenden sichere Pfad/Größe/mtime-Caches.
+4. Bei Voiceover ist das Ziel `Voiceover + Quiet Pause`; Hold und Full-Timeline Loop bleiben getrennt.
+5. Voiceover + Skript erzwingt den Subtitle-Pfad.
+6. Zielauflösung und ausgewählter Font fließen vor dem Rendern in `build_cues()` ein.
+7. SRT, VTT, Timeline und ASS werden vor FFmpeg validiert.
+8. Ein direkter atomarer `-filter_complex` erzeugt Übergänge, Canvas, ASS-Burn-In, Watermark und Audiomix. `-filter_complex_script` bleibt ausgeschlossen.
+9. Das MainVideo wird mit FFprobe validiert; danach werden First/Middle/Final-PNGs aus genau diesem MP4 dekodiert.
 
 Fehler entfernen das vollständige partielle Bundle und beginnen mit `SUBTITLE GENERATION FAILED [Stufe]`.
 
@@ -105,19 +115,23 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 
 ### Windows-sichere Filterpfade
 
-`filter_escape.filter_file_value()` ist die einzige Stelle für Dateipfade im Filtergraph. FFmpeg läuft mit `cwd = project_root()` (`engine._execute(..., working_directory)`); alle Render-Dateien (staged ASS unter `temp/`, `tools/fonts`, Quote-Font) bekommen relative ASCII-Werte. Außerhalb des Ankers: UNQUOTED + Zwei-Stufen-Escape (apostrophe-sicher). `command_builder._filter_path`, `quote._filter_path_for` und `engine.burn_subtitles` nutzen ausschließlich diesen Einstiegspunkt.
+`filter_escape.filter_file_value()` ist die einzige Stelle für Dateipfade im Filtergraph. FFmpeg läuft mit `cwd = project_root()` (`engine._execute(..., working_directory)`); alle Render-Dateien (staged ASS unter `temp/` und `tools/fonts`) bekommen relative ASCII-Werte. Außerhalb des Ankers: UNQUOTED + Zwei-Stufen-Escape (apostrophe-sicher). `command_builder._filter_path` und `engine.burn_subtitles` nutzen ausschließlich diesen Einstiegspunkt.
 
 ### Dauer-Fit, Speed, End-Padding
 
 `timeline.fit_media_to_duration(..., duration_fit_mode, max_stretch_percent, playback_rate)` bleibt die eine Auswahl-Mathematik. `cut` = exaktes 1.2.4-Verhalten; `stretch` zieht das Präfix bevorzugt einen Clip kürzer und dehnt nur den letzten (relativ zur geschwindigkeitsskalierten Timeline-Dauer, begrenzt). `video_pool` spiegelt dieselbe Entscheidung in O(n) (eine Präfix-Berechnung pro Status). `MediaInfo.playback_rate` wird im Graph via `setpts=PTS/rate` + `atempo` umgesetzt (nur Clip-Audio; Voiceover/Musik/Untertitel unberührt). `final_pause` bleibt die autoritative End-Padding-Größe (GUI: freier Spin, Standard 1,0 s).
 
-### Doppelte Untertitel-Ausgaben + sauberer Output
+### Flexible Subtitle-Ausgaben + sauberer Output
 
-`create_main` rendert zuerst das saubere Master (`_no_subtitles.mp4`), dann brennt `engine.burn_subtitles()` die ASS in die primäre Datei (libass-Pass, Audio Stream-Copy, identische Encoder-Argumente). SRT/VTT liegen im Output; Timeline-JSON und Verifikations-PNGs bleiben unter `temp/`. `create_complete` reserviert beide FinalVideo-Namen vorab, rendert die primäre (untertitelte) Komposition aus dem untertitelten Main und die Clean-Variante aus dem sauberen Main.
+`subtitle_output_mode` ist ein echter Pipeline-Vertrag: `burned_and_sidecars` rendert sauberes Master → genau ein ASS-Burn und schreibt SRT/VTT; `burned_only` rendert dasselbe saubere Master → genau ein ASS-Burn, legt aber keine SRT/VTT an; `without_subtitles` überspringt Alignment und Burn-in vollständig. Im kombinierten Modus bleibt die Clean-Variante user-facing; in den beiden anderen Modi wird ein interner Master aus `temp/` nach dem Burn entfernt. Chunked Rendering segmentiert immer zuerst den clean master und brennt höchstens einmal nach der Assembly. Stage 2 erhält anschließend genau die gewählte Main-Variante.
 
-### Quote-Karten-Stile
+### Quote-/Flyer-Artwork
 
-`quote.QUOTE_STYLES` (fünf `QuoteStyleSpec`) definieren Hintergrund/Text/Attribution/Hairline/Korn/Default-Font; `layout_quote(...)` nimmt alle manuellen Regler keyword-only an (Geometrie-erhaltende Defaults). `quote_video_chain()` setzt stilabhängig Vignette/Korn/Hairline/drawtext/zoompan (d=1 → Dauer exakt) und bleibt stumm (anullsrc). `add_outro` validiert die freie Dauer 0,5–5,0 s und kann die Übergänge um die Karte separat begrenzen (`quote_transition_duration`, gleiche 45-%-Clamp-Regel).
+`quote_artwork.quote_artwork_path()` akzeptiert ausschließlich PDF, PNG, JPG, JPEG und WEBP und meldet fehlende, nicht lesbare oder nicht unterstützte Dateien explizit. Rasterbilder werden direkt als ein realer, geloopter Stage-2-Bildeingang verwendet. PDFs werden seitengeprüft und mit PyMuPDF output-aware in eine render-only PNG-Datei gerastert; `cleanup_prepared_quote_artwork()` entfernt diese Datei in `finally`, ohne die Quelle anzutasten. `command_builder` verwendet Fit (Contain + Letterbox), Fill (Cover + Center-Crop) oder Crop (zuerst aspect-safe zuschneiden, dann skalieren), nie eine nicht-uniforme Dehnung. Der Abschnitt hat eine eigene `anullsrc`-Audiospur und erhält keine Voiceover-, Musik-, Subtitle- oder Main-Audio-Spur. `add_outro` fügt ihn nur bei aktiviertem, gültigem Artwork zwischen Intro und Main ein; ohne Artwork bleibt der alte Textpfad ausgeschlossen und es gibt keinen generierten Fallback. Quote-only-Einstellungen sind nicht Bestandteil von `render_cache.stage1_fingerprint()`.
+
+### Unabhängige Image Insertion
+
+`image_insertion.py` validiert ausschließlich PNG/JPG/JPEG/WEBP und normalisiert Position, Dauer, Fit, Zoom und die fünf deterministischen Looks. `MainProjectEngine.add_outro()` fügt genau eine `MediaInfo(is_image_insertion=True)` nach Intro oder vor Outro ein; bei fehlendem Intro/Outro werden die Grenzen auf Start/Ende abgebildet. `command_builder` looped nur den Videoeingang, verwendet aspect-safe Fit/Fill/Crop plus Zoom/Filter und erzeugt für die Bildposition ausschließlich `anullsrc`. Die Stage-2-Transitionen werden an beiden Bildgrenzen separat sicher geklemmt. Die Felder werden von SettingsStore gespeichert, sind aber in `render_cache` absichtlich nicht enthalten.
 
 ### Lokale YouTube-Metadaten
 

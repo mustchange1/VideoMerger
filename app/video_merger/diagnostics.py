@@ -104,7 +104,7 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
         _ffmpeg, ffprobe = locate_ffmpeg()
     except Exception as exc:
         return [DiagnosticItem("Project Assets", False, str(exc))]
-    from .main_project import script_paths, voiceover_paths
+    from .main_project import global_script_path, script_paths, voiceover_paths, voiceover_pause
     voices = voiceover_paths(settings)
     if voices:
         total = 0.0
@@ -116,6 +116,7 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
             except Exception as exc:
                 failed = exc
                 break
+        total += voiceover_pause(settings) * max(0, len(voices) - 1)
         items.append(DiagnosticItem(
             "Voiceover" if len(voices) == 1 else f"Voiceover ({len(voices)} units)",
             failed is None,
@@ -127,7 +128,7 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
     else:
         items.append(DiagnosticItem("Voiceover", True, "optional · not assigned"))
     scripts = script_paths(settings)
-    if settings.script_mode == "matched" and voices and len(scripts) < len(voices):
+    if str(settings.script_mode).casefold() in {"matched", "individual"} and voices and len(scripts) < len(voices):
         items.append(DiagnosticItem(
             "Script Matching", False,
             f"{len(scripts)}/{len(voices)} Skripte zugewiesen – fehlende Skripte blockieren den Export.",
@@ -144,7 +145,9 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
             items.append(DiagnosticItem("Background Music", False, str(exc)))
     else:
         items.append(DiagnosticItem("Background Music", True, "optional · not assigned"))
-    script = optional_path(settings.script_path)
+    script = global_script_path(settings) if str(settings.script_mode).casefold() not in {"matched", "individual"} else (
+        optional_path(settings.script_path)
+    )
     if script:
         try:
             text = read_script(script)

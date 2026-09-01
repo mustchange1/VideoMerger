@@ -23,5 +23,6 @@ test_evidence/**/*.png
 test_evidence/**/*.wav
 test_evidence/**/*.webm
 tools/alignment_models/
+benchmark_results/
 tools/ffmpeg/SOURCE.txt
 tools/ffmpeg/bin/

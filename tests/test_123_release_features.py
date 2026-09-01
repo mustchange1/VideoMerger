@@ -27,7 +27,7 @@ import pytest
 from app.video_merger.alignment import LocalWordAligner
 from app.video_merger.engine import VideoMergerEngine
 from app.video_merger.hardware import encoder_arguments
-from app.video_merger.main_project import MainProjectEngine, _concatenate_alignment
+from app.video_merger.main_project import MainProjectEngine, _concatenate_alignment, ordered_voiceover_units
 from app.video_merger.models import AlignmentResult, ExportSettings, WordTiming
 from app.video_merger.project_order import (
     ProjectOrderStore,
@@ -132,24 +132,21 @@ def _settings_with_units(**overrides) -> ExportSettings:
     return ExportSettings(**values)
 
 
-def test_matched_mode_missing_script_is_a_clear_error(tmp_path):
+def test_matched_mode_missing_script_keeps_audio_unit_unsubtitled(tmp_path):
     voice_a = tmp_path / "vo_a.wav"
+    voice_b = tmp_path / "vo_b.wav"
     voice_a.touch()
+    voice_b.touch()
     script_a = tmp_path / "vo_a.txt"
     script_a.write_text("Alpha bravo.", encoding="utf-8")
-    media = [fake_media(str(tmp_path / "clip.mp4"), width=320, height=180, duration=2.0)]
     settings = _settings_with_units(
-        voiceover_paths=[str(voice_a), str(tmp_path / "vo_b.wav")],
+        voiceover_paths=[str(voice_a), str(voice_b)],
         script_paths=[str(script_a)],
     )
-    engine = VideoMergerEngine("/nonexistent/ffmpeg", "/nonexistent/ffprobe")
-    with pytest.raises(Exception) as excinfo:
-        MainProjectEngine(engine).create_main(media, settings, tmp_path / "out")
-    message = str(excinfo.value)
-    assert "SUBTITLE GENERATION FAILED" in message
-    assert "vo_b.wav" in message
-    # No captionless silent video may exist.
-    assert not list((tmp_path / "out").glob("MainVideo_*.mp4"))
+    voices, scripts = ordered_voiceover_units(settings)
+    assert [path.name for path in voices] == ["vo_a.wav", "vo_b.wav"]
+    assert scripts[0] == script_a.resolve()
+    assert scripts[1] is None
 
 
 def test_concatenate_alignment_applies_cumulative_offsets():
@@ -289,7 +286,7 @@ def test_default_settings_are_maximum_quality_and_youtube_landscape():
     assert settings.subtitle_style == "long_1"
     # 1.2.4: Default-Animation ist "Static Phrase" (vor 1.2.4 "type_reveal").
     assert settings.subtitle_animation == "static_phrase"
-    assert settings.subtitle_position == "Bottom"
+    assert settings.subtitle_position == "Center"
 
 
 def test_effective_quality_maps_presets_to_real_encoder_arguments():
