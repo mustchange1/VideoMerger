@@ -1,8 +1,9 @@
-"""Validation and deterministic FFmpeg styling for Stage-2 image insertion.
+"""Validation and deterministic FFmpeg styling for the Add Image section.
 
-Image insertion is deliberately separate from Quote/Flyer artwork.  It is a
-single optional, silent composition section and is never included in the
-Stage-1 render cache identity.
+Add Image is deliberately separate from Quote/Flyer artwork.  It is a single
+optional, silent Stage-2 composition section.  The legacy Image Insertion
+names remain accepted so existing projects and CLI scripts keep their exact
+meaning while the GUI exposes the clearer Before Main/After Main wording.
 """
 
 from __future__ import annotations
@@ -13,7 +14,29 @@ from .errors import VideoMergerError
 from .project_assets import require_asset
 
 IMAGE_INSERTION_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
-IMAGE_POSITIONS = {"after_intro", "before_outro"}
+# Canonical Add Image boundary names. ``after_intro`` and ``before_outro``
+# are retained as read/write compatibility aliases for existing projects.
+IMAGE_POSITION_BEFORE_MAIN = "before_main"
+IMAGE_POSITION_AFTER_MAIN = "after_main"
+CANONICAL_IMAGE_POSITIONS = {IMAGE_POSITION_BEFORE_MAIN, IMAGE_POSITION_AFTER_MAIN}
+# Public accepted-value set retains the two legacy persisted names as well.
+IMAGE_POSITIONS = CANONICAL_IMAGE_POSITIONS | {"after_intro", "before_outro"}
+IMAGE_POSITION_ALIASES = {
+    "after intro": IMAGE_POSITION_BEFORE_MAIN,
+    "after_intro": IMAGE_POSITION_BEFORE_MAIN,
+    "intro": IMAGE_POSITION_BEFORE_MAIN,
+    "before main": IMAGE_POSITION_BEFORE_MAIN,
+    "before main video": IMAGE_POSITION_BEFORE_MAIN,
+    "before_main": IMAGE_POSITION_BEFORE_MAIN,
+    "main before": IMAGE_POSITION_BEFORE_MAIN,
+    "before outro": IMAGE_POSITION_AFTER_MAIN,
+    "before_outro": IMAGE_POSITION_AFTER_MAIN,
+    "outro": IMAGE_POSITION_AFTER_MAIN,
+    "after main": IMAGE_POSITION_AFTER_MAIN,
+    "after main video": IMAGE_POSITION_AFTER_MAIN,
+    "after_main": IMAGE_POSITION_AFTER_MAIN,
+    "main after": IMAGE_POSITION_AFTER_MAIN,
+}
 IMAGE_FIT_MODES = {"fit", "fill", "crop"}
 IMAGE_FILTERS = {
     "natural": "",
@@ -38,15 +61,17 @@ def image_insertion_path(value: str | Path) -> Path:
 
 
 def normalize_image_position(value: str) -> str:
-    aliases = {
-        "after intro": "after_intro",
-        "after_intro": "after_intro",
-        "intro": "after_intro",
-        "before outro": "before_outro",
-        "before_outro": "before_outro",
-        "outro": "before_outro",
-    }
-    return aliases.get(str(value or "").strip().casefold(), "after_intro")
+    """Return one of the canonical boundaries used by Stage-2 assembly."""
+    return IMAGE_POSITION_ALIASES.get(
+        str(value or "").strip().casefold(), IMAGE_POSITION_BEFORE_MAIN
+    )
+
+
+def normalize_image_transition(value: str) -> str:
+    """Normalize the Add Image transition using the shared transition catalog."""
+    from .transition_effects import normalize_transition
+
+    return normalize_transition(str(value or "").strip().casefold())
 
 
 def normalize_image_fit_mode(value: str) -> str:

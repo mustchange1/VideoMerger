@@ -703,7 +703,7 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.cancel_button)
         outer.addLayout(action_layout)
 
-        outro_group = QGroupBox("7 · Optional Stage 2 – Intro / Quote/Flyer / Outro")
+        outro_group = QGroupBox("7 · Optional Stage 2 – Intro / Add Image / Quote-Flyer / Outro")
         outro_layout = QGridLayout(outro_group)
         self.intro_edit = QLineEdit()
         self.main_video_edit = QLineEdit()
@@ -757,10 +757,11 @@ class MainWindow(QMainWindow):
         self.quote_artwork_fit_combo.currentIndexChanged.connect(self._update_quote_preview)
         self.quote_duration_spin.valueChanged.connect(self._update_quote_preview)
 
-        # Independent Image Insertion (Stage 2 only). This is intentionally a
-        # separate control namespace from Quote/Flyer, including its own
-        # framing, zoom, filter, duration and position state.
-        self.image_group = QGroupBox("Independent Image Insertion (silent Stage 2)")
+        # Add Image (Stage 2 only). This is intentionally a separate control
+        # namespace from Quote/Flyer, including its own framing, zoom, look,
+        # duration, boundary transition and position state. Image Insertion is
+        # retained as the legacy API/persistence name.
+        self.image_group = QGroupBox("Add Image (silent Stage 2)")
         image_layout = QGridLayout(self.image_group)
         self.image_check = QCheckBox("Include Image")
         self.image_path_edit = QLineEdit()
@@ -768,8 +769,8 @@ class MainWindow(QMainWindow):
         self.image_choose = QPushButton("Choose Image …")
         self.image_choose.clicked.connect(lambda: self._browse_asset(self.image_path_edit, "image_insertion"))
         self.image_position_combo = QComboBox()
-        self.image_position_combo.addItem("After Intro", "after_intro")
-        self.image_position_combo.addItem("Before Outro", "before_outro")
+        self.image_position_combo.addItem("Before Main Video", "before_main")
+        self.image_position_combo.addItem("After Main Video", "after_main")
         self.image_duration_combo = QComboBox()
         self.image_duration_combo.addItem("2.0 sec", 2.0)
         self.image_duration_combo.addItem("4.0 sec (Standard)", 4.0)
@@ -781,6 +782,15 @@ class MainWindow(QMainWindow):
         self.image_duration_spin.setDecimals(1)
         self.image_duration_spin.setSuffix(" sec")
         self.image_duration_spin.setValue(4.0)
+        self.image_transition_combo = QComboBox()
+        for key, label, description in TRANSITION_OPTIONS:
+            self.image_transition_combo.addItem(label, key)
+            self.image_transition_combo.setItemData(
+                self.image_transition_combo.count() - 1, description, Qt.ToolTipRole
+            )
+        self.image_transition_combo.setCurrentIndex(
+            self.image_transition_combo.findData("cross_dissolve")
+        )
         self.image_transition_spin = QDoubleSpinBox()
         self.image_transition_spin.setRange(0.0, 5.0)
         self.image_transition_spin.setSingleStep(0.25)
@@ -806,8 +816,8 @@ class MainWindow(QMainWindow):
         self.image_path_edit.textChanged.connect(self._sync_image_controls)
         self.image_duration_combo.currentIndexChanged.connect(self._image_duration_preset_changed)
         for control in (self.image_position_combo, self.image_duration_spin,
-                        self.image_transition_spin, self.image_fit_combo,
-                        self.image_zoom_spin, self.image_filter_combo):
+                        self.image_transition_combo, self.image_transition_spin,
+                        self.image_fit_combo, self.image_zoom_spin, self.image_filter_combo):
             if hasattr(control, "valueChanged"):
                 control.valueChanged.connect(self._update_image_preview)
             else:
@@ -819,52 +829,56 @@ class MainWindow(QMainWindow):
         outro_layout.addWidget(QLabel("Intro Video (optional)"), 0, 0)
         outro_layout.addWidget(self.intro_edit, 0, 1)
         outro_layout.addWidget(intro_choose, 0, 2)
-        outro_layout.addWidget(QLabel("Main Video"), 1, 0)
-        outro_layout.addWidget(self.main_video_edit, 1, 1)
-        outro_layout.addWidget(main_choose, 1, 2)
-        outro_layout.addWidget(QLabel("Outro Video (optional)"), 2, 0)
-        outro_layout.addWidget(self.outro_edit, 2, 1)
-        outro_layout.addWidget(outro_choose, 2, 2)
-        outro_layout.addWidget(QLabel("Intro Original Audio"), 3, 0)
-        outro_layout.addWidget(self.intro_audio_combo, 3, 1)
-        outro_layout.addWidget(QLabel("Outro Original Audio"), 4, 0)
-        outro_layout.addWidget(self.outro_audio_combo, 4, 1)
-        outro_layout.addWidget(self.outro_transition_check, 5, 0, 1, 2)
-        outro_layout.addWidget(self.quote_check, 6, 0, 1, 3)
-        outro_layout.addWidget(QLabel("Quote / Flyer File"), 7, 0)
-        outro_layout.addWidget(self.quote_artwork_path_edit, 7, 1)
-        outro_layout.addWidget(self.quote_artwork_choose, 7, 2)
-        outro_layout.addWidget(QLabel("PDF Page"), 8, 0)
-        outro_layout.addWidget(self.quote_pdf_page_spin, 8, 1)
-        outro_layout.addWidget(QLabel("Artwork Fit"), 9, 0)
-        outro_layout.addWidget(self.quote_artwork_fit_combo, 9, 1, 1, 2)
-        outro_layout.addWidget(QLabel("Duration"), 10, 0)
-        outro_layout.addWidget(self.quote_duration_spin, 10, 1)
-        outro_layout.addWidget(QLabel("Preview"), 11, 0)
-        outro_layout.addWidget(self.quote_preview, 11, 1, 1, 2)
+        outro_layout.addWidget(QLabel("Main Video"), 2, 0)
+        outro_layout.addWidget(self.main_video_edit, 2, 1)
+        outro_layout.addWidget(main_choose, 2, 2)
+        outro_layout.addWidget(QLabel("Outro Video (optional)"), 3, 0)
+        outro_layout.addWidget(self.outro_edit, 3, 1)
+        outro_layout.addWidget(outro_choose, 3, 2)
+        outro_layout.addWidget(QLabel("Intro Original Audio"), 4, 0)
+        outro_layout.addWidget(self.intro_audio_combo, 4, 1)
+        outro_layout.addWidget(QLabel("Outro Original Audio"), 5, 0)
+        outro_layout.addWidget(self.outro_audio_combo, 5, 1)
+        # Add Image is deliberately the first Stage-2 section directly below
+        # Add Intro. Quote/Flyer remains a separate section below it.
         image_layout.addWidget(self.image_check, 0, 0, 1, 3)
         image_layout.addWidget(QLabel("Image File"), 1, 0)
         image_layout.addWidget(self.image_path_edit, 1, 1)
         image_layout.addWidget(self.image_choose, 1, 2)
-        image_layout.addWidget(QLabel("Position"), 2, 0)
+        image_layout.addWidget(QLabel("Placement"), 2, 0)
         image_layout.addWidget(self.image_position_combo, 2, 1)
         image_layout.addWidget(QLabel("Duration"), 3, 0)
         image_duration_row = QHBoxLayout()
         image_duration_row.addWidget(self.image_duration_combo)
         image_duration_row.addWidget(self.image_duration_spin)
         image_layout.addLayout(image_duration_row, 3, 1, 1, 2)
-        image_layout.addWidget(QLabel("Boundary Transition"), 4, 0)
-        image_layout.addWidget(self.image_transition_spin, 4, 1)
-        image_layout.addWidget(QLabel("Framing"), 5, 0)
-        image_layout.addWidget(self.image_fit_combo, 5, 1)
-        image_layout.addWidget(QLabel("Zoom"), 6, 0)
-        image_layout.addWidget(self.image_zoom_spin, 6, 1)
-        image_layout.addWidget(QLabel("Filter"), 7, 0)
-        image_layout.addWidget(self.image_filter_combo, 7, 1)
-        image_layout.addWidget(QLabel("Preview"), 8, 0)
-        image_layout.addWidget(self.image_preview, 8, 1, 1, 2)
-        outro_layout.addWidget(self.image_group, 13, 0, 1, 3)
-        outro_layout.addWidget(self.final_button, 14, 1)
+        image_layout.addWidget(QLabel("Transition"), 4, 0)
+        image_layout.addWidget(self.image_transition_combo, 4, 1, 1, 2)
+        image_layout.addWidget(QLabel("Transition Duration"), 5, 0)
+        image_layout.addWidget(self.image_transition_spin, 5, 1)
+        image_layout.addWidget(QLabel("Sizing"), 6, 0)
+        image_layout.addWidget(self.image_fit_combo, 6, 1)
+        image_layout.addWidget(QLabel("Zoom"), 7, 0)
+        image_layout.addWidget(self.image_zoom_spin, 7, 1)
+        image_layout.addWidget(QLabel("Look / Filter"), 8, 0)
+        image_layout.addWidget(self.image_filter_combo, 8, 1)
+        image_layout.addWidget(QLabel("Preview"), 9, 0)
+        image_layout.addWidget(self.image_preview, 9, 1, 1, 2)
+        outro_layout.addWidget(self.image_group, 1, 0, 1, 3)
+        outro_layout.addWidget(self.outro_transition_check, 6, 0, 1, 2)
+        outro_layout.addWidget(self.quote_check, 7, 0, 1, 3)
+        outro_layout.addWidget(QLabel("Quote / Flyer File"), 8, 0)
+        outro_layout.addWidget(self.quote_artwork_path_edit, 8, 1)
+        outro_layout.addWidget(self.quote_artwork_choose, 8, 2)
+        outro_layout.addWidget(QLabel("PDF Page"), 9, 0)
+        outro_layout.addWidget(self.quote_pdf_page_spin, 9, 1)
+        outro_layout.addWidget(QLabel("Artwork Fit"), 10, 0)
+        outro_layout.addWidget(self.quote_artwork_fit_combo, 10, 1, 1, 2)
+        outro_layout.addWidget(QLabel("Duration"), 11, 0)
+        outro_layout.addWidget(self.quote_duration_spin, 11, 1)
+        outro_layout.addWidget(QLabel("Preview"), 12, 0)
+        outro_layout.addWidget(self.quote_preview, 12, 1, 1, 2)
+        outro_layout.addWidget(self.final_button, 13, 1)
         outer.addWidget(outro_group)
 
         summary_group = QGroupBox("Projekt-Reihenfolge · Videos – Natural, Alphabetical, Random oder Manual")
@@ -1158,6 +1172,13 @@ class MainWindow(QMainWindow):
         self.image_duration_combo.setCurrentIndex(
             image_duration_index if image_duration_index >= 0 else self.image_duration_combo.findData(-1.0)
         )
+        image_transition_index = self.image_transition_combo.findData(
+            getattr(self.saved, "image_transition_type", "cross_dissolve")
+        )
+        self.image_transition_combo.setCurrentIndex(
+            image_transition_index if image_transition_index >= 0
+            else self.image_transition_combo.findData("cross_dissolve")
+        )
         self.image_transition_spin.setValue(max(0.0, min(5.0, float(getattr(self.saved, "image_transition_duration", 1.0)))))
         image_fit_index = self.image_fit_combo.findData(normalize_image_fit_mode(getattr(self.saved, "image_fit_mode", "fit")))
         self.image_fit_combo.setCurrentIndex(image_fit_index if image_fit_index >= 0 else 0)
@@ -1260,6 +1281,7 @@ class MainWindow(QMainWindow):
             image_path=self.image_path_edit.text().strip(),
             image_position=normalize_image_position(self.image_position_combo.currentData()),
             image_duration=float(self.image_duration_spin.value()),
+            image_transition_type=str(self.image_transition_combo.currentData()),
             image_transition_duration=float(self.image_transition_spin.value()),
             image_fit_mode=normalize_image_fit_mode(self.image_fit_combo.currentData()),
             image_zoom=clamp_image_zoom(self.image_zoom_spin.value()),
@@ -1382,8 +1404,9 @@ class MainWindow(QMainWindow):
         # feature and cannot accidentally affect a Stage-2 render.
         for widget in (
             self.image_path_edit, self.image_choose, self.image_position_combo,
-            self.image_duration_combo, self.image_transition_spin,
-            self.image_fit_combo, self.image_zoom_spin, self.image_filter_combo,
+            self.image_duration_combo, self.image_transition_combo,
+            self.image_transition_spin, self.image_fit_combo, self.image_zoom_spin,
+            self.image_filter_combo,
             self.image_preview,
         ):
             widget.setEnabled(enabled)
@@ -2417,8 +2440,9 @@ class MainWindow(QMainWindow):
             self.quote_duration_spin, self.quote_preview,
             self.image_check, self.image_path_edit, self.image_choose,
             self.image_position_combo, self.image_duration_combo,
-            self.image_duration_spin, self.image_transition_spin,
-            self.image_fit_combo, self.image_zoom_spin, self.image_filter_combo,
+            self.image_duration_spin, self.image_transition_combo,
+            self.image_transition_spin, self.image_fit_combo,
+            self.image_zoom_spin, self.image_filter_combo,
             self.image_preview,
         ):
             widget.setEnabled(not busy)

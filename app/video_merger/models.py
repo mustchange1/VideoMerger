@@ -51,13 +51,14 @@ class MediaInfo:
     # Quote/Flyer artwork is a real, silent Stage-2 image input.
     is_quote_artwork: bool = False
     quote_fit_mode: str = "fit"  # fit | fill | crop
-    # Independent Image Insertion is a different Stage-2 input.  Keeping a
-    # distinct flag/settings payload prevents Quote/Flyer changes from being
-    # silently applied to the user image feature.
+    # Add Image is a different Stage-2 input. Keeping a distinct flag/settings
+    # payload prevents Quote/Flyer changes from being silently applied to it.
     is_image_insertion: bool = False
     image_fit_mode: str = "fit"  # fit | fill | crop
     image_zoom: int = 100
     image_filter: str = "natural"
+    # Transition family for the boundary adjacent to this Add Image item.
+    image_transition_type: str = ""
 
     @property
     def display_name(self) -> str:
@@ -189,12 +190,14 @@ class ExportSettings:
     quote_artwork_fit_mode: str = "fit"  # fit | fill | crop
     quote_duration: float = 4.0  # seconds; new Flyer default
 
-    # Independent optional Stage-2 Image Insertion. It is always silent and
-    # never participates in Stage-1 selection, alignment, or cache keys.
+    # Independent optional Stage-2 Add Image section (legacy API name:
+    # Image Insertion). It is always silent and is intentionally separate from
+    # Quote/Flyer. The position aliases keep existing saved projects usable.
     image_enabled: bool = False
     image_path: str = ""
-    image_position: str = "after_intro"  # after_intro | before_outro
+    image_position: str = "after_intro"  # before_main/after_main; legacy aliases accepted
     image_duration: float = 4.0
+    image_transition_type: str = "cross_dissolve"
     image_transition_duration: float = 1.0
     image_fit_mode: str = "fit"  # fit | fill | crop
     image_zoom: int = 100

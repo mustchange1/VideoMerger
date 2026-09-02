@@ -38,13 +38,19 @@ from .image_insertion import (
     normalize_image_filter,
     normalize_image_fit_mode,
     normalize_image_position,
+    normalize_image_transition,
 )
 from .quote_artwork import (
     cleanup_prepared_quote_artwork,
     prepare_quote_artwork,
     quote_artwork_path,
 )
-from .render_cache import Stage1RenderCache, load_cached_alignment, stage1_fingerprint
+from .render_cache import (
+    Stage1RenderCache,
+    load_cached_alignment,
+    stage1_fingerprint,
+    stage2_fingerprint,
+)
 from .subtitle_modes import (
     SUBTITLE_OUTPUT_COMBINED,
     SUBTITLE_OUTPUT_WITHOUT,
@@ -1319,7 +1325,7 @@ class MainProjectEngine:
         cancel_event=None,
         output_path: Path | None = None,
     ) -> tuple[Path, ValidationReport]:
-        """Stage 2: compose Intro (optional) → MainVideo → Outro (optional).
+        """Stage 2: compose Intro → optional Add Image → MainVideo → optional Add Image → Outro.
 
         The Intro and the Outro are independent media. Neither receives the
         main application voiceover, the generated main background music or the
@@ -1469,17 +1475,30 @@ class MainProjectEngine:
                 image_fit_mode=normalize_image_fit_mode(settings.image_fit_mode),
                 image_zoom=clamp_image_zoom(settings.image_zoom),
                 image_filter=normalize_image_filter(settings.image_filter),
+                image_transition_type=normalize_image_transition(
+                    getattr(settings, "image_transition_type", "cross_dissolve")
+                ),
             )
-            if _image_position(settings) == "after_intro":
-                # With no Intro, After Intro means the beginning of Stage 2.
-                image_position = 1 if intro_path else 0
+            main_index = next(
+                index for index, item in enumerate(media)
+                if item.path == main_path
+                and not item.is_quote_artwork
+                and not item.is_image_insertion
+            )
+            if _image_position(settings) == "before_main":
+                # Before Main is semantic, rather than merely "after Intro":
+                # it stays immediately before Main even when Quote/Flyer is
+                # also enabled between Intro and Main.
+                image_position = main_index
             else:
-                # With no Outro, Before Outro means the end of Stage 2.
-                image_position = len(media) - 1 if outro_path else len(media)
+                # After Main is likewise immediately after Main, before an
+                # optional Outro. With no Outro this is the final section.
+                image_position = main_index + 1
             media.insert(image_position, image_item)
             log(
-                f"Image Insertion aktiv: {image_path.name}, Position "
+                f"Add Image aktiv (legacy Image Insertion): {image_path.name}, Position "
                 f"{_image_position(settings)}, Dauer {image_duration:.3f} s, "
+                f"Transition {image_item.image_transition_type}, "
                 f"Fit {image_item.image_fit_mode}, Zoom {image_item.image_zoom} %, "
                 f"Filter {image_item.image_filter}; Audio: stumm"
             )
@@ -1564,6 +1583,8 @@ class MainProjectEngine:
                 resolved.expected_duration = max(
                     0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
                 )
+            stage2_digest, _stage2_payload = stage2_fingerprint(media, settings, resolved)
+            log(f"Stage 2 composition fingerprint: {stage2_digest}")
             if output_path is not None:
                 output = Path(output_path).expanduser().resolve()
             else:

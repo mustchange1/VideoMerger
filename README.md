@@ -10,9 +10,9 @@ Add any number of configured video folders with **Add Folder**, **Remove Folder*
 
 **Duration Before Merge** defaults to `0.70x` and applies to each normal selected visual clip (`timeline_duration = source_duration / 0.70`) before timeline construction. **Duration After Merge** defaults to disabled / `1.00x` and runs as a separate post-merge operation on the complete Stage-1 master. Smart Last-Clip Stretch remains after timeline construction and before rendering; Stage-2 Intro, Flyer, and Outro are not altered by Before Merge.
 
-### Flyer, Image Insertion and subtitle output defaults
+### Flyer, Add Image and subtitle output defaults
 
-Quote/Flyer remains an independent artwork-only Stage-2 section and defaults to 4.0 seconds. **Image Insertion** is a separate optional, silent Stage-2 section: PNG/JPG/JPEG/WEBP, After Intro by default, 4.0 seconds, Fit, 100% zoom, Natural look, and the existing Cross Dissolve/Crossfade with a 1.0 second boundary request. Its settings never enter the Stage-1 render-cache fingerprint.
+Quote/Flyer remains an independent artwork-only Stage-2 section and defaults to 4.0 seconds. **Add Image** is a separate optional, silent Stage-2 section: PNG/JPG/JPEG/WEBP, Before Main Video by default, 4.0 seconds, Fit, 100% zoom, Natural look, and the existing Cross Dissolve transition with a 1.0 second boundary request. The legacy Image Insertion names and position aliases remain accepted. Its complete file identity and settings are included in the independent Stage-2 composition fingerprint.
 
 Subtitle output is explicit and defaults to **With Burned-in Subtitles + SRT + VTT** whenever a subtitle source is requested. **With Burned-in Subtitles only** burns the same aligned ASS timeline but creates no SRT/VTT files. **Without Subtitles** skips alignment, burn-in, SRT and VTT generation while preserving voiceover/audio timing. Landscape long-form subtitles default to **Center**; vertical short-form subtitles default to **Bottom Center**. Saved/manual position overrides remain authoritative.
 
@@ -44,11 +44,11 @@ The optional Stage-2 section is composed as `Intro → Cross Dissolve → Quote/
 
 The Quote/Flyer is visual-only: no voiceover, music, subtitles, or Main Video audio is routed into that section. PDF pages are rasterized internally with PyMuPDF into render-time temporary files, which are removed automatically and never written to the normal Output folder. The live preview updates for artwork, PDF page, Fit/Fill/Crop, aspect ratio, and output resolution.
 
-### Image Insertion (optional, silent Stage 2)
+### Add Image (optional, silent Stage 2)
 
-Image Insertion is independent of Quote/Flyer/PDF. Enable it in the Stage-2 panel, choose one PNG, JPG, JPEG, or WEBP, and place it **After Intro** or **Before Outro** (the default is After Intro). The image uses a practical editable duration with a 4.0 second default, the selected Cross Dissolve/Crossfade family with a separately clamped 1.0 second boundary default, Fit/Fill/Crop framing, non-distorting 100% default zoom, and five deterministic looks: Natural, Cinematic, Moody, Film, and Dark Editorial. The live preview uses the selected image, aspect, framing, zoom, and look.
+Add Image is independent of Quote/Flyer/PDF. The dedicated section appears directly below Add Intro. Choose one PNG, JPG, JPEG, or WEBP and place it immediately **Before Main Video** or **After Main Video**. The image uses an editable duration with a 4.0 second default, the shared transition selector with Cross Dissolve as its default, a separately clamped 1.0 second boundary duration, Fit/Fill/Crop sizing, optional zoom, and five deterministic looks: Natural, Cinematic, Moody, Film, and Dark Editorial. The live preview updates for the selected file, aspect, sizing, zoom, and look.
 
-The image section receives no voiceover, music, original audio, or subtitle timing; the Stage-2 graph supplies matching silence and keeps every transition boundary gap-free. One-Click, Quote/Flyer, Intro/Outro, chunked rendering, landscape/portrait, 1080p/4K, and all subtitle output modes use the same real image input path. Image settings are persisted but intentionally excluded from the Stage-1 cache fingerprint, so image-only changes reuse the validated Main Video.
+The effective Stage-2 sequence is always `Intro → optional Add Image Before Main → Main Video → optional Add Image After Main → Outro`; with no Intro/Outro the selected image becomes the first/last section. The image section receives no voiceover, music, original audio, or subtitle timing; the graph supplies matching silence and keeps each relevant transition boundary gap-free. One-Click, normal Stage-2 export, preview/basic hand-off, landscape/portrait, 1080p/4K, subtitles, and chunked rendering use the same timeline. Settings are persisted and the complete file identity/content plus all image settings participate in the independent Stage-2 composition fingerprint; Stage-1 remains reusable when only Add Image changes. Legacy Image Insertion CLI/config names remain compatible.
 
 ### Cleaner subtitle segmentation + larger preview
 

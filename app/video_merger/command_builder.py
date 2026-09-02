@@ -71,6 +71,27 @@ def _watermark_active(settings: ExportSettings) -> bool:
     return False
 
 
+def _boundary_transition_type(
+    media: MediaSequence, boundary: int, settings: ExportSettings,
+) -> str:
+    """Select the shared transition family for one adjacent pair.
+
+    The ordinary project transition remains authoritative everywhere except a
+    boundary touching the Add Image item. This is important when a project
+    uses (for example) Smooth Blur globally but requests the default Cross
+    Dissolve only for the inserted image.
+    """
+    left = media[boundary]
+    right = media[boundary + 1]
+    image_item = right if right.is_image_insertion else left if left.is_image_insertion else None
+    if image_item is not None:
+        value = getattr(image_item, "image_transition_type", "") or getattr(
+            settings, "image_transition_type", "cross_dissolve"
+        )
+        return normalize_transition(value)
+    return normalize_transition(settings.transition_type)
+
+
 @dataclass(slots=True)
 class BuiltCommand:
     command: list[str]
@@ -110,11 +131,9 @@ class FFmpegCommandBuilder:
         lines: list[str] = []
         video_labels: list[str] = []
         audio_labels: list[str] = []
-        transition_type = normalize_transition(settings.transition_type)
-        transition_blur = transition_blur_sigma(transition_type, width, height)
-        dissolve_expression = xfade_expression(transition_type, settings.transition_ease)
         # Every Stage-2 section is a real media input. Uploaded Quote/Flyer
-        # artwork is looped at input level; no synthetic text-card input exists.
+        # artwork and Add Image are looped at input level; no synthetic
+        # text-card input exists.
         real_input = list(range(len(media)))
         next_input = len(media)
         voice_indices: list[int] = []
@@ -136,8 +155,8 @@ class FFmpegCommandBuilder:
             base = f"base{index}"
             visual_base = base
             if item.is_image_insertion:
-                # Image Insertion is a real looped Stage-2 input, not a text
-                # card and not Quote/Flyer. It is deliberately silent: the
+                # Add Image is a real looped Stage-2 input, not a text card
+                # and not Quote/Flyer. It is deliberately silent: the
                 # audio branch below creates only a matching null source.
                 source = f"[{real_input[index]}:v:0]"
                 pre = f"pre{index}"
@@ -305,17 +324,33 @@ class FFmpegCommandBuilder:
 
             incoming = resolved.transitions[index - 1] if index > 0 else 0.0
             outgoing = resolved.transitions[index] if index < len(resolved.transitions) else 0.0
+            incoming_type = (
+                _boundary_transition_type(media, index - 1, settings) if index > 0 else ""
+            )
+            outgoing_type = (
+                _boundary_transition_type(media, index, settings)
+                if index < len(resolved.transitions) else ""
+            )
+            incoming_blur = (
+                transition_blur_sigma(incoming_type, width, height) if incoming > 0 else 0.0
+            )
+            outgoing_blur = (
+                transition_blur_sigma(outgoing_type, width, height) if outgoing > 0 else 0.0
+            )
+            transition_blur = max(incoming_blur, outgoing_blur)
             if transition_blur > 0 and (incoming > 0 or outgoing > 0):
                 normal, blurred = f"normal{index}", f"blurred{index}"
                 lines.append(f"[{visual_base}]split=2[{normal}][blurin{index}]")
                 # 1.2.0 blurred every frame of every clip even though transition
                 # blur is only visible at clip boundaries. Timeline-enable the
                 # expensive gblur so long programs do not pay that cost outside
-                # the selected transition windows.
+                # the selected transition windows. Each window follows its own
+                # boundary type; an image Cross Dissolve cannot inherit a global
+                # Smooth Blur effect by accident.
                 blur_windows: list[str] = []
-                if incoming > 0:
+                if incoming > 0 and incoming_blur > 0:
                     blur_windows.append(f"between(t,0,{_number(incoming)})")
-                if outgoing > 0:
+                if outgoing > 0 and outgoing_blur > 0:
                     blur_start = max(0.0, duration - outgoing)
                     blur_windows.append(
                         f"between(t,{_number(blur_start)},{_number(duration)})"
@@ -326,12 +361,12 @@ class FFmpegCommandBuilder:
                     f"enable='{blur_enable}'[{blurred}]"
                 )
                 ramps: list[str] = []
-                if incoming > 0:
+                if incoming > 0 and incoming_blur > 0:
                     ramps.append(f"if(lt(T,{_number(incoming)}),1-T/{_number(incoming)},0)")
-                if outgoing > 0:
+                if outgoing > 0 and outgoing_blur > 0:
                     start = duration - outgoing
                     ramps.append(f"if(gt(T,{_number(start)}),(T-{_number(start)})/{_number(outgoing)},0)")
-                weight = ramps[0] if len(ramps) == 1 else f"max({ramps[0]},{ramps[1]})"
+                weight = ramps[0] if len(ramps) == 1 else (f"max({ramps[0]},{ramps[1]})" if ramps else "0")
                 weight = f"min(1,max(0,{weight}))"
                 final_video = f"v{index}"
                 # The ramp blend is also per-pixel expensive. Its weight is zero
@@ -389,6 +424,8 @@ class FFmpegCommandBuilder:
         for index in range(1, len(video_labels)):
             transition = resolved.transitions[index - 1]
             offset = max(0.0, chain_duration - transition)
+            boundary_type = _boundary_transition_type(media, index - 1, settings)
+            dissolve_expression = xfade_expression(boundary_type, settings.transition_ease)
             output = f"vx{index}"
             if transition <= 0:
                 lines.append(
@@ -639,8 +676,8 @@ class FFmpegCommandBuilder:
         command = [self.ffmpeg_path, "-hide_banner", "-y"]
         for item in media:
             if item.is_quote_artwork or item.is_image_insertion:
-                # One still-image input is looped for the exact Quote duration;
-                # the filter graph trims it and keeps the section silent.
+                # One still-image input is looped for the exact section duration;
+                # the filter graph trims it and keeps Quote/Add Image silent.
                 command += ["-loop", "1", "-i", str(item.path)]
             else:
                 # Never stream-loop a normal video occurrence: repeated media

@@ -1,9 +1,11 @@
 """Safe Stage-1 Main Video fingerprinting and reuse cache.
 
-The cache deliberately models only the inputs that define the Main Video
-render. Stage-2 composition choices (Intro, Quote, Outro and their controls)
-are not part of the fingerprint, so One-Click can reuse a valid Main Video
-when only the final composition changes.
+The Stage-1 cache deliberately models only the inputs that define the Main
+Video render. Stage-2 composition choices (Intro, Quote, Add Image and Outro
+controls) are not part of that fingerprint, so One-Click can reuse a valid Main
+Video when only final-composition choices change. A separate Stage-2
+fingerprint models the final composition; in particular, Add Image's selected
+file/content and every render setting are included there.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from .subtitle_modes import normalize_subtitle_output_mode
 
 CACHE_SCHEMA = 1
 FINGERPRINT_SCHEMA = 1
+STAGE2_FINGERPRINT_SCHEMA = 1
 
 # These are the settings that can change the bytes or duration of the Stage-1
 # Main Video. Deliberately absent: workflow_stage, output_name, main_video_path,
@@ -139,8 +142,11 @@ def _audio_payload(asset: AudioAssetInfo) -> dict[str, Any]:
 
 def _media_payload(item: MediaInfo) -> dict[str, Any]:
     audio = asdict(item.audio)
-    return {
-        "file": file_signature(item.path),
+    is_image = bool(getattr(item, "is_image_insertion", False))
+    payload = {
+        # A Stage-2 image is small and content-authoritative, unlike a normal
+        # video clip where stat identity avoids hashing gigabytes on every run.
+        "file": file_signature(item.path, content_hash=is_image),
         "duration": float(item.duration),
         "source_duration": float(item.source_duration or 0.0),
         "width": int(item.width),
@@ -168,6 +174,11 @@ def _media_payload(item: MediaInfo) -> dict[str, Any]:
         "image_zoom": int(getattr(item, "image_zoom", 100)),
         "image_filter": str(getattr(item, "image_filter", "natural")),
     }
+    if is_image:
+        payload["image_transition_type"] = str(
+            getattr(item, "image_transition_type", "") or ""
+        )
+    return payload
 
 
 def _resolved_payload(resolved: ResolvedExport) -> dict[str, Any]:
@@ -283,6 +294,85 @@ def stage1_fingerprint(
         music_asset=music_asset,
         watermark_path=watermark_path,
     )
+    encoded = _canonical_json(payload).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), payload
+
+
+_STAGE2_SETTING_FIELDS = (
+    "aspect",
+    "resolution",
+    "transition_type",
+    "transition_ease",
+    "transition_duration",
+    "intro_audio_mode",
+    "outro_audio_mode",
+    "outro_transition_enabled",
+    "quote_enabled",
+    "quote_input_mode",
+    "quote_pdf_page",
+    "quote_artwork_fit_mode",
+    "quote_duration",
+    "image_enabled",
+    "image_position",
+    "image_duration",
+    "image_transition_type",
+    "image_transition_duration",
+    "image_fit_mode",
+    "image_zoom",
+    "image_filter",
+)
+
+
+def _stage2_path_payload(settings: ExportSettings, field: str, *, content_hash: bool = False) -> dict[str, Any]:
+    value = str(getattr(settings, field, "") or "").strip()
+    return file_signature(Path(value), content_hash=content_hash) if value else {
+        "path": "", "exists": False,
+    }
+
+
+def build_stage2_payload(
+    media: Sequence[MediaInfo],
+    settings: ExportSettings,
+    resolved: ResolvedExport,
+) -> dict[str, Any]:
+    """Build the independent final-composition fingerprint payload.
+
+    Unlike the Stage-1 fingerprint, this payload intentionally contains the
+    role paths and Stage-2 controls. Add Image is represented both as its
+    normalized settings and as a content-hashed source identity, so changing
+    any image setting or editing the selected bytes invalidates this stage
+    without needlessly invalidating the reusable Main Video.
+    """
+    values = {name: getattr(settings, name) for name in _STAGE2_SETTING_FIELDS}
+    values.update({
+        "main_video_path": _stage2_path_payload(settings, "main_video_path"),
+        "intro_path": _stage2_path_payload(settings, "intro_path"),
+        "outro_path": _stage2_path_payload(settings, "outro_path"),
+        "quote_artwork_path": _stage2_path_payload(settings, "quote_artwork_path", content_hash=True),
+        "image_path": _stage2_path_payload(settings, "image_path", content_hash=True),
+    })
+    return {
+        "schema": STAGE2_FINGERPRINT_SCHEMA,
+        "settings": values,
+        "composition": [_media_payload(item) for item in media],
+        "resolved": _resolved_payload(resolved),
+        "output_format": {
+            "container": "mp4",
+            "video_pixel_format": "yuv420p",
+            "audio_codec": "aac",
+            "audio_sample_rate": 48000,
+            "audio_channels": 2,
+        },
+    }
+
+
+def stage2_fingerprint(
+    media: Sequence[MediaInfo],
+    settings: ExportSettings,
+    resolved: ResolvedExport,
+) -> tuple[str, dict[str, Any]]:
+    """Return ``(sha256, payload)`` for a final Stage-2 composition."""
+    payload = build_stage2_payload(media, settings, resolved)
     encoded = _canonical_json(payload).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), payload
 

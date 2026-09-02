@@ -116,19 +116,50 @@ def main() -> int:
         "--quote-duration", type=float, default=4.0,
         help="Quote/Flyer duration in seconds (0.5-5.0; default 4.0)",
     )
-    # Independent silent Stage-2 Image Insertion (never Quote/Flyer/PDF).
-    parser.add_argument("--image", "--image-insertion", dest="image_path", default="",
-        help="Stage-2 image insertion (.png, .jpg, .jpeg or .webp)")
-    parser.add_argument("--image-position", choices=["after_intro", "before_outro"], default="after_intro")
-    parser.add_argument("--image-duration", type=float, default=4.0,
-        help="Image Insertion duration in seconds (default 4.0)")
-    parser.add_argument("--image-transition-duration", type=float, default=1.0,
-        help="Image boundary transition duration in seconds (default 1.0)")
-    parser.add_argument("--image-fit-mode", "--image-fit", dest="image_fit_mode",
+    # Independent silent Stage-2 Add Image (never Quote/Flyer/PDF).
+    parser.add_argument(
+        "--image-enabled", "--add-image-enabled", action="store_true",
+        help="enable Add Image explicitly (normally implied by an image path)",
+    )
+    parser.add_argument(
+        "--image", "--image-insertion", "--add-image", "--add-image-path",
+        dest="image_path", default="",
+        help="Stage-2 Add Image (.png, .jpg, .jpeg or .webp)",
+    )
+    parser.add_argument(
+        "--image-position", "--add-image-position",
+        choices=["before_main", "after_main", "after_intro", "before_outro"],
+        default="after_intro",
+        help="place Add Image immediately before or after Main Video (legacy aliases accepted)",
+    )
+    parser.add_argument(
+        "--image-duration", "--add-image-duration", type=float, default=4.0,
+        help="Add Image duration in seconds (default 4.0)",
+    )
+    parser.add_argument(
+        "--image-transition", "--image-transition-effect", "--add-image-transition",
+        dest="image_transition_type",
+        choices=["smooth_blur", "cross_dissolve", "film_dissolve", "additive_dissolve"],
+        default="cross_dissolve",
+        help="transition family at the image boundary (default: Cross Dissolve)",
+    )
+    parser.add_argument(
+        "--image-transition-duration", "--add-image-transition-duration", type=float, default=1.0,
+        help="Add Image boundary transition duration in seconds (default 1.0)",
+    )
+    parser.add_argument(
+        "--image-fit-mode", "--image-fit", "--image-sizing", "--add-image-sizing",
+        dest="image_fit_mode",
         choices=["fit", "fill", "crop"], default="fit")
-    parser.add_argument("--image-zoom", type=int, default=100,
-        help="Image Insertion zoom in percent (100-300; default 100)")
-    parser.add_argument("--image-filter", choices=["natural", "cinematic", "moody", "film", "dark_editorial"], default="natural")
+    parser.add_argument(
+        "--image-zoom", "--add-image-zoom", type=int, default=100,
+        help="Add Image zoom in percent (100-300; default 100)",
+    )
+    parser.add_argument(
+        "--image-filter", "--image-look", "--add-image-look",
+        choices=["natural", "cinematic", "moody", "film", "dark_editorial"],
+        default="natural",
+    )
     parser.add_argument("--subtitles", action="store_true")
     parser.add_argument(
         "--subtitle-output-mode", "--subtitle-output", dest="subtitle_output_mode",
@@ -194,9 +225,10 @@ def main() -> int:
         quote_pdf_page=args.quote_pdf_page,
         quote_artwork_fit_mode=args.quote_fit_mode,
         quote_duration=max(0.5, min(5.0, args.quote_duration)),
-        image_enabled=bool(args.image_path), image_path=args.image_path,
+        image_enabled=bool(args.image_path) or args.image_enabled, image_path=args.image_path,
         image_position=args.image_position,
         image_duration=max(0.5, min(60.0, args.image_duration)),
+        image_transition_type=args.image_transition_type,
         image_transition_duration=max(0.0, min(5.0, args.image_transition_duration)),
         image_fit_mode=args.image_fit_mode, image_zoom=max(100, min(300, args.image_zoom)),
         image_filter=args.image_filter,
