@@ -75,7 +75,12 @@
   "image_fit_mode": "fit",
   "image_zoom": 100,
   "image_filter": "natural",
-  "subtitle_output_mode": "burned_and_sidecars",
+  "subtitle_output_mode": "with_subtitles",
   "quality_preset": "maximum",
-  "output_preset": "youtube_landscape"
+  "output_preset": "youtube_landscape",
+  "export_mode": "long_form",
+  "short_subtitle_style": "short_1",
+  "short_subtitle_animation": "word_highlight",
+  "short_subtitle_font": "modern_sans_bold",
+  "short_subtitle_position": "Bottom Center"
 }

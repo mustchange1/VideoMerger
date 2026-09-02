@@ -11,6 +11,12 @@ from .video_merger.output_manager import make_output_path
 from .video_merger.paths import locate_ffmpeg
 from .video_merger.project_order import GeneratedOutputStore, ProjectOrderStore
 from .video_merger.video_pool import order_media_for_video_order
+from .video_merger.youtube_outputs import (
+    EXPORT_MODE_COMBINED,
+    EXPORT_MODE_LONG_FORM,
+    EXPORT_MODE_SHORTS,
+    normalize_export_mode,
+)
 
 
 def main() -> int:
@@ -22,6 +28,11 @@ def main() -> int:
         help="configured video source folder; repeat for multiple folders (overrides --input)",
     )
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--export-mode", choices=[EXPORT_MODE_LONG_FORM, EXPORT_MODE_SHORTS, EXPORT_MODE_COMBINED],
+        default=EXPORT_MODE_LONG_FORM,
+        help="YouTube Long-Form, Shorts, or both (Shorts create one output per voiceover)",
+    )
     parser.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
     parser.add_argument("--resolution", default="Auto")
     parser.add_argument("--transition", type=float, default=1.0, help="transition duration in seconds")
@@ -163,9 +174,9 @@ def main() -> int:
     parser.add_argument("--subtitles", action="store_true")
     parser.add_argument(
         "--subtitle-output-mode", "--subtitle-output", dest="subtitle_output_mode",
-        default="burned_and_sidecars",
-        choices=["burned_and_sidecars", "burned_only", "without_subtitles"],
-        help="With Burned-in Subtitles + SRT + VTT (default), burned_only, or without_subtitles",
+        default="with_subtitles",
+        choices=["with_subtitles", "without_subtitles", "with_and_without_subtitles", "burned_and_sidecars", "burned_only"],
+        help="With Subtitles (default), Without Subtitles, or With and Without Subtitles",
     )
     parser.add_argument("--language", choices=["German", "English", "Auto"], default="German")
     parser.add_argument("--subtitle-style", default="long_1")
@@ -176,6 +187,13 @@ def main() -> int:
         default=None, help="default is Center for landscape and Bottom Center for vertical",
     )
     parser.add_argument("--subtitle-debug-overlay", action="store_true")
+    parser.add_argument("--short-subtitle-style", default="short_1")
+    parser.add_argument("--short-subtitle-animation", choices=["type_reveal", "color_change", "word_highlight", "outline_highlight", "static_phrase"], default="word_highlight")
+    parser.add_argument("--short-subtitle-font", choices=["eveleth_clean", "modern_sans_bold", "clean_sans"], default="modern_sans_bold")
+    parser.add_argument(
+        "--short-subtitle-position", choices=["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"],
+        default="Bottom Center",
+    )
     parser.add_argument("--allow-alignment-warning", action="store_true")
     parser.add_argument("--watermark", default="")
     parser.add_argument("--main-video", default="")
@@ -196,6 +214,7 @@ def main() -> int:
     subtitle_position = args.subtitle_position or ("Center" if args.aspect == "16:9" else "Bottom Center")
     configured_sources = [str(Path(value).expanduser().resolve()) for value in args.source_folder]
     settings = ExportSettings(
+        export_mode=normalize_export_mode(args.export_mode),
         aspect=args.aspect, resolution=args.resolution,
         source_folders=configured_sources,
         video_order_mode=args.video_order,
@@ -236,6 +255,10 @@ def main() -> int:
         subtitle_enabled=args.subtitles, subtitle_language=args.language,
         subtitle_style=args.subtitle_style, subtitle_animation=args.subtitle_animation,
         subtitle_font=args.subtitle_font, subtitle_position=subtitle_position,
+        short_subtitle_style=args.short_subtitle_style,
+        short_subtitle_animation=args.short_subtitle_animation,
+        short_subtitle_font=args.short_subtitle_font,
+        short_subtitle_position=args.short_subtitle_position,
         subtitle_debug_overlay=args.subtitle_debug_overlay,
         allow_alignment_warnings=args.allow_alignment_warning,
         watermark_enabled=bool(args.watermark), watermark_path=args.watermark,
@@ -259,15 +282,16 @@ def main() -> int:
         media = engine.analyze(inputs, print)
         media = order_media_for_video_order(media, settings.video_order_mode)
         if args.stage == "main":
-            result = MainProjectEngine(engine).create_main(
+            result = MainProjectEngine(engine).create_youtube_exports(
                 media, settings, args.output, log=print, order_already_applied=True,
             )
-            output = result.video
+            output = result.primary_output
         elif args.stage == "complete":
-            result = MainProjectEngine(engine).create_complete(
-                media, settings, args.output, log=print, order_already_applied=True,
+            result = MainProjectEngine(engine).create_youtube_exports(
+                media, settings, args.output, log=print,
+                order_already_applied=True, complete=True,
             )
-            output = result.final_video
+            output = result.primary_output
         else:
             resolved = engine.make_plan(media, settings, print)
             output = make_output_path(args.output, settings.aspect)

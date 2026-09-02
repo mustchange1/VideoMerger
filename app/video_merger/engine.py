@@ -240,7 +240,7 @@ class VideoMergerEngine:
             if (
                 settings.workflow_stage == "main"
                 and settings.subtitle_enabled
-                and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+                and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "with_subtitles"))
                 != SUBTITLE_OUTPUT_WITHOUT
             ):
                 if not settings.subtitle_ass_path or not Path(settings.subtitle_ass_path).is_file():
@@ -543,7 +543,7 @@ class VideoMergerEngine:
         subtitle_active = (
             settings.workflow_stage == "main"
             and settings.subtitle_enabled
-            and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+            and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "with_subtitles"))
             != SUBTITLE_OUTPUT_WITHOUT
         )
         if subtitle_active and (

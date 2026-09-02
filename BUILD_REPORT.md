@@ -1,10 +1,10 @@
-# BUILD REPORT – VideoMerger 1.4.0
+# BUILD REPORT – VideoMerger 1.5.0
 
 Date: 2026-09-01
 Basis: current Arena branch checkpoint, built additively on the tested 1.3.0 implementation
-Target: `VideoMerger_Final_1.4.0.zip`
+Target: `VideoMerger_Final_1.5.0.zip`
 
-## 1.4.0 finalization note
+## 1.5.0 finalization note
 
 This checkpoint adds no new feature beyond the implemented workflow enhancement: multi-folder source management and folder-aware selection, independent Before/After Merge controls, and the updated Flyer/subtitle defaults. The exact available validation results are reported in the final delivery summary; this sandbox has no FFmpeg/FFprobe binary and Qt cannot load because `libGL.so.1` is unavailable, so those real-render/GUI checks are not claimed as executed here.
 
@@ -25,7 +25,7 @@ This checkpoint adds no new feature beyond the implemented workflow enhancement:
 11. **Clean Output directory** — Output contains only user-facing files (final/main MP4s, `_no_subtitles` variants, SRT, VTT, `FinalVideo_16x9_YouTube.txt`). Verification PNGs and the subtitle timeline JSON live under `temp/` (internal evidence/cache). Asserted exactly by an e2e directory-listing test.
 12. **Automatic YouTube title + description** — `FinalVideo_16x9_YouTube.txt` (TITLE/DESCRIPTION/LANGUAGE) generated from the authoritative voiceover transcript whenever a successful final video exists: strong opening (the transcript's own first thought), a useful summary (salient verbatim sentences), important themes (verbatim key phrases), one natural channel-follow CTA for philosophical/spiritual/modern insights; German → German, English → English (auto-detected or explicit). No invented facts, no keyword stuffing — extraction-only.
 13. **Local / free / unlimited metadata generation** — the generator is deterministic pure Python (always available offline, unlimited use). Optional polish from a locally running Ollama (`127.0.0.1:11434` only) under strict validation; any problem falls back to the deterministic draft. No OpenAI/Claude/Gemini/paid API, no subscription, no per-video credits, no API keys anywhere (test-enforced). Metadata failures never block video rendering and are reported clearly; without an authoritative transcript nothing is written (never invented).
-14. **1.4.0 defaults** — Intro/Main/Outro Original Audio = Original; Subtitle Animation = Static Phrase; YouTube Landscape + Maximum Quality; End Padding = 1.0 s; Quote/Flyer disabled unless enabled, duration 4.0 s, Fit; Duration Fit = Cut Last Clip; Maximum Stretch = 10 %; Duration Before Merge = 0.70x; Duration After Merge = disabled / 1.00x; landscape subtitle position = Center; portrait short-form = Bottom Center. Pinned by the updated defaults and focused workflow tests.
+14. **1.5.0 defaults** — Intro/Main/Outro Original Audio = Original; Subtitle Animation = Static Phrase; YouTube Landscape + Maximum Quality; End Padding = 1.0 s; Quote/Flyer disabled unless enabled, duration 4.0 s, Fit; Duration Fit = Cut Last Clip; Maximum Stretch = 10 %; Duration Before Merge = 0.70x; Duration After Merge = disabled / 1.00x; landscape subtitle position = Center; portrait short-form = Bottom Center. Pinned by the updated defaults and focused workflow tests.
 15. **No regression** — Basic Merge, Stage 1/Stage 2, all four transitions, manual/natural/random ordering, large pools, Full-Timeline Loop, Hold Last Frame, Intro/Main/Quote/Outro, multiple voiceovers/scripts, music loop/trim/ducking, Mute/Low/Original, watermark, SRT/VTT, burned subtitles, preview, all 7 fonts, 4K/16:9/9:16, caching, Maximum Quality, one-click: all 232 baseline tests still pass unmodified except three intentional expectation updates (free quote duration error message, one-click 3-phase progress labels, end-padding spin box instead of the fixed combo — each updated to the new documented behavior with equivalent or stronger assertions).
 
 ## Executed environment
@@ -47,3 +47,16 @@ Evidence: `test_evidence/1.3.0/` (full suite output, evidence summary, manifest)
 ## Packaging / delivery verification (this build)
 
 Verification order: build ZIP from the clean tree (excluding `.git`, `dev/`, caches, local settings and temp artifacts) → SHA-256 → clean extraction to a fresh directory → full test suite run against the EXACT extracted tree → identical SHA-256 re-check → artifact attached. Results are recorded in `test_evidence/1.3.0/` and `ARTIFACT_IDENTITY.txt`.
+
+## 1.5.0 YouTube delivery phase
+
+Implemented and wired through model, SettingsStore, GUI, CLI, Stage 1/Stage 2 and One-Click:
+
+- YouTube Long-Form, YouTube Shorts, and combined delivery modes;
+- one independent vertical Short per ordered voiceover, including 10 voiceovers + one global script → 10 Shorts;
+- separate `LongForm/` and `Shorts/` output bundles and per-Short cache identities;
+- distinct Long-Form and mobile-safe Shorts subtitle profiles;
+- `With Subtitles`, `Without Subtitles`, and `With and Without Subtitles`, with the new default avoiding an extra clean copy;
+- focused dependency-light planning tests in `tests/test_phase17_youtube_outputs.py`.
+
+Validation in this Linux workspace: Python compilation/import smoke tests and the focused phase-17 functions were run manually with a minimal temporary pytest stub. The `pytest` executable, PySide6, FFmpeg and FFprobe were unavailable, so no claim is made for the unavailable GUI, pytest or real FFmpeg rendering suites.

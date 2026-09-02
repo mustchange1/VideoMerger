@@ -1,6 +1,6 @@
-# VideoMerger 1.4.0 für Windows
+# VideoMerger 1.5.0 für Windows
 
-## Neu in 1.4.0
+## Neu in 1.5.0
 
 ### Mehrere Quellordner und ordnerbewusste Auswahl
 
@@ -24,7 +24,7 @@ Quote/Flyer bleibt nur nach Auswahl aktiv und nutzt jetzt standardmäßig 4,0 Se
 - **Main Video End Padding:** freie manuelle Einstellung 0,0–5,0 s; der bestehende Standard von ca. 1 Sekunde bleibt exakt erhalten.
 - **Quote-/Flyer-Upload (optional, stumm):** `Intro → Cross Dissolve → Quote/Flyer → Cross Dissolve → Main → Cross Dissolve → Outro` verwendet eine fertige PDF-, PNG-, JPG-, JPEG- oder WEBP-Datei. Die Funktion ist standardmäßig aus, die Dauer beträgt standardmäßig 4,0 Sekunden, und die vorhandene Transition-Sicherheitsklemmung bleibt aktiv. PDFs bieten Seitenzählung und Seitenauswahl; Fit, Fill und Crop bewahren das Seitenverhältnis in 16:9, 9:16, 1080p und 4K. Es gibt keine Text-Quote und keinen generierten Quote-Modus mehr. PDF-Seiten werden intern mit PyMuPDF in eine temporäre Renderdatei gerastert und danach automatisch entfernt.
 - **Bessere Untertitel-Segmentierung:** Long-Form bevorzugt 1–2 Zeilen natürlicher Phrasen; Ein-/Zwei-Wort-Captions werden zusammengeführt (Wort-Timing unangetastet). Live-Vorschau UND der neue große Vorschau-Dialog malen mit derselben Renderer-Geometrie (inkl. Animations-Wortfortschritt).
-- **Sauberer Output-Ordner + wählbare Untertitel-Ausgabe:** Der Untertitel-Ausgabemodus steuert den tatsächlichen Vertrag: `With Burned-in Subtitles + SRT + VTT` erzeugt das primäre Video mit eingebrannten Untertiteln, zusätzlich den `_no_subtitles`-Master sowie SRT und VTT; `With Burned-in Subtitles only` erzeugt nur das primäre Video; `Without Subtitles` erzeugt nur das saubere primäre Video. Verifikations-PNGs und Timeline-JSON bleiben intern unter `temp/`.
+- **Sauberer Output-Ordner + wählbare Untertitel-Ausgabe:** Der Untertitel-Ausgabemodus steuert den tatsächlichen Vertrag: `With Subtitles` erzeugt das primäre Video mit eingebrannten Untertiteln sowie SRT/VTT, aber keine zusätzliche Clean-Version; `With and Without Subtitles` erzeugt beide Video-Varianten sowie SRT/VTT; `Without Subtitles` erzeugt nur das saubere primäre Video. Verifikations-PNGs und Timeline-JSON bleiben intern unter `temp/`.
 - **Automatische YouTube-Metadaten (lokal, gratis, unbegrenzt):** Nach jedem erfolgreichen One-Click-Finalvideo entsteht `FinalVideo_16x9_YouTube.txt` (TITLE/DESCRIPTION/LANGUAGE) aus dem autoritativen Voiceover-Transkript: starker Einstieg, nützliche Zusammenfassung in den eigenen Worten, Themen als wörtliche Schlüsselphrasen, natürlicher Kanal-CTA; deutsch → deutsch, englisch → englisch. Deterministischer Pure-Python-Generator (immer offline verfügbar, nichts wird erfunden); ein optional vorhandenes lokales Ollama kann unter strenger Validierung polieren. Keine OpenAI-/Claude-/Gemini-/Bezahl-API. Metadaten-Probleme blockieren nie das Rendern.
 - **One-Click:** Video-Pool + Voiceover(s) + Script(s) + Musik + Untertitel + Watermark + Intro + optionale Quote/Flyer + optionale Image Insertion + Main + Outro = FinalVideo mit einem Klick; das gerenderte MainVideo fließt automatisch in Stage 2.
 - **Neue Phase-2-Defaults:** Cross Dissolve mit 1,0 s (bei kurzen Clips sicher geklemmt) und Music Volume 44 % / Balanced (ca. +6 dB gegenüber 22 %, weiterhin unter Voiceover). Ducking, Limiter, Looping und manuelle Regler bleiben aktiv. Die übrigen Defaults bleiben: Original Audio, Static Phrase, YouTube Landscape, Maximum Quality, End-Padding ≈ 1 s, Quote-/Flyer-Upload aus (4,0 s, Fit), Cut Last Clip, 10 % Stretch, 1,00x Speed. Explizit gespeicherte Transition-/Audio-Werte bleiben erhalten.
@@ -53,7 +53,7 @@ Die effektive Stage-2-Zeitleiste ist immer `Intro → optional Add Image Before 
 
 ### Subtitle-Ausgabemodi
 
-Der Standard **With Burned-in Subtitles + SRT + VTT** erzeugt einen sauberen Master, brennt genau einmal die ausgerichtete ASS-Spur und schreibt SRT/VTT. **With Burned-in Subtitles only** führt denselben einzelnen Burn aus, legt aber keine SRT/VTT-Dateien an. **Without Subtitles** führt weder Alignment noch Burn-in/SRT/VTT aus; Voiceover-, Musik- und Videodauer bleiben unverändert.
+Der Standard **With Subtitles** erzeugt intern einen sauberen Master, brennt genau einmal die ausgerichtete ASS-Spur und schreibt SRT/VTT; die Clean-Datei bleibt intern. **With and Without Subtitles** behält zusätzlich die saubere Variante. **With Subtitles (legacy burned-only)** führt den Burn ohne SRT/VTT aus. **Without Subtitles** führt weder Alignment noch Burn-in/SRT/VTT aus; Voiceover-, Musik- und Videodauer bleiben unverändert.
 
 ### Echte Subtitle-Preview (Preview ≈ Final Render)
 
@@ -370,3 +370,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\uninstall_windows.ps1
 ```
 
 Originale werden niemals gelöscht oder verändert. `-RemoveOutputs` entfernt nur auf ausdrücklichen Wunsch den Projekt-Ausgabeordner.
+
+# YouTube-Ausgabemodi
+
+Der Ausgabemodus ist ein echter Pipeline-Schalter:
+
+- **YouTube Long-Form** erzeugt eine vollständige Landschafts-Timeline in 16:9. Alle Voiceovers und globale bzw. gematchte Skripte bleiben auf einer gemeinsamen Timeline.
+- **YouTube Shorts** erzeugt einen unabhängigen vertikalen 9:16-Short je vorhandenem Voiceover. Dauer und Materialauswahl werden für jedes Voiceover separat berechnet; die Skriptanzahl bestimmt nicht die Ausgabeanzahl. 10 Voiceovers mit einem globalen Script ergeben deshalb 10 Shorts.
+- **YouTube Long-Form + YouTube Shorts** erzeugt beide Ausgabemengen.
+
+Die Ausgaben werden getrennt gespeichert: `Output/LongForm/YouTube_LongForm.mp4` und `Output/Shorts/001.mp4`, `002.mp4` usw. Intro, Outro, Quote/Flyer, Add Image, Musik, Original-Audio, Übergänge, Reihenfolgen und One-Click laufen für jeden Auftrag über die vorhandene Render-Pipeline. Jeder Short besitzt eine eigene Cache-Identität.
+
+Standardmäßig gilt **With Subtitles**: eingebrannte Untertitel plus SRT/VTT, aber keine zusätzliche Clean-Version. **Without Subtitles** überspringt Untertitel vollständig. **With and Without Subtitles** erzeugt beide Varianten. Long-Form und Shorts besitzen getrennte Profile; Shorts sind standardmäßig groß, lesbar, vertikal sicher, auf höchstens zwei Zeilen begrenzt und wort-synchron animiert.
+
+CLI: `--export-mode long_form|shorts|long_form_and_shorts`, `--subtitle-output-mode with_subtitles|without_subtitles|with_and_without_subtitles` sowie `--short-subtitle-style`, `--short-subtitle-animation`, `--short-subtitle-font`, `--short-subtitle-position`.

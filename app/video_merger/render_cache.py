@@ -30,6 +30,7 @@ STAGE2_FINGERPRINT_SCHEMA = 1
 # Main Video. Deliberately absent: workflow_stage, output_name, main_video_path,
 # Intro/Quote/Outro paths and all other Stage-2-only composition controls.
 _STAGE1_SETTING_FIELDS = (
+    "export_mode",
     "aspect",
     "resolution",
     "fit_mode",
@@ -71,6 +72,9 @@ _STAGE1_SETTING_FIELDS = (
     # legacy semantics; new GUI projects use the canonical field above.
     "video_speed",
     "video_order_mode",
+    # Shorts are independent Stage-1 jobs; this prevents duplicate rows from
+    # sharing a cache result merely because their audio path is the same.
+    "render_variant_key",
     "allow_hdr_unsafe",
     "watermark_enabled",
     "watermark_scope",
@@ -222,7 +226,7 @@ def build_stage1_payload(
             if name != "subtitle_output_mode"
         })
     values["subtitle_output_mode"] = normalize_subtitle_output_mode(
-        getattr(settings, "subtitle_output_mode", "burned_and_sidecars")
+        getattr(settings, "subtitle_output_mode", "with_subtitles")
     )
 
     # These settings only affect the render when the corresponding asset is

@@ -28,7 +28,10 @@ class SettingsStore:
             # project files without exposing two GUI settings.
             if "source_folders" not in data and "input_folders" in data:
                 data["source_folders"] = data["input_folders"]
-            allowed = ExportSettings.__dataclass_fields__.keys()
+            allowed = {
+                name for name, field in ExportSettings.__dataclass_fields__.items()
+                if field.init
+            }
             return ExportSettings(**{key: value for key, value in data.items() if key in allowed})
         except (OSError, ValueError, TypeError):
             return ExportSettings()
@@ -40,5 +43,6 @@ class SettingsStore:
         # Do not persist two user-facing names for one control. ``video_speed``
         # is read only as a legacy migration alias in load().
         payload.pop("video_speed", None)
+        payload.pop("subtitle_output_mode_was_defaulted", None)
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(self.path)

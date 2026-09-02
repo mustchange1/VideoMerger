@@ -1,6 +1,6 @@
-# VideoMerger 1.4.0 for Windows
+# VideoMerger 1.5.0 for Windows
 
-## New in 1.4.0
+## New in 1.5.0
 
 ### Multiple source folders and folder-aware selection
 
@@ -14,7 +14,7 @@ Add any number of configured video folders with **Add Folder**, **Remove Folder*
 
 Quote/Flyer remains an independent artwork-only Stage-2 section and defaults to 4.0 seconds. **Add Image** is a separate optional, silent Stage-2 section: PNG/JPG/JPEG/WEBP, Before Main Video by default, 4.0 seconds, Fit, 100% zoom, Natural look, and the existing Cross Dissolve transition with a 1.0 second boundary request. The legacy Image Insertion names and position aliases remain accepted. Its complete file identity and settings are included in the independent Stage-2 composition fingerprint.
 
-Subtitle output is explicit and defaults to **With Burned-in Subtitles + SRT + VTT** whenever a subtitle source is requested. **With Burned-in Subtitles only** burns the same aligned ASS timeline but creates no SRT/VTT files. **Without Subtitles** skips alignment, burn-in, SRT and VTT generation while preserving voiceover/audio timing. Landscape long-form subtitles default to **Center**; vertical short-form subtitles default to **Bottom Center**. Saved/manual position overrides remain authoritative.
+Subtitle output is explicit and defaults to **With Subtitles** whenever a subtitle source is requested. It burns the aligned ASS timeline and writes SRT/VTT but creates no clean sibling. **With and Without Subtitles** additionally retains the clean variant. **Without Subtitles** skips alignment, burn-in, SRT and VTT generation while preserving voiceover/audio timing. Landscape long-form subtitles default to **Center**; vertical short-form subtitles default to **Bottom Center**. Saved/manual position overrides remain authoritative.
 
 ## New in 1.3.0
 
@@ -56,7 +56,7 @@ Long-Form cues are preferably 1–2 measured lines of natural phrases; one/two-w
 
 ### Clean Output directory + flexible subtitle outputs
 
-The Output folder contains only useful user-facing files. The subtitle output mode controls the actual contract: `With Burned-in Subtitles + SRT + VTT` writes the primary burned-in video, a `_no_subtitles` master, SRT, and VTT; `With Burned-in Subtitles only` writes only the primary burned-in video; `Without Subtitles` writes only the primary clean video. Verification PNGs and the subtitle timeline JSON live under `temp/` (internal evidence/cache) instead of Output.
+The Output folder contains only useful user-facing files. The subtitle output mode controls the actual contract: `With Subtitles` writes the primary burned-in video plus SRT/VTT without a clean sibling; `With and Without Subtitles` writes both video variants plus SRT/VTT; `Without Subtitles` writes only the primary clean video. Verification PNGs and the subtitle timeline JSON live under `temp/` (internal evidence/cache) instead of Output.
 
 ### Automatic local YouTube title + description (free, local, unlimited)
 
@@ -193,11 +193,11 @@ SUBTITLE GENERATION FAILED [actual stage]: actual error
 
 No cloud API or remote renderer is required. Initial setup creates the project-local `.venv`, installs dependencies, downloads the local `small` model and obtains project-local FFmpeg/FFprobe. It requires no administrator account, global PATH edit, manual virtual-environment activation or manual FFmpeg relocation.
 
-Save `VideoMerger_Final_1.4.0.zip` in Downloads and run Windows PowerShell:
+Save `VideoMerger_Final_1.5.0.zip` in Downloads and run Windows PowerShell:
 
 ```powershell
-$Zip = Join-Path $HOME "Downloads\VideoMerger_Final_1.4.0.zip"
-$ProjectRoot = Join-Path $HOME "Downloads\VideoMerger_Final_1.4.0"
+$Zip = Join-Path $HOME "Downloads\VideoMerger_Final_1.5.0.zip"
+$ProjectRoot = Join-Path $HOME "Downloads\VideoMerger_Final_1.5.0"
 if (Test-Path -LiteralPath $ProjectRoot) { Remove-Item -LiteralPath $ProjectRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $ProjectRoot -Force | Out-Null
 Expand-Archive -LiteralPath $Zip -DestinationPath $ProjectRoot -Force
@@ -211,3 +211,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ProjectRoot 
 `-ExecutionPolicy Bypass` applies only to each launched process. Originals are never modified. Exports use deterministic non-overwriting names.
 
 See [README_DE.md](README_DE.md), [docs/ARCHITECTURE_DE.md](docs/ARCHITECTURE_DE.md), [BUILD_REPORT.md](BUILD_REPORT.md) and `test_evidence/1.2.4/` for detailed operation, architecture and executed evidence.
+
+## YouTube delivery modes
+
+The export mode is an actual pipeline setting, not a cosmetic aspect toggle:
+
+- **YouTube Long-Form** renders one complete 16:9 landscape timeline. All ordered voiceovers and the global or matched scripts stay on that shared timeline.
+- **YouTube Shorts** renders one independent 9:16 Short per available voiceover. Each Short derives its own duration and media prefix from that voiceover; script count does not determine output count. One global script with ten voiceovers therefore still produces ten Shorts.
+- **YouTube Long-Form + YouTube Shorts** renders both sets.
+
+Outputs are separated into `Output/LongForm/` and `Output/Shorts/` (`YouTube_LongForm.mp4`, `001.mp4`, `002.mp4`, …). Intro, Outro, Quote/Flyer, Add Image, music, original audio, transitions, ordering and One-Click use the existing render pipeline for every job. Each Short has its own cache identity.
+
+Subtitle output is **With Subtitles** by default. It burns the selected profile and writes SRT/VTT without creating an extra clean video. **Without Subtitles** skips subtitle rendering; **With and Without Subtitles** writes both variants. Long-Form and Shorts use separate subtitle profile settings; the Shorts defaults are large, readable, vertically safe, two-line constrained and word-synchronized.
+
+The CLI equivalents are `--export-mode long_form|shorts|long_form_and_shorts`, `--subtitle-output-mode with_subtitles|without_subtitles|with_and_without_subtitles`, and `--short-subtitle-style`, `--short-subtitle-animation`, `--short-subtitle-font`, `--short-subtitle-position`.

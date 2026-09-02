@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 
+_SUBTITLE_DEFAULT = object()
+
+
 @dataclass(slots=True)
 class AudioInfo:
     present: bool = False
@@ -203,10 +206,32 @@ class ExportSettings:
     image_zoom: int = 100
     image_filter: str = "natural"
 
-    # Subtitle output is explicit: the default emits all three user-facing
-    # artifacts, Burned Only emits only the burned video, and Without emits a
-    # clean video without creating an alignment/sidecar output bundle.
-    subtitle_output_mode: str = "burned_and_sidecars"
+    # YouTube delivery selection. Long Form is the backwards-compatible
+    # default; Shorts and the combined mode are orchestrated as independent
+    # output jobs rather than as one stretched landscape timeline.
+    export_mode: str = "long_form"  # long_form | shorts | long_form_and_shorts
+
+    # Subtitle output is explicit. New projects default to With Subtitles:
+    # burned-in subtitles (and the existing SRT/VTT sidecars) without an
+    # additional clean video. With and Without is the opt-in dual variant.
+    subtitle_output_mode: str = field(default=_SUBTITLE_DEFAULT)  # type: ignore[assignment]
+    # A direct API caller that omits this field belongs to the legacy single
+    # video contract; GUI/CLI selections pass an explicit new mode. This tiny
+    # migration marker lets old API workflows keep their dual output while the
+    # new YouTube selector defaults to With Subtitles.
+    subtitle_output_mode_was_defaulted: bool = field(init=False, repr=False, compare=False, default=False)
+
+    # Shorts have their own safe mobile subtitle profile. The long-form
+    # controls above remain untouched when a project also creates Shorts.
+    short_subtitle_style: str = "short_1"
+    short_subtitle_animation: str = "word_highlight"
+    short_subtitle_font: str = "modern_sans_bold"
+    short_subtitle_position: str = "Bottom Center"
+
+    # Process/render identity, intentionally not a user-facing control. The
+    # Shorts orchestrator sets a unique value for every voiceover so even
+    # duplicate audio paths cannot reuse another Short's Stage-1 cache result.
+    render_variant_key: str = ""
 
     # Input-library configuration and explicit-order semantics. Empty
     # ``source_folders`` preserves the legacy single input folder field; a
@@ -225,6 +250,11 @@ class ExportSettings:
     # Stage-2 only: per-section role names in composition order
     # ("intro"/"quote"/"main"/"outro"). Filled by MainProjectEngine.add_outro().
     stage2_roles: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.subtitle_output_mode is _SUBTITLE_DEFAULT:
+            self.subtitle_output_mode = "with_subtitles"
+            self.subtitle_output_mode_was_defaulted = True
 
 
 @dataclass(slots=True)
@@ -329,6 +359,44 @@ class CompleteWorkflowResult:
     # 1.3.0: final composition rendered from the subtitle-free Main Video.
     final_video_no_subtitles: Path | None = None
     youtube_metadata: Path | None = None
+
+
+@dataclass(slots=True)
+class YoutubeExportResult:
+    """Bundle returned by a Long-Form, Shorts, or combined export."""
+
+    mode: str
+    long_form: MainVideoResult | CompleteWorkflowResult | None = None
+    shorts: list[MainVideoResult | CompleteWorkflowResult] = field(default_factory=list)
+
+    @property
+    def primary_output(self) -> Path:
+        if self.long_form is not None:
+            return self.long_form.video if isinstance(self.long_form, MainVideoResult) else self.long_form.final_video
+        if self.shorts:
+            item = self.shorts[0]
+            return item.video if isinstance(item, MainVideoResult) else item.final_video
+        raise ValueError("YouTube export produced no output.")
+
+    @property
+    def outputs(self) -> list[Path]:
+        values: list[Path] = []
+        items = ([self.long_form] if self.long_form is not None else []) + list(self.shorts)
+        for item in items:
+            if isinstance(item, MainVideoResult):
+                values.append(item.video)
+                if item.video_no_subtitles:
+                    values.append(item.video_no_subtitles)
+            else:
+                values.append(item.final_video)
+                if item.final_video_no_subtitles:
+                    values.append(item.final_video_no_subtitles)
+            main = item if isinstance(item, MainVideoResult) else item.main
+            if main.srt:
+                values.append(main.srt)
+            if main.vtt:
+                values.append(main.vtt)
+        return values
 
 
 LogCallback = Callable[[str], None]

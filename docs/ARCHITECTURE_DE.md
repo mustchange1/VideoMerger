@@ -1,6 +1,6 @@
-# Architektur – VideoMerger 1.4.0
+# Architektur – VideoMerger 1.5.0
 
-## Architektur-Zusätze 1.4.0
+## Architektur-Zusätze 1.5.0
 
 - **Quellordner:** `discovery.discover_videos()` akzeptiert die explizit konfigurierte Ordnerliste und setzt `MediaInfo.source_folder`; der alte Ein-Ordner-Modus scannt weiterhin nur direkt enthaltene Dateien. `ProjectOrderStore` persistiert globale und ordnerspezifische aktive Reihenfolgen.
 - **Auswahl:** `video_pool.order_media_for_video_order()` ist die gemeinsame Effective-Order-Pipeline für Natural, Alphabetical, Random und Manual. Natural/Alphabetical verwenden numerische bzw. filename-basierte Queues; Random permutiert zuerst per Fisher-Yates und alterniert danach Quellordner, solange Alternativen vorhanden sind. `folder_aware=False` ist der ausdrückliche bereits-geordnete Timeline-Pfad; die Legacy-Einstellung `folder_alternating` bleibt kompatibel.
@@ -123,7 +123,7 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 
 ### Flexible Subtitle-Ausgaben + sauberer Output
 
-`subtitle_output_mode` ist ein echter Pipeline-Vertrag: `burned_and_sidecars` rendert sauberes Master → genau ein ASS-Burn und schreibt SRT/VTT; `burned_only` rendert dasselbe saubere Master → genau ein ASS-Burn, legt aber keine SRT/VTT an; `without_subtitles` überspringt Alignment und Burn-in vollständig. Im kombinierten Modus bleibt die Clean-Variante user-facing; in den beiden anderen Modi wird ein interner Master aus `temp/` nach dem Burn entfernt. Chunked Rendering segmentiert immer zuerst den clean master und brennt höchstens einmal nach der Assembly. Stage 2 erhält anschließend genau die gewählte Main-Variante.
+`subtitle_output_mode` ist ein echter Pipeline-Vertrag: `with_subtitles` rendert intern einen sauberen Master, brennt genau einmal ASS und schreibt SRT/VTT, behält aber keine zusätzliche Clean-Datei; `with_and_without_subtitles` behält zusätzlich die Clean-Variante; `without_subtitles` überspringt Alignment und Burn-in vollständig. Der alte Wert `burned_and_sidecars` wird für gespeicherte Projekte als duale Ausgabe migriert. Chunked Rendering segmentiert zuerst den clean master und brennt höchstens einmal nach der Assembly. Stage 2 erhält anschließend genau die gewählte Main-Variante.
 
 ### Quote-/Flyer-Artwork
 
@@ -136,3 +136,9 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 ### Lokale YouTube-Metadaten
 
 `youtube_metadata.py`: deterministischer Extraktor (Titel = stärkster Eröffnungssatz; Zusammenfassung = saliente Originalsätze; Themen = wörtliche Schlüsselphrasen; CTA) + optionale lokale Ollama-Politur unter strikter Validierung (nur `127.0.0.1:11434`, nie eine Cloud-API). Fehler blockieren das Rendern nie; ohne autoritatives Transkript wird nichts erfunden.
+
+## YouTube Long-Form / Shorts / kombiniert
+
+`youtube_outputs.py` plant drei echte Modi. Long-Form ruft die vorhandene Multi-Voiceover-Stage-1-Timeline mit erzwungenem 16:9 auf. Shorts erzeugen für jede geordnete Voiceover-Einheit einen eigenen 9:16-Auftrag mit `voiceover_pause=0`, eigener Zieldauer und eigener `render_variant_key`; dadurch sind auch doppelt referenzierte Audiodateien cache-separat. Matched Scripts bleiben basename-gekoppelt, ein globales Script wird als ein globaler Input erhalten und ist unabhängig von der Voiceover-Anzahl. `create_youtube_exports()` ordnet die fertigen Artefakte in `LongForm/` und `Shorts/` ein und wird auch vom One-Click-Worker verwendet.
+
+Die Subtitle-Modi sind `with_subtitles`, `without_subtitles` und `with_and_without_subtitles`. Der neue Standard erzeugt Burn-in sowie SRT/VTT, aber keine zusätzliche Clean-Datei; der dritte Modus behält die Clean-Datei user-facing. Der alte gespeicherte Wert `burned_and_sidecars` wird als Kompatibilitätswert weiterhin als duale Ausgabe gelesen. Das Shorts-Profil wird erst unmittelbar im Short-Job auf `short_*`, mobile Schrift-/Safe-Position und synchronisierte Animation umgeschaltet; Long-Form-Profile bleiben unverändert.

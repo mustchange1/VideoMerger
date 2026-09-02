@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 import uuid
 from dataclasses import replace
@@ -17,6 +18,7 @@ from .models import (
     LogCallback,
     MainVideoResult,
     MediaInfo,
+    YoutubeExportResult,
     ProgressCallback,
     ProgressEvent,
     ValidationReport,
@@ -53,8 +55,10 @@ from .render_cache import (
 )
 from .subtitle_modes import (
     SUBTITLE_OUTPUT_COMBINED,
+    SUBTITLE_OUTPUT_WITH,
     SUBTITLE_OUTPUT_WITHOUT,
     normalize_subtitle_output_mode,
+    subtitle_clean_variant_requested,
     subtitle_render_requested,
     subtitle_sidecars_requested,
 )
@@ -82,6 +86,14 @@ from .voiceover_order import (
     voiceover_order_indices,
 )
 from .youtube_metadata import generate_youtube_metadata_file
+from .youtube_outputs import (
+    EXPORT_MODE_COMBINED,
+    EXPORT_MODE_LONG_FORM,
+    build_short_jobs,
+    long_form_settings,
+    normalize_export_mode,
+    short_settings,
+)
 
 
 def _raw_voiceover_paths(settings: ExportSettings) -> list[Path]:
@@ -416,6 +428,7 @@ class MainProjectEngine:
             log("Stage 1 cache MISS: subtitle output mode differs from the cached render.")
             return None
         sidecars_requested = subtitle_requested and subtitle_sidecars_requested(mode)
+        clean_variant_requested = subtitle_requested and subtitle_clean_variant_requested(mode)
         self.render_cache.restore_sidecars(record)
         artifacts = self.render_cache.artifact_paths(record)
         video = artifacts.get("video")
@@ -423,16 +436,19 @@ class MainProjectEngine:
         if video is None or not video.is_file() or video.stat().st_size <= 0:
             log("Stage 1 cache MISS: cached Main Video is missing or empty.")
             return None
-        if sidecars_requested and (
+        if clean_variant_requested and (
             clean_video is None or not clean_video.is_file() or clean_video.stat().st_size <= 0
         ):
             log("Stage 1 cache MISS: cached clean Main Video is missing or empty.")
+            return None
+        if subtitle_requested and artifacts.get("canonical_timeline") is None:
+            log("Stage 1 cache MISS: cached subtitle timeline is missing.")
             return None
         if sidecars_requested and any(
             artifacts.get(key) is None
             or not artifacts[key].is_file()
             or artifacts[key].stat().st_size <= 0
-            for key in ("srt", "vtt", "canonical_timeline")
+            for key in ("srt", "vtt")
         ):
             log("Stage 1 cache MISS: required subtitle sidecars could not be restored.")
             return None
@@ -448,7 +464,7 @@ class MainProjectEngine:
         if not report.ok:
             log("Stage 1 cache MISS: cached Main Video failed FFprobe validation.")
             return None
-        if sidecars_requested:
+        if clean_variant_requested:
             clean_report = validate_output(clean_video, self.engine.ffprobe_path, resolved)
             if not clean_report.ok:
                 log("Stage 1 cache MISS: cached clean Main Video failed FFprobe validation.")
@@ -489,7 +505,7 @@ class MainProjectEngine:
             canonical_timeline=timeline if subtitle_requested else None,
             verification_frames=[],
             timings=timings,
-            video_no_subtitles=clean_video if sidecars_requested else None,
+            video_no_subtitles=clean_video if clean_variant_requested else None,
         )
 
     def create_main(
@@ -505,6 +521,7 @@ class MainProjectEngine:
         video_order_rng=None,
         video_order_seed: int | None = None,
         order_already_applied: bool = False,
+        output_stem: str | None = None,
     ) -> MainVideoResult:
         total_started = time.perf_counter()
         timings: dict[str, float | str | bool] = {}
@@ -550,6 +567,12 @@ class MainProjectEngine:
         subtitle_mode = normalize_subtitle_output_mode(
             getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
         )
+        if (
+            subtitle_mode == SUBTITLE_OUTPUT_WITH
+            and getattr(settings, "subtitle_output_mode_was_defaulted", False)
+        ):
+            subtitle_mode = normalize_subtitle_output_mode("burned_and_sidecars")
+            log("Legacy direct API default retained: dual subtitle bundle.")
         # A supplied script is an explicit subtitle request unless the user
         # explicitly selected Without Subtitles. The latter still keeps the
         # voiceover as the duration/audio authority, but performs no alignment,
@@ -732,27 +755,30 @@ class MainProjectEngine:
         # canonical timeline JSON, staged ASS) lives under temp/ and never
         # clutters the Output folder.
         sidecars_requested = subtitle_requested and subtitle_sidecars_requested(subtitle_mode)
+        clean_variant_requested = subtitle_requested and subtitle_clean_variant_requested(subtitle_mode)
         output_dir.mkdir(parents=True, exist_ok=True)
         temp_dir = project_root() / "temp"
         if subtitle_requested:
             temp_dir.mkdir(parents=True, exist_ok=True)
-        base_stem = f"MainVideo_{_aspect_token(settings.aspect)}"
+        base_stem = output_stem or f"MainVideo_{_aspect_token(settings.aspect)}"
         name_index = 1
         while True:
             actual = base_stem if name_index == 1 else f"{base_stem}_{name_index}"
             output_video = output_dir / f"{actual}.mp4"
-            # The clean master is user-facing only in the combined mode. In
-            # Burned Only it is a Stage-1 temporary; in Without it is unused.
+            # The clean master is user-facing only in With and Without mode;
+            # With Subtitles keeps it internal and Without does not need it.
             output_video_clean = (
                 output_dir / f"{actual}_no_subtitles.mp4"
-                if sidecars_requested
+                if clean_variant_requested
                 else temp_dir / f".{actual}.clean_master_{uuid.uuid4().hex}.mp4"
             )
             srt_candidate = output_dir / f"{actual}.srt"
             vtt_candidate = output_dir / f"{actual}.vtt"
             reserved: list[Path] = [output_video]
+            if clean_variant_requested:
+                reserved.append(output_video_clean)
             if sidecars_requested:
-                reserved += [output_video_clean, srt_candidate, vtt_candidate]
+                reserved += [srt_candidate, vtt_candidate]
             if not any(path.exists() for path in reserved):
                 break
             name_index += 1
@@ -1130,7 +1156,7 @@ class MainProjectEngine:
                     stage1_digest,
                     stage1_payload,
                     video=output_video,
-                    video_no_subtitles=output_video_clean if sidecars_requested else None,
+                    video_no_subtitles=output_video_clean if clean_variant_requested else None,
                     srt=srt_path,
                     vtt=vtt_path,
                     canonical_timeline=timeline_path,
@@ -1149,7 +1175,7 @@ class MainProjectEngine:
                 canonical_timeline=timeline_path,
                 verification_frames=verification_frames,
                 timings=timings,
-                video_no_subtitles=output_video_clean if sidecars_requested else None,
+                video_no_subtitles=output_video_clean if clean_variant_requested else None,
             )
             result.timings["render_reused"] = False
             result.timings["cache_hit"] = False
@@ -1168,7 +1194,7 @@ class MainProjectEngine:
             # them even when FFmpeg fails before creating the burned output.
             if ass_path:
                 ass_path.unlink(missing_ok=True)
-            if not sidecars_requested:
+            if not clean_variant_requested:
                 output_video_clean.unlink(missing_ok=True)
 
     def create_complete(
@@ -1183,6 +1209,138 @@ class MainProjectEngine:
         video_order_rng=None,
         video_order_seed: int | None = None,
         order_already_applied: bool = False,
+    ) -> CompleteWorkflowResult | YoutubeExportResult:
+        """Run the selected YouTube delivery mode through the complete workflow."""
+        mode = normalize_export_mode(getattr(settings, "export_mode", EXPORT_MODE_LONG_FORM))
+        if mode != EXPORT_MODE_LONG_FORM:
+            return self.create_youtube_exports(
+                media, settings, output_dir, progress=progress, log=log,
+                cancel_event=cancel_event, aligner=aligner,
+                video_order_rng=video_order_rng, video_order_seed=video_order_seed,
+                order_already_applied=order_already_applied, complete=True,
+            )
+        return self._create_complete_single(
+            media, settings, output_dir, progress=progress, log=log,
+            cancel_event=cancel_event, aligner=aligner,
+            video_order_rng=video_order_rng, video_order_seed=video_order_seed,
+            order_already_applied=order_already_applied,
+        )
+
+    @staticmethod
+    def _publish_youtube_sidecars(
+        result: MainVideoResult | CompleteWorkflowResult,
+        output_dir: Path,
+        stem: str,
+    ) -> None:
+        """Move the internal Stage-1 SRT/VTT copies into the job bundle."""
+        main = result if isinstance(result, MainVideoResult) else result.main
+        for attribute in ("srt", "vtt"):
+            source = getattr(main, attribute)
+            if source is None or not source.is_file():
+                continue
+            target = output_dir / f"{stem}{source.suffix.lower()}"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            setattr(main, attribute, target)
+
+    def create_youtube_exports(
+        self,
+        media: list[MediaInfo],
+        settings: ExportSettings,
+        output_dir: Path,
+        progress: ProgressCallback = lambda _event: None,
+        log: LogCallback = lambda _message: None,
+        cancel_event=None,
+        aligner: LocalWordAligner | None = None,
+        video_order_rng=None,
+        video_order_seed: int | None = None,
+        order_already_applied: bool = False,
+        *,
+        complete: bool = False,
+    ) -> YoutubeExportResult:
+        """Render Long-Form and/or one isolated Short per voiceover.
+
+        Every Short calls the regular Stage-1/Stage-2 pipeline with a one-item
+        acoustic timeline. This deliberately preserves intro/outro, Quote /
+        Flyer, Add Image, music, original audio, transitions, chunking and the
+        established FFmpeg command builder instead of maintaining a second
+        Shorts renderer.
+        """
+        mode = normalize_export_mode(getattr(settings, "export_mode", EXPORT_MODE_LONG_FORM))
+        if mode == EXPORT_MODE_LONG_FORM:
+            jobs = [("long", long_form_settings(settings), output_dir / "LongForm", "YouTube_LongForm")]
+        else:
+            jobs = []
+            if mode == EXPORT_MODE_COMBINED:
+                jobs.append(("long", long_form_settings(settings), output_dir / "LongForm", "YouTube_LongForm"))
+            short_jobs = build_short_jobs(settings)
+            if not short_jobs:
+                raise VideoMergerError("YouTube Shorts benötigen mindestens ein Voiceover.")
+            jobs.extend(
+                ("short", short_settings(settings, job), output_dir / "Shorts", job.output_name)
+                for job in short_jobs
+            )
+
+        output = YoutubeExportResult(mode)
+        total = len(jobs)
+        for job_index, (kind, job_settings, job_dir, stem) in enumerate(jobs):
+            if cancel_event is not None and cancel_event.is_set():
+                raise VideoMergerError("YouTube export wurde abgebrochen.")
+            job_dir.mkdir(parents=True, exist_ok=True)
+            log(
+                ("YouTube Long-Form" if kind == "long" else f"YouTube Short {stem}")
+                + f" – independent job {job_index + 1}/{total}; output={job_dir / (stem + '.mp4')}"
+            )
+
+            def job_progress(event: ProgressEvent, *, offset=job_index) -> None:
+                progress(ProgressEvent(
+                    percent=(offset + max(0.0, min(100.0, event.percent) / 100.0)) * 100.0 / total,
+                    out_time=event.out_time, total_time=event.total_time,
+                    elapsed=event.elapsed, remaining=event.remaining,
+                    stage=f"YouTube {kind.title()} {offset + 1}/{total} – {event.stage}",
+                    current_file=event.current_file,
+                ))
+
+            if complete:
+                result = self._create_complete_single(
+                    media, job_settings, job_dir,
+                    progress=job_progress, log=log, cancel_event=cancel_event,
+                    aligner=aligner, video_order_rng=video_order_rng,
+                    video_order_seed=video_order_seed,
+                    order_already_applied=order_already_applied,
+                    output_stem=stem,
+                )
+            else:
+                result = self.create_main(
+                    media, job_settings, job_dir,
+                    progress=job_progress, log=log, cancel_event=cancel_event,
+                    aligner=aligner, reuse_cached=True,
+                    video_order_rng=video_order_rng, video_order_seed=video_order_seed,
+                    order_already_applied=order_already_applied, output_stem=stem,
+                )
+            if complete:
+                final_stem = result.final_video.stem if isinstance(result, CompleteWorkflowResult) else stem
+                self._publish_youtube_sidecars(result, job_dir, final_stem)
+            if kind == "long":
+                output.long_form = result
+            else:
+                output.shorts.append(result)
+        progress(ProgressEvent(100.0, 0.0, 0.0, 0.0, 0.0, "YouTube Export – Complete", str(output.primary_output)))
+        return output
+
+    def _create_complete_single(
+        self,
+        media: list[MediaInfo],
+        settings: ExportSettings,
+        output_dir: Path,
+        progress: ProgressCallback = lambda _event: None,
+        log: LogCallback = lambda _message: None,
+        cancel_event=None,
+        aligner: LocalWordAligner | None = None,
+        video_order_rng=None,
+        video_order_seed: int | None = None,
+        order_already_applied: bool = False,
+        output_stem: str | None = None,
     ) -> CompleteWorkflowResult:
         """Execute actual Stage 1, then hand its exact MP4 to existing Stage 2.
 
@@ -1215,13 +1373,19 @@ class MainProjectEngine:
         subtitle_mode = normalize_subtitle_output_mode(
             getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
         )
+        if (
+            subtitle_mode == SUBTITLE_OUTPUT_WITH
+            and getattr(settings, "subtitle_output_mode_was_defaulted", False)
+        ):
+            subtitle_mode = normalize_subtitle_output_mode("burned_and_sidecars")
+            log("Legacy direct API default retained: dual subtitle bundle.")
         subtitle_expected = subtitle_render_requested(
             subtitle_mode, bool(settings.subtitle_enabled or (unit_probe and script_probe))
         )
         # Combined mode has a user-facing clean variant and therefore a third
         # progress lane for its second Stage-2 composition. Burned Only and
         # Without Subtitles each need exactly one Stage-2 pass.
-        parts = 3 if subtitle_expected and subtitle_sidecars_requested(subtitle_mode) else 2
+        parts = 3 if subtitle_expected and subtitle_clean_variant_requested(subtitle_mode) else 2
 
         def stage_progress(part: int, parts: int, event: ProgressEvent) -> None:
             span = 100.0 / parts
@@ -1234,12 +1398,22 @@ class MainProjectEngine:
             ))
 
         log("ONE-CLICK COMPLETE WORKFLOW – START")
+        # In a multi-output run the Stage-1 master is an internal per-job
+        # artifact. The final user-facing output remains exactly LongForm/
+        # YouTube_LongForm.mp4 or Shorts/001.mp4.
+        stage1_dir = (
+            output_dir
+            if output_stem is None
+            else project_root() / "temp" / "youtube_stage1" / output_stem
+        )
+        stage1_dir.mkdir(parents=True, exist_ok=True)
         main = self.create_main(
-            media, settings, output_dir,
+            media, settings, stage1_dir,
             progress=lambda event: stage_progress(1, parts, event), log=log,
             cancel_event=cancel_event, aligner=aligner, reuse_cached=True,
             video_order_rng=video_order_rng, video_order_seed=video_order_seed,
             order_already_applied=order_already_applied,
+            output_stem=output_stem,
         )
         if not main.video.is_file() or not main.report.ok:
             raise VideoMergerError("One-Click Stage 1 lieferte keine validierte MainVideo-Datei.")
@@ -1247,17 +1421,18 @@ class MainProjectEngine:
         log(f"actual MainVideo input = {actual_main}")
         stage2_settings = replace(settings, main_video_path=str(actual_main))
         log(f"Actual Stage 1 input used by Stage 2: {actual_main}")
-        # Reserve a paired final bundle only when the selected mode actually
-        # asks for sidecars. Burned Only and Without Subtitles produce one
-        # final video and never leave a misleading *_no_subtitles.mp4 sibling.
+        # Reserve a paired final bundle only when With and Without Subtitles
+        # was selected. With Subtitles and Without Subtitles produce one final
+        # video and never leave a misleading *_no_subtitles.mp4 sibling.
         output_dir.mkdir(parents=True, exist_ok=True)
-        if subtitle_expected and subtitle_sidecars_requested(subtitle_mode):
+        bundle_stem = output_stem or f"FinalVideo_{_aspect_token(settings.aspect)}"
+        if subtitle_expected and subtitle_clean_variant_requested(subtitle_mode):
             final_primary, final_clean, metadata_path = _available_dual_video_bundle(
-                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}"
+                output_dir, bundle_stem
             )
         else:
             single_bundle = _available_bundle(
-                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4", "YouTube.txt")
+                output_dir, bundle_stem, ("mp4", "YouTube.txt")
             )
             final_primary = single_bundle["mp4"]
             final_clean = output_dir / f".{final_primary.stem}.unused_no_subtitles.mp4"

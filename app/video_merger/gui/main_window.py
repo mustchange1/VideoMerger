@@ -30,9 +30,9 @@ from ..project_order import ProjectOrderStore
 from ..settings_store import SettingsStore
 from ..voiceover_order import normalize_voiceover_order_mode, voiceover_order_indices
 from ..subtitle_modes import (
-    SUBTITLE_OUTPUT_BURNED_ONLY,
-    SUBTITLE_OUTPUT_COMBINED,
+    SUBTITLE_OUTPUT_BOTH,
     SUBTITLE_OUTPUT_LABELS,
+    SUBTITLE_OUTPUT_WITH,
     SUBTITLE_OUTPUT_WITHOUT,
     normalize_subtitle_output_mode,
 )
@@ -49,6 +49,13 @@ from ..video_pool import (
     order_media_for_video_order,
 )
 from ..transition_effects import EASE_OPTIONS, TRANSITION_OPTIONS, transition_description
+from ..youtube_outputs import (
+    EXPORT_MODE_COMBINED,
+    EXPORT_MODE_LABELS,
+    EXPORT_MODE_LONG_FORM,
+    EXPORT_MODE_SHORTS,
+    normalize_export_mode,
+)
 from .style import APP_STYLE
 from .workers import ProcessingWorker
 
@@ -146,7 +153,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.setStyleSheet(APP_STYLE)
         self._load_settings()
-        self._append_log("VideoMerger 1.4.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Before/After Merge, Quote/Flyer-Artwork, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
+        self._append_log("VideoMerger 1.5.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Before/After Merge, Quote/Flyer-Artwork, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
 
     def _build_ui(self) -> None:
         scroll = QScrollArea()
@@ -429,13 +436,13 @@ class MainWindow(QMainWindow):
         subtitle_group = QGroupBox("3 · Subtitles")
         subtitle_layout = QGridLayout(subtitle_group)
         self.subtitle_check = QCheckBox(
-            "Enable Burned-In Subtitles + SRT + VTT (automatic when Voiceover + Script are assigned)"
+            "Enable Subtitles (automatic when Voiceover + Script are assigned)"
         )
         subtitle_layout.addWidget(self.subtitle_check, 0, 0, 1, 3)
         self.subtitle_output_combo = QComboBox()
-        self.subtitle_output_combo.addItem(SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_COMBINED], SUBTITLE_OUTPUT_COMBINED)
-        self.subtitle_output_combo.addItem(SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_BURNED_ONLY], SUBTITLE_OUTPUT_BURNED_ONLY)
+        self.subtitle_output_combo.addItem(SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_WITH], SUBTITLE_OUTPUT_WITH)
         self.subtitle_output_combo.addItem(SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_WITHOUT], SUBTITLE_OUTPUT_WITHOUT)
+        self.subtitle_output_combo.addItem(SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_BOTH], SUBTITLE_OUTPUT_BOTH)
         self.subtitle_output_combo.setToolTip(
             "The selected mode controls actual subtitle rendering and which output files are created."
         )
@@ -459,6 +466,21 @@ class MainWindow(QMainWindow):
             self.subtitle_font_combo.addItem(label, key)
         self.subtitle_position_combo = QComboBox()
         self.subtitle_position_combo.addItems(["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"])
+        # Shorts keep a separate mobile-safe profile instead of borrowing the
+        # currently visible Long-Form style. It is still persisted in the same
+        # project settings and is applied by the Shorts render branch.
+        self.short_subtitle_style_combo = QComboBox()
+        for preset in SUBTITLE_PRESETS:
+            if preset.collection == "short":
+                self.short_subtitle_style_combo.addItem(preset.label, preset.key)
+        self.short_subtitle_animation_combo = QComboBox()
+        for key, label in ANIMATION_OPTIONS:
+            self.short_subtitle_animation_combo.addItem(label, key)
+        self.short_subtitle_font_combo = QComboBox()
+        for key, label in FONT_OPTIONS:
+            self.short_subtitle_font_combo.addItem(label, key)
+        self.short_subtitle_position_combo = QComboBox()
+        self.short_subtitle_position_combo.addItems(["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"])
         self._subtitle_position_overridden = False
         self._subtitle_style_overridden = False
         self._subtitle_animation_overridden = False
@@ -473,16 +495,26 @@ class MainWindow(QMainWindow):
         subtitle_layout.addWidget(self.subtitle_font_combo, 5, 1)
         subtitle_layout.addWidget(QLabel("Position"), 6, 0)
         subtitle_layout.addWidget(self.subtitle_position_combo, 6, 1)
-        subtitle_layout.addWidget(self.subtitle_debug_check, 7, 0, 1, 3)
+        subtitle_layout.addWidget(QLabel("Shorts Style"), 7, 0)
+        subtitle_layout.addWidget(self.short_subtitle_style_combo, 7, 1)
+        subtitle_layout.addWidget(QLabel("Shorts Animation"), 8, 0)
+        subtitle_layout.addWidget(self.short_subtitle_animation_combo, 8, 1)
+        subtitle_layout.addWidget(QLabel("Shorts Font"), 9, 0)
+        subtitle_layout.addWidget(self.short_subtitle_font_combo, 9, 1)
+        subtitle_layout.addWidget(QLabel("Shorts Position"), 10, 0)
+        subtitle_layout.addWidget(self.short_subtitle_position_combo, 10, 1)
+        subtitle_layout.addWidget(self.subtitle_debug_check, 11, 0, 1, 3)
         # 1.2.4: echte Subtitle-Preview – dieselbe Layout-Logik wie der
         # Burn-In-Renderer (Zeilenumbrüche, Font-Metriken, Safe-Area,
         # Position, Wort-Highlight). Kein fakes GUI-Text.
         self.subtitle_live_preview = SubtitlePreviewCanvas()
         self.subtitle_live_preview.setMinimumHeight(130)
-        subtitle_layout.addWidget(self.subtitle_live_preview, 8, 0, 1, 3)
+        subtitle_layout.addWidget(self.subtitle_live_preview, 12, 0, 1, 3)
         for control in (
             self.subtitle_font_combo, self.subtitle_style_combo,
             self.subtitle_animation_combo, self.subtitle_position_combo,
+            self.short_subtitle_style_combo, self.short_subtitle_animation_combo,
+            self.short_subtitle_font_combo, self.short_subtitle_position_combo,
             self.subtitle_language_combo,
         ):
             control.currentIndexChanged.connect(self._update_subtitle_live_preview)
@@ -492,9 +524,9 @@ class MainWindow(QMainWindow):
         self.subtitle_animation_combo.currentIndexChanged.connect(self._subtitle_animation_changed)
         self.subtitle_preview_button = QPushButton("Open Larger Subtitle Preview")
         self.subtitle_preview_button.clicked.connect(self._preview_subtitle_style)
-        subtitle_layout.addWidget(self.subtitle_preview_button, 9, 1)
+        subtitle_layout.addWidget(self.subtitle_preview_button, 13, 1)
         self.alignment_warning_check = QCheckBox("Continue After Alignment Warning (manual confirmation)")
-        subtitle_layout.addWidget(self.alignment_warning_check, 10, 0, 1, 3)
+        subtitle_layout.addWidget(self.alignment_warning_check, 14, 0, 1, 3)
         outer.addWidget(subtitle_group)
 
         format_group = QGroupBox("4 · Video Format & Transition")
@@ -518,6 +550,12 @@ class MainWindow(QMainWindow):
         self.fit_combo.addItem("Contain + Blurred Background (sicher)", "contain_blur")
         self.fit_combo.addItem("Crop / Fill (kann Bildränder abschneiden)", "crop_fill")
         format_layout.addWidget(self.fit_combo, 2, 1)
+        self.export_mode_combo = QComboBox()
+        for key in (EXPORT_MODE_LONG_FORM, EXPORT_MODE_SHORTS, EXPORT_MODE_COMBINED):
+            self.export_mode_combo.addItem(EXPORT_MODE_LABELS[key], key)
+        self.export_mode_combo.currentIndexChanged.connect(self._export_mode_changed)
+        format_layout.addWidget(QLabel("YouTube Export Mode"), 3, 0)
+        format_layout.addWidget(self.export_mode_combo, 3, 1)
         outer.addWidget(format_group)
 
         effect_group = QGroupBox("4b · Transition & Background")
@@ -1014,6 +1052,11 @@ class MainWindow(QMainWindow):
         self.output_edit.setText(str(self.root / "output"))
         self.radio_16.setChecked(self.saved.aspect != "9:16")
         self.radio_9.setChecked(self.saved.aspect == "9:16")
+        export_mode = normalize_export_mode(getattr(self.saved, "export_mode", EXPORT_MODE_LONG_FORM))
+        self.export_mode_combo.blockSignals(True)
+        self.export_mode_combo.setCurrentIndex(self.export_mode_combo.findData(export_mode))
+        self.export_mode_combo.blockSignals(False)
+        self._export_mode_changed()
         self._update_resolution_choices()
         index = self.resolution_combo.findText(self.saved.resolution)
         self.resolution_combo.setCurrentIndex(max(0, index))
@@ -1092,6 +1135,16 @@ class MainWindow(QMainWindow):
         ):
             index = combo.findData(value)
             combo.setCurrentIndex(index if index >= 0 else 0)
+        for combo, value in (
+            (self.short_subtitle_style_combo, getattr(self.saved, "short_subtitle_style", "short_1")),
+            (self.short_subtitle_animation_combo, getattr(self.saved, "short_subtitle_animation", "word_highlight")),
+            (self.short_subtitle_font_combo, getattr(self.saved, "short_subtitle_font", "modern_sans_bold")),
+        ):
+            index = combo.findData(value)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+        self.short_subtitle_position_combo.setCurrentText(
+            getattr(self.saved, "short_subtitle_position", "Bottom Center")
+        )
         self.voice_volume_slider.setValue(self.saved.voiceover_volume)
         preset_index = next(
             (i for i in range(self.music_preset_combo.count())
@@ -1131,8 +1184,20 @@ class MainWindow(QMainWindow):
         self.duration_after_merge_check.setChecked(bool(getattr(self.saved, "duration_after_merge_enabled", False)))
         self._sync_stretch_controls()
         self.subtitle_check.setChecked(self.saved.subtitle_enabled)
+        # A pre-1.5 project without the field used the old dual bundle. Keep
+        # that saved-project behavior; a genuinely new project defaults to the
+        # new With Subtitles contract.
+        subtitle_default = (
+            SUBTITLE_OUTPUT_BOTH
+            if self.store.path.is_file() and "subtitle_output_mode" not in saved_keys
+            else SUBTITLE_OUTPUT_WITH
+        )
+        stored_subtitle_mode = (
+            getattr(self.saved, "subtitle_output_mode", subtitle_default)
+            if "subtitle_output_mode" in saved_keys else subtitle_default
+        )
         subtitle_mode_index = self.subtitle_output_combo.findData(
-            normalize_subtitle_output_mode(getattr(self.saved, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED))
+            normalize_subtitle_output_mode(stored_subtitle_mode)
         )
         self.subtitle_output_combo.setCurrentIndex(
             subtitle_mode_index if subtitle_mode_index >= 0 else 0
@@ -1201,11 +1266,15 @@ class MainWindow(QMainWindow):
             [effective_global_script] if effective_global_script
             else (script_units if script_mode == "matched" else [])
         )
+        export_mode = normalize_export_mode(self.export_mode_combo.currentData())
         return ExportSettings(
+            export_mode=export_mode,
             source_folders=self._configured_source_folders(),
             video_order_mode=normalize_video_order_mode(
                 getattr(self, "video_order_mode", self.video_order_combo.currentData())
             ),
+            # Basic/Preview retain the existing radio aspect. The YouTube
+            # orchestrator enforces 16:9/9:16 per job for main/complete.
             aspect="16:9" if self.radio_16.isChecked() else "9:16",
             resolution=self.resolution_combo.currentText(),
             fit_mode=str(self.fit_combo.currentData()),
@@ -1258,6 +1327,10 @@ class MainWindow(QMainWindow):
             subtitle_animation=str(self.subtitle_animation_combo.currentData()),
             subtitle_font=str(self.subtitle_font_combo.currentData()),
             subtitle_position=self.subtitle_position_combo.currentText(),
+            short_subtitle_style=str(self.short_subtitle_style_combo.currentData()),
+            short_subtitle_animation=str(self.short_subtitle_animation_combo.currentData()),
+            short_subtitle_font=str(self.short_subtitle_font_combo.currentData()),
+            short_subtitle_position=self.short_subtitle_position_combo.currentText(),
             subtitle_debug_overlay=self.subtitle_debug_check.isChecked(),
             subtitle_model=self.subtitle_model_combo.currentText(),
             allow_alignment_warnings=self.alignment_warning_check.isChecked(),
@@ -1370,6 +1443,21 @@ class MainWindow(QMainWindow):
         self._update_pool_status()
 
 
+    def _export_mode_changed(self, *_args) -> None:
+        """Keep the visible format preview aligned with the YouTube job mode."""
+        mode = normalize_export_mode(self.export_mode_combo.currentData())
+        if mode == EXPORT_MODE_SHORTS:
+            self.radio_9.setChecked(True)
+        elif mode in {EXPORT_MODE_LONG_FORM, EXPORT_MODE_COMBINED}:
+            # Combined exports contain a landscape Long-Form master and
+            # vertical Shorts; the format preview represents the primary master.
+            self.radio_16.setChecked(True)
+        if not getattr(self, "_loading", False):
+            self._append_log("YouTube Export Mode: " + EXPORT_MODE_LABELS[mode])
+            self._save_project()
+        self._update_pool_status()
+
+
     def _subtitle_output_mode_changed(self, *_args) -> None:
         """Persist the explicit output contract without hiding its controls."""
         if not getattr(self, "_loading", False):
@@ -1377,7 +1465,7 @@ class MainWindow(QMainWindow):
                 "Subtitle output mode: "
                 + SUBTITLE_OUTPUT_LABELS.get(
                     normalize_subtitle_output_mode(self.subtitle_output_combo.currentData()),
-                    SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_COMBINED],
+                    SUBTITLE_OUTPUT_LABELS[SUBTITLE_OUTPUT_WITH],
                 )
             )
         self._sync_subtitle_request()
@@ -2312,6 +2400,13 @@ class MainWindow(QMainWindow):
         settings.workflow_stage = "main" if mode in {"main", "complete"} else ("outro" if mode == "outro" else "basic")
         if mode in {"main", "complete"}:
             has_units = bool(settings.voiceover_paths)
+            export_mode = normalize_export_mode(settings.export_mode)
+            if export_mode in {EXPORT_MODE_SHORTS, EXPORT_MODE_COMBINED} and not has_units:
+                QMessageBox.warning(
+                    self, "Voiceover fehlt",
+                    "YouTube Shorts benötigen mindestens ein Voiceover; ein Short wird pro Voiceover erzeugt."
+                )
+                return
             subtitle_mode = normalize_subtitle_output_mode(settings.subtitle_output_mode)
             if settings.subtitle_enabled and subtitle_mode != SUBTITLE_OUTPUT_WITHOUT and not has_units:
                 QMessageBox.warning(
@@ -2432,7 +2527,7 @@ class MainWindow(QMainWindow):
             button.setEnabled(not busy)
         for widget in (
             self.add_folder_button, self.remove_folder_button, self.clear_folders_button,
-            self.source_folders_list, self.video_order_combo,
+            self.source_folders_list, self.video_order_combo, self.export_mode_combo,
             self.duration_before_merge_combo, self.duration_after_merge_check,
             self.duration_after_merge_combo,
             self.quote_check, self.quote_artwork_path_edit, self.quote_artwork_choose,
@@ -2444,6 +2539,8 @@ class MainWindow(QMainWindow):
             self.image_transition_spin, self.image_fit_combo,
             self.image_zoom_spin, self.image_filter_combo,
             self.image_preview,
+            self.short_subtitle_style_combo, self.short_subtitle_animation_combo,
+            self.short_subtitle_font_combo, self.short_subtitle_position_combo,
         ):
             widget.setEnabled(not busy)
         if not busy:
@@ -2485,6 +2582,15 @@ class MainWindow(QMainWindow):
             self.open_video_button.setEnabled(True)
             self.open_folder_button.setEnabled(True)
             details = output_text
+            if hasattr(report, "outputs"):
+                # Multi-output YouTube export: the primary output is opened by
+                # the existing button, while the completion dialog lists every
+                # LongForm/Shorts artifact without pretending this is one file.
+                details = "\n".join(str(path) for path in report.outputs)
+                QMessageBox.information(
+                    self, "VideoMerger", "Export completed successfully.\n\n" + details
+                )
+                return
             if self.active_mode == "main":
                 self.main_video_edit.setText(output_text)
                 saved = self._settings()

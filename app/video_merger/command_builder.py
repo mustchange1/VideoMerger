@@ -473,7 +473,7 @@ class FFmpegCommandBuilder:
         if (
             settings.workflow_stage == "main"
             and settings.subtitle_enabled
-            and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "burned_and_sidecars"))
+            and normalize_subtitle_output_mode(getattr(settings, "subtitle_output_mode", "with_subtitles"))
             != SUBTITLE_OUTPUT_WITHOUT
             and settings.subtitle_ass_path
         ):

@@ -1,7 +1,7 @@
 # UTF-8-Prüfzeile: ä ö ü Ä Ö Ü ß
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$Destination = Join-Path (Split-Path -Parent $Root) "VideoMerger_Final_1.4.0.zip"
+$Destination = Join-Path (Split-Path -Parent $Root) "VideoMerger_Final_1.5.0.zip"
 $Staging = Join-Path $env:TEMP ("VideoMerger-Package-" + [guid]::NewGuid().ToString("N"))
 try {
     New-Item -ItemType Directory -Path $Staging | Out-Null

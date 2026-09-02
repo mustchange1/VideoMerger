@@ -87,31 +87,20 @@ class ProcessingWorker(QObject):
                 initial_plan = self.engine.make_plan(media, self.settings, self.log.emit)
                 self.analysis_ready.emit(media, initial_plan)
                 project = MainProjectEngine(self.engine)
-                if self.mode == "complete":
-                    result = project.create_complete(
-                        media, self.settings, self.output_folder,
-                        progress=self.progress.emit, log=self.log.emit,
-                        cancel_event=self.cancel_event,
-                        order_already_applied=True,
-                    )
-                    output_store.add(result.main.video)
-                    if result.main.video_no_subtitles:
-                        output_store.add(result.main.video_no_subtitles)
-                    output_store.add(result.final_video)
-                    if result.final_video_no_subtitles:
-                        output_store.add(result.final_video_no_subtitles)
-                    self.finished.emit(str(result.final_video), result)
-                else:
-                    result = project.create_main(
-                        media, self.settings, self.output_folder,
-                        progress=self.progress.emit, log=self.log.emit,
-                        cancel_event=self.cancel_event,
-                        order_already_applied=True,
-                    )
-                    output_store.add(result.video)
-                    if result.video_no_subtitles:
-                        output_store.add(result.video_no_subtitles)
-                    self.finished.emit(str(result.video), result)
+                # All three YouTube modes use the batch orchestrator, including
+                # Long-Form alone, so its output is consistently placed under
+                # Output/LongForm. Basic/Preview remain the legacy single-file
+                # workflow below.
+                result = project.create_youtube_exports(
+                    media, self.settings, self.output_folder,
+                    progress=self.progress.emit, log=self.log.emit,
+                    cancel_event=self.cancel_event,
+                    order_already_applied=True,
+                    complete=self.mode == "complete",
+                )
+                for path in result.outputs:
+                    output_store.add(path)
+                self.finished.emit(str(result.primary_output), result)
                 return
             if self.mode == "preview":
                 if len(media) < 2:
