@@ -46,6 +46,22 @@ def test_short_visual_material_extends_last_clip_and_preserves_source_duration()
     assert any("kürzer" in warning for warning in warnings)
 
 
+def test_authoritative_video_window_is_padded_before_final_trim(tmp_path):
+    """The final visual label must cover the audio-driven target even when the
+    selected source sequence is shorter than that target."""
+    media = [fake_media(str(tmp_path / "short.mp4"), duration=0.8, audio=False)]
+    settings = ExportSettings(
+        resolution="160x90", workflow_stage="main", program_duration=3.0,
+        timeline_target_duration=3.0, normalize_audio=False,
+    )
+    resolved = resolve_export(media, settings)
+    built = FFmpegCommandBuilder("ffmpeg").build(media, settings, resolved, tmp_path / "out.mp4")
+    assert "tpad=stop_mode=clone:stop_duration=3.033333" in built.filter_graph
+    assert "trim=duration=3" in built.filter_graph
+    output_duration_index = built.command.index("-t")
+    assert built.command[output_duration_index + 1] == "3"
+
+
 def test_music_loops_but_voiceover_never_loops_and_gap_is_quiet(tmp_path):
     built, _settings, resolved = _main_graph(tmp_path)
     command = built.command

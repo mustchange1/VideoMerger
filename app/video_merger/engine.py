@@ -36,6 +36,11 @@ from .transition_effects import transition_label
 from .validation import validate_output
 
 
+def _duration_text(value: float) -> str:
+    """Format a finite FFmpeg duration without locale-dependent syntax."""
+    return f"{max(0.0, float(value)):.6f}".rstrip("0").rstrip(".") or "0"
+
+
 class VideoMergerEngine:
     def __init__(self, ffmpeg_path: Path | str, ffprobe_path: Path | str):
         self.ffmpeg_path = Path(ffmpeg_path).resolve()
@@ -385,7 +390,8 @@ class VideoMergerEngine:
             str(self.ffmpeg_path), "-hide_banner", "-y", "-i", str(source),
             "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]",
             *encoder_arguments(resolved.encoder, resolved.crf, resolved.preset),
-            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-c:a", "aac",
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr",
+            "-t", _duration_text(resolved.expected_duration), "-c:a", "aac",
             "-profile:a", "aac_low", "-b:a", "192k", "-ar", "48000", "-ac", "2",
             "-movflags", "+faststart", "-metadata:s:v:0", "rotate=0",
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
@@ -442,8 +448,21 @@ class VideoMergerEngine:
         filename_value = filter_file_value(str(ass_path), anchor)
         fonts_value = filter_file_value(fonts_dir, anchor) if fonts_dir else ""
         fonts_option = f":fontsdir={fonts_value}" if fonts_value else ""
+        target_duration = max(0.0, float(resolved.expected_duration))
+        frame_duration = 1.0 / max(float(resolved.fps), 1.0)
+        # Do not let the burn pass inherit a short video EOF from the clean
+        # master. The clean master may carry the authoritative audio timeline
+        # farther than its video stream on older/Windows FFmpeg builds. Pad the
+        # video before the subtitle filter, then trim it to the same target that
+        # was used for the audio-producing render. A final output ``-t`` below
+        # protects the muxed copy from packet/timestamp overrun without using
+        # ``shortest`` (which would recreate the original truncation).
         graph = (
-            f"[0:v:0]subtitles=filename={filename_value}{fonts_option}:charenc=UTF-8[vsub]"
+            f"[0:v:0]settb=AVTB,setpts=PTS-STARTPTS,"
+            f"tpad=stop_mode=clone:stop_duration={_duration_text(target_duration + frame_duration)},"
+            f"trim=duration={_duration_text(target_duration)},setpts=PTS-STARTPTS,"
+            f"subtitles=filename={filename_value}{fonts_option}:charenc=UTF-8,"
+            f"fps={resolved.fps_expr}:round=near,format=yuv420p,setsar=1[vsub]"
         )
         self.last_filter_graph = graph
         if "subtitles=filename=" not in graph:
@@ -458,7 +477,7 @@ class VideoMergerEngine:
             "-map", "[vsub]", "-map", "0:a:0?",
             *encoder_arguments(resolved.encoder, resolved.crf, resolved.preset),
             "-pix_fmt", "yuv420p", "-fps_mode", "cfr",
-            "-c:a", "copy",
+            "-t", _duration_text(target_duration), "-c:a", "copy",
             "-movflags", "+faststart",
             "-metadata:s:v:0", "rotate=0",
             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv",
@@ -698,6 +717,7 @@ class VideoMergerEngine:
                 str(self.ffmpeg_path), "-hide_banner", "-y",
                 "-f", "concat", "-safe", "0", "-i", str(manifest),
                 "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                "-t", _duration_text(resolved.expected_duration),
                 "-movflags", "+faststart", "-max_muxing_queue_size", "4096",
                 "-progress", "pipe:1", "-nostats", str(assembled_clean),
             ]

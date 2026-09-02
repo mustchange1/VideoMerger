@@ -23,13 +23,17 @@ REAL FFmpeg/libass renders for the end-to-end guarantee.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from app.video_merger.alignment import LocalWordAligner, RecognizedWord
 from app.video_merger.command_builder import FFmpegCommandBuilder
+from app.video_merger.engine import VideoMergerEngine
+from app.video_merger.main_project import MainProjectEngine
 from app.video_merger.filter_escape import (
     escape_absolute_filter_path,
     escape_quoted_value,
@@ -37,8 +41,9 @@ from app.video_merger.filter_escape import (
     normalize_filter_path_text,
     relative_filter_path,
 )
-from app.video_merger.models import ExportSettings
+from app.video_merger.models import ExportSettings, ResolvedExport
 from app.video_merger.target import resolve_export
+from app.video_merger.youtube_outputs import EXPORT_MODE_SHORTS
 from app.video_merger.paths import project_root
 from tests.conftest import fake_media
 
@@ -199,6 +204,17 @@ def _burned_brightness(ffmpeg: Path, output: Path) -> tuple[float, float]:
     return float(low.group(1)), float(high.group(1))
 
 
+def _stream_durations(ffprobe: Path, output: Path) -> tuple[float, float]:
+    result = subprocess.run(
+        [str(ffprobe), "-v", "error", "-show_streams", "-of", "json", str(output)],
+        check=True, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+    )
+    streams = json.loads(result.stdout).get("streams", [])
+    video = next(item for item in streams if item.get("codec_type") == "video")
+    audio = next(item for item in streams if item.get("codec_type") == "audio")
+    return float(video.get("duration") or 0.0), float(audio.get("duration") or 0.0)
+
+
 @pytest.mark.e2e
 def test_real_burn_with_absolute_umlaut_space_apostrophe_path(tmp_path):
     """Absolute fallback path: spaces + umlauts + apostrophe, unquoted+escaped."""
@@ -263,6 +279,87 @@ def test_real_burn_with_relative_value_from_nonascii_cwd(tmp_path):
     assert result.returncode == 0, result.stderr
     _y_min, y_max = _burned_brightness(ffmpeg, output)
     assert y_max > 190, f"keine gebrannten Untertitel-Glyphen (YMAX={y_max})"
+
+
+@pytest.mark.e2e
+def test_engine_burn_subtitles_extends_video_to_authoritative_audio_timeline(ffmpeg_paths, tmp_path):
+    """Regression for the Windows timeline failure: a clean master whose video
+    EOF precedes its audio must not become shorter during subtitle burn-in."""
+    ffmpeg, ffprobe = ffmpeg_paths
+    ass = project_root() / "temp" / "engine_timeline_regression.ass"
+    _ass_file(ass)
+    clean = tmp_path / "clean_short_video.mp4"
+    subprocess.run(
+        [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "color=c=navy:s=320x180:r=30:d=1.0",
+         "-f", "lavfi", "-i", "sine=f=440:r=48000:d=3.0",
+         "-map", "0:v:0", "-map", "1:a:0",
+         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-ac", "2", "-t", "3.0", str(clean)],
+        check=True, capture_output=True, timeout=120,
+    )
+    source_video_duration, source_audio_duration = _stream_durations(ffprobe, clean)
+    assert source_video_duration < 1.5
+    assert source_audio_duration > 2.8
+
+    resolved = ResolvedExport(
+        width=320, height=180, fps=30.0, fps_expr="30",
+        effective_durations=[3.0], transitions=[], expected_duration=3.0,
+    )
+    output = tmp_path / "burned_timeline_regression.mp4"
+    engine = VideoMergerEngine(ffmpeg, ffprobe)
+    report = engine.burn_subtitles(
+        clean, ass, str(project_root() / "tools" / "fonts"), output, resolved, [],
+        log=lambda _m: None,
+    )
+    assert report.ok, report.details
+    video_duration, audio_duration = _stream_durations(ffprobe, output)
+    assert video_duration == pytest.approx(3.0, abs=0.12)
+    assert audio_duration == pytest.approx(3.0, abs=0.12)
+    assert abs(video_duration - audio_duration) <= 0.20
+
+
+@pytest.mark.e2e
+def test_short_longer_voiceover_than_selected_video_keeps_full_burned_timeline(ffmpeg_paths, tmp_path):
+    """A YouTube Short must use its longer voiceover as duration authority even
+    when the selected source video is shorter, including subtitle burn-in."""
+    ffmpeg, ffprobe = ffmpeg_paths
+    clip = tmp_path / "short_source.mp4"
+    make_clip(ffmpeg, clip, size="320x180", duration=0.8, color="navy", audio_rate=None)
+    voice = tmp_path / "short_voice.wav"
+    subprocess.run(
+        [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+         "sine=f=880:r=48000:d=2.5", "-c:a", "pcm_s16le", str(voice)],
+        check=True, capture_output=True, timeout=120,
+    )
+    script = tmp_path / "short_script.txt"
+    script.write_text("Alpha bravo charlie.", encoding="utf-8")
+    timing = [("Alpha", 0.10, 0.35), ("bravo", 0.50, 0.80), ("charlie", 1.00, 1.35)]
+
+    def recognize(_path, _language):
+        return [RecognizedWord(word, start, end, 0.99) for word, start, end in timing], "en"
+
+    engine = VideoMergerEngine(ffmpeg, ffprobe)
+    media = engine.analyze([clip])
+    settings = ExportSettings(
+        export_mode=EXPORT_MODE_SHORTS, voiceover_path=str(voice), script_path=str(script),
+        subtitle_enabled=True, subtitle_language="English", final_pause=0.5,
+        transition_duration=0.0, resolution="Auto", encoding="CPU", preset="ultrafast", crf=28,
+        normalize_audio=False,
+    )
+    output = MainProjectEngine(engine).create_youtube_exports(
+        media, settings, tmp_path / "short_output",
+        aligner=LocalWordAligner("short-timeline-regression", recognize, cache_dir=tmp_path / "alignment-cache"),
+    )
+    assert len(output.shorts) == 1
+    short = output.shorts[0]
+    assert short.report.ok, short.report.details
+    video_duration, audio_duration = _stream_durations(ffprobe, short.video)
+    # Voiceover 2.5 s + explicit 0.5 s end padding is the Short's target.
+    assert video_duration == pytest.approx(3.0, abs=0.12)
+    assert audio_duration == pytest.approx(3.0, abs=0.12)
+    assert abs(video_duration - audio_duration) <= 0.20
+    assert any("Burned-in subtitle filter executed" in detail for detail in short.report.details)
 
 
 @pytest.mark.e2e

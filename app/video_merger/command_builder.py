@@ -466,9 +466,20 @@ class FFmpegCommandBuilder:
             trim_expression = (
                 f"trim=start={_number(video_window_start)}:duration={_number(window_duration)}"
             )
+        # The final window is the authoritative visual timeline. A clip-level
+        # ``tpad`` is still needed for transitions, but it is not sufficient on
+        # every FFmpeg build: concat/xfade and timestamp rounding can expose an
+        # EOF a few frames (or seconds for a short source) before the audio
+        # timeline ends. Pad the assembled chain before the final trim so the
+        # last decoded frame is held until the exact requested window endpoint.
+        # This is deliberately before subtitles and overlays: every visual
+        # finishing stage receives the same complete timeline.
+        frame_duration = 1.0 / max(float(resolved.fps), 1.0)
+        final_pad_duration = video_window_start + window_duration + frame_duration
         lines.append(
-            f"[{video_chain}]{trim_expression},setpts=PTS-STARTPTS,"
-            f"format=yuv420p,setsar=1[{visual_label}]"
+            f"[{video_chain}]settb=AVTB,setpts=PTS-STARTPTS,"
+            f"tpad=stop_mode=clone:stop_duration={_number(final_pad_duration)},"
+            f"{trim_expression},setpts=PTS-STARTPTS,format=yuv420p,setsar=1[{visual_label}]"
         )
         if (
             settings.workflow_stage == "main"
@@ -693,11 +704,15 @@ class FFmpegCommandBuilder:
             command += ["-stream_loop", "-1", "-i", settings.music_path]
         if _watermark_active(settings):
             command += ["-loop", "1", "-i", settings.watermark_path]
+        output_duration = max(
+            0.0,
+            float(resolved.expected_duration if window_duration is None else window_duration),
+        )
         command += [
             "-filter_complex", graph,
             "-map", "[vout]", "-map", "[aout]",
             *encoder_arguments(resolved.encoder, resolved.crf, resolved.preset),
-            "-pix_fmt", "yuv420p", "-fps_mode", "cfr",
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr", "-t", _number(output_duration),
             "-c:a", "aac", "-profile:a", "aac_low", "-b:a", "192k", "-ar", "48000", "-ac", "2",
             "-movflags", "+faststart",
             "-metadata:s:v:0", "rotate=0",
