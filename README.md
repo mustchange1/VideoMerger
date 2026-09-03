@@ -68,7 +68,7 @@ Every successful one-click final video automatically produces `FinalVideo_16x9_Y
 
 ### Current defaults
 
-Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static Phrase · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant) · End Padding ≈ 1 s · Quote/Flyer disabled unless enabled (4.0 s, Fit) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
+Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static White Reveal · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant) · End Padding ≈ 1 s · Quote/Flyer disabled unless enabled (4.0 s, Fit) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
 
 # VideoMerger 1.3.0 for Windows
 
@@ -96,7 +96,7 @@ Inter, Manrope, Lora and Roboto (Regular + Bold) join the existing Noto Sans fal
 
 ### 1.2.4 defaults
 
-Intro/Main/Outro Original Audio all default to **Original** (Mute/Low/Original remain, independently settable); subtitle animation default is **Static Phrase** (Long-Form / YouTube Landscape, all 5 animations still selectable); Output Preset **YouTube Landscape** + Quality **Maximum** are unchanged. The one-click workflow now covers Video Pool + Voiceovers + Scripts + Music + Intro + optional Quote + Main + Outro + Subtitles + Watermark → FinalVideo, still handing the actual rendered `MainVideo.mp4` to Stage 2.
+Intro/Main/Outro Original Audio all default to **Original** (Mute/Low/Original remain, independently settable); subtitle animation default is **Static White Reveal** (Long-Form / YouTube Landscape, all 5 animations still selectable); Output Preset **YouTube Landscape** + Quality **Maximum** are unchanged. The one-click workflow now covers Video Pool + Voiceovers + Scripts + Music + Intro + optional Quote + Main + Outro + Subtitles + Watermark → FinalVideo, still handing the actual rendered `MainVideo.mp4` to Stage 2.
 
 ## New in 1.2.3
 
@@ -143,7 +143,7 @@ Animations:
 - Color Change
 - Word Highlight
 - Outline Highlight
-- Static Phrase
+- Static White Reveal
 
 For synchronized animations, event boundaries come only from the canonical acoustic voiceover word timeline. The authoritative script still controls visible spelling, punctuation and umlauts. There is no character-count or equal-duration timing.
 
@@ -217,11 +217,11 @@ See [README_DE.md](README_DE.md), [docs/ARCHITECTURE_DE.md](docs/ARCHITECTURE_DE
 The export mode is an actual pipeline setting, not a cosmetic aspect toggle:
 
 - **YouTube Long-Form** renders one complete 16:9 landscape timeline. All ordered voiceovers and the global or matched scripts stay on that shared timeline.
-- **YouTube Shorts** renders one independent 9:16 Short per available voiceover. Each Short derives its own duration and media prefix from that voiceover; script count does not determine output count. One global script with ten voiceovers therefore still produces ten Shorts.
+- **YouTube Shorts** renders one independent 9:16 Short per available voiceover. A shared without-replacement media pool assigns each Short the next required prefix; clips are reused only after the complete pool is exhausted. Script count does not determine output count. One global script with ten voiceovers therefore still produces ten Shorts.
 - **YouTube Long-Form + YouTube Shorts** renders both sets.
 
 Outputs are separated into `Output/LongForm/` and `Output/Shorts/` (`YouTube_LongForm.mp4`, `001.mp4`, `002.mp4`, …). Intro, Outro, Quote/Flyer, Add Image, music, original audio, transitions, ordering and One-Click use the existing render pipeline for every job. Each Short has its own cache identity.
 
-Subtitle output is **With Subtitles** by default. It burns the selected profile and writes SRT/VTT without creating an extra clean video. **Without Subtitles** skips subtitle rendering; **With and Without Subtitles** writes both variants. Long-Form and Shorts use separate subtitle profile settings; the Shorts defaults are large, readable, vertically safe, two-line constrained and word-synchronized.
+Subtitle output is **With Subtitles** by default. It burns the selected profile and writes SRT/VTT without creating an extra clean video. **Without Subtitles** skips subtitle rendering; **With and Without Subtitles** writes both variants. Long-Form and Shorts use separate subtitle profile settings: Long-Form defaults to 16:9 Static White Reveal, while Shorts use a larger Inter mobile profile, a safe Bottom Center position, and word-synchronized animation.
 
 The CLI equivalents are `--export-mode long_form|shorts|long_form_and_shorts`, `--subtitle-output-mode with_subtitles|without_subtitles|with_and_without_subtitles`, and `--short-subtitle-style`, `--short-subtitle-animation`, `--short-subtitle-font`, `--short-subtitle-position`.

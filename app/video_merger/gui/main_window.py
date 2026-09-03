@@ -1138,7 +1138,7 @@ class MainWindow(QMainWindow):
         for combo, value in (
             (self.short_subtitle_style_combo, getattr(self.saved, "short_subtitle_style", "short_1")),
             (self.short_subtitle_animation_combo, getattr(self.saved, "short_subtitle_animation", "word_highlight")),
-            (self.short_subtitle_font_combo, getattr(self.saved, "short_subtitle_font", "modern_sans_bold")),
+            (self.short_subtitle_font_combo, getattr(self.saved, "short_subtitle_font", "inter")),
         ):
             index = combo.findData(value)
             combo.setCurrentIndex(index if index >= 0 else 0)

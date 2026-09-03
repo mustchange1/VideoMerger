@@ -165,7 +165,7 @@ class ExportSettings:
     subtitle_enabled: bool = False
     subtitle_language: str = "German"  # German | English | Auto
     subtitle_style: str = "long_1"
-    subtitle_animation: str = "static_phrase"  # 1.2.4: Static Phrase is the default
+    subtitle_animation: str = "static_phrase"  # Long-Form default: Static White Reveal
     subtitle_font: str = "modern_sans_bold"
     subtitle_position: str = "Center"
     subtitle_debug_overlay: bool = False
@@ -225,7 +225,7 @@ class ExportSettings:
     # controls above remain untouched when a project also creates Shorts.
     short_subtitle_style: str = "short_1"
     short_subtitle_animation: str = "word_highlight"
-    short_subtitle_font: str = "modern_sans_bold"
+    short_subtitle_font: str = "inter"
     short_subtitle_position: str = "Bottom Center"
 
     # Process/render identity, intentionally not a user-facing control. The

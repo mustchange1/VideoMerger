@@ -119,14 +119,20 @@ def folder_aware_order(
     *,
     rng: random.Random | None = None,
     seed: int | None = None,
+    unbiased_items: bool = False,
 ) -> list[MediaInfo]:
     """Interleave source folders without adjacent duplicates when possible.
 
-    The order within each source folder is never changed. Folder selection is
-    randomized among all eligible alternatives; without an explicit RNG a
-    stable content-derived seed keeps One-Click/cache runs reproducible while
-    still producing a non-natural folder sequence. Once only one folder has
-    remaining clips, same-folder continuation is the deliberate fallback.
+    The order within each source folder is never changed for the deterministic
+    modes. ``unbiased_items`` is used by Random mode: after a real
+    Fisher-Yates permutation has been created, every remaining eligible clip is
+    chosen with equal probability. This preserves folder alternation without
+    giving a short folder (or the first item in a folder queue) a positional
+    advantage. Once only one folder has remaining clips, same-folder
+    continuation is the deliberate fallback.
+
+    Without an explicit RNG a stable content-derived seed keeps deterministic
+    Natural/legacy calls reproducible. Random callers pass a fresh RNG.
     """
     if len(media) < 2:
         return list(media)
@@ -150,8 +156,24 @@ def folder_aware_order(
         eligible = [key for key, values in remaining.items() if values and key != previous]
         if not eligible:
             eligible = [key for key, values in remaining.items() if values]
-        chosen = rng.choice(eligible)
-        result.append(remaining[chosen].pop(0))
+        if unbiased_items:
+            # Weighted folder selection plus a uniform in-folder index is a
+            # uniform choice over all eligible clips. It is intentionally not
+            # ``rng.choice(eligible)``: equal folder weights bias the positions
+            # whenever source folders contain different numbers of clips.
+            pick = rng.randrange(sum(len(remaining[key]) for key in eligible))
+            chosen = eligible[0]
+            for candidate in eligible:
+                size = len(remaining[candidate])
+                if pick < size:
+                    chosen = candidate
+                    break
+                pick -= size
+            item_index = rng.randrange(len(remaining[chosen]))
+            result.append(remaining[chosen].pop(item_index))
+        else:
+            chosen = rng.choice(eligible)
+            result.append(remaining[chosen].pop(0))
         remaining_total -= 1
         previous = chosen
     return result
@@ -194,11 +216,12 @@ def order_media_for_video_order(
     if normalized == VIDEO_ORDER_RANDOM:
         if rng is None:
             rng = random.Random(seed) if seed is not None else random.Random()
-        # Shuffle clips before choosing folders. This keeps the random mode a
-        # permutation of the current pool while folder-aware selection only
-        # constrains adjacency and never changes within-folder queue order.
+        # First create a genuine Fisher-Yates permutation. The second step only
+        # enforces the existing source-folder adjacency rule; it chooses from
+        # all eligible clips uniformly, so that constraint cannot make early
+        # clips repeat or bias positions toward one folder.
         shuffled = randomize_order(values, rng)
-        return folder_aware_order(shuffled, rng=rng)
+        return folder_aware_order(shuffled, rng=rng, unbiased_items=True)
 
     if normalized == VIDEO_ORDER_ALPHABETICAL:
         ordered = sorted(
@@ -433,3 +456,78 @@ def select_required_media(
         video_order_rng=video_order_rng,
         video_order_seed=video_order_seed,
     )
+
+
+class ShortsVideoPool:
+    """Consume one effective clip sequence across a Shorts generation run.
+
+    A Short asks the existing :func:`timeline.fit_media_to_duration` selector
+    how many source occurrences are needed for its voiceover target. Only that
+    raw prefix is removed from ``remaining``; the normal Stage-1 pipeline then
+    performs the actual trim, stretch, transition and hold/loop work. Once the
+    remaining pool is empty, the full ordered pool becomes available again,
+    which is the explicit and only point at which reuse is allowed.
+
+    Keeping this state outside the renderer makes the rule apply equally to
+    regular Stage 1 and One-Click Stage 2 jobs without creating a second render
+    pipeline.
+    """
+
+    def __init__(self, ordered_media: list[MediaInfo]):
+        self._ordered_media = list(ordered_media)
+        self._remaining = list(ordered_media)
+        self.rounds_completed = 0
+
+    @property
+    def remaining_count(self) -> int:
+        return len(self._remaining)
+
+    @property
+    def total_count(self) -> int:
+        return len(self._ordered_media)
+
+    def take_for_duration(
+        self,
+        target_duration: float,
+        transition_duration: float,
+        fps: float,
+        short_video_mode: str = "hold",
+        duration_fit_mode: str = "cut",
+        max_stretch_percent: float = 10.0,
+        playback_rate: float = 1.0,
+    ) -> list[MediaInfo]:
+        """Return the next raw prefix and remove it from the current pool.
+
+        The source list is never empty for a valid Stage-1 render. If a
+        caller requests more material than remains, the selector consumes the
+        last available clip(s), and only the *next* Short starts a new round.
+        A Short may therefore reuse clips only after the entire current pool
+        was exhausted, including in Hold/Loop mode.
+        """
+        if not self._ordered_media:
+            raise ValueError("Der Shorts-Video-Pool enthält keine Videoclips.")
+        if not self._remaining:
+            self._remaining = list(self._ordered_media)
+            self.rounds_completed += 1
+        source = list(self._remaining)
+        from .timeline import fit_media_to_duration
+        selected, _warnings = fit_media_to_duration(
+            source,
+            target_duration,
+            transition_duration,
+            fps,
+            short_video_mode,
+            duration_fit_mode=duration_fit_mode,
+            max_stretch_percent=max_stretch_percent,
+            playback_rate=playback_rate,
+            folder_aware=False,
+        )
+        consume = min(len(source), len(selected))
+        # fit_media_to_duration always returns at least one occurrence for a
+        # valid source. Keep a defensive guard here so a future selector change
+        # cannot stall the cursor and silently assign an empty Short.
+        if consume <= 0:
+            consume = 1
+        assigned = source[:consume]
+        self._remaining = source[consume:]
+        return assigned

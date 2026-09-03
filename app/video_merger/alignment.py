@@ -17,7 +17,9 @@ from .models import AlignmentResult, WordTiming
 from .paths import project_root
 
 _WORD_RE = re.compile(r"[\wÄÖÜäöüß]+(?:[’'][\wÄÖÜäöüß]+)*", re.UNICODE)
-_CACHE_SCHEMA = 2
+# Mapping semantics include retained fallback words; invalidate older caches that
+# intentionally omitted unmatched script words.
+_CACHE_SCHEMA = 3
 
 
 @dataclass(slots=True)
@@ -342,6 +344,7 @@ class LocalWordAligner:
                 script,
                 recognized_all,
                 detected_languages[0] if detected_languages else language,
+                fallback_end=time_cursor,
             )
             pause_breaks = [
                 sum(item[1] for item in units[:unit_index]) + pause * unit_index
@@ -366,7 +369,14 @@ class LocalWordAligner:
         except Exception as exc:
             raise VideoMergerError(f"Lokale Voiceover-Ausrichtung fehlgeschlagen: {exc}") from exc
 
-    def align(self, script: str, audio_path: Path, language: str = "German") -> AlignmentResult:
+    def align(
+        self,
+        script: str,
+        audio_path: Path,
+        language: str = "German",
+        *,
+        fallback_end: float | None = None,
+    ) -> AlignmentResult:
         started_total = time.perf_counter()
         self.last_timings = {
             "model_loading_seconds": 0.0,
@@ -393,6 +403,7 @@ class LocalWordAligner:
             alignment_key = _json_digest({
                 "transcription": transcription_key,
                 "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
+                "fallback_end": fallback_end,
             })
 
             cached_alignment = self._cache_read("alignments", alignment_key)
@@ -407,7 +418,9 @@ class LocalWordAligner:
             recognized, detected = self._transcription_for(path, language_code)
 
             mapping_started = time.perf_counter()
-            result = self.align_from_recognized(script, recognized, detected)
+            result = self.align_from_recognized(
+                script, recognized, detected, fallback_end=fallback_end
+            )
             self.last_timings["forced_mapping_seconds"] = time.perf_counter() - mapping_started
             self._cache_write("alignments", alignment_key, {
                 "words": [asdict(word) for word in result.words],
@@ -415,6 +428,7 @@ class LocalWordAligner:
                 "compatibility": result.compatibility,
                 "average_confidence": result.average_confidence,
                 "warnings": result.warnings,
+                "hard_breaks": result.hard_breaks,
             })
             self.last_timings["total_alignment_seconds"] = time.perf_counter() - started_total
             return result
@@ -428,13 +442,18 @@ class LocalWordAligner:
         script: str,
         recognized: Iterable[RecognizedWord],
         detected_language: str,
+        *,
+        fallback_end: float | None = None,
     ) -> AlignmentResult:
-        """Keep only script words with a real, reliable acoustic match.
+        """Map authoritative script words onto acoustic anchors without loss.
 
-        SequenceMatcher supplies lexical correspondences, but it is never
-        allowed to manufacture a timestamp for a script-only or unrecognized
-        word. Gaps in the returned word list are intentional: subtitle cues
-        built from it omit those regions and can resume at a later match.
+        SequenceMatcher supplies lexical correspondences, and reliable ASR
+        boundaries are copied verbatim for those anchors. A script word that
+        is absent, low-confidence, or has unusable ASR timing is *not* dropped:
+        it receives a small bounded interval interpolated from neighboring
+        acoustic anchors (or from the complete acoustic span). This keeps the
+        script complete while making the uncertainty explicit in warnings and
+        confidence values instead of silently creating a caption gap.
         """
         spans = script_word_spans(script)
         asr = [word for word in recognized if _normalize(word.text)]
@@ -444,13 +463,7 @@ class LocalWordAligner:
                 compatibility=1.0, average_confidence=0.0,
                 warnings=["The supplied script contains no alignable words."],
             )
-        if not asr:
-            return AlignmentResult(
-                words=[], language=detected_language,
-                method=f"faster-whisper/{self.model_name} no acoustic words matched",
-                compatibility=0.0, average_confidence=0.0,
-                warnings=["No acoustic words with usable timestamps were recognized; subtitles omitted."],
-            )
+
         script_norm = [_normalize(token) for token, _start, _end in spans]
         asr_norm = [_normalize(word.text) for word in asr]
         matcher = SequenceMatcher(a=script_norm, b=asr_norm, autojunk=False)
@@ -460,94 +473,209 @@ class LocalWordAligner:
                 lexical_mapping[block.a + offset] = block.b + offset
         compatibility = matcher.ratio()
 
-        # A mapping is usable only when the recognizer supplied a finite,
-        # positive-duration timestamp and a positive confidence. In particular,
-        # confidence 0.0 is not converted into a synthetic subtitle word.
-        words: list[WordTiming] = []
-        matched_pairs: list[tuple[int, int, WordTiming]] = []
-        matched_script_indexes: set[int] = set()
-        matched_asr_indexes: set[int] = set()
-        for script_index, asr_index in lexical_mapping.items():
-            acoustic = asr[asr_index]
+        # A finite positive ASR interval is still a useful acoustic anchor at
+        # confidence 0.0. Confidence expresses certainty; it must not decide
+        # whether a real measured start/end is discarded.
+        acoustic: dict[int, tuple[float, float, float]] = {}
+        for index, word in enumerate(asr):
             try:
-                start = float(acoustic.start)
-                end = float(acoustic.end)
-                confidence = float(acoustic.confidence)
+                start = float(word.start)
+                end = float(word.end)
+                confidence = float(word.confidence)
             except (TypeError, ValueError):
                 continue
             if not (math.isfinite(start) and math.isfinite(end) and math.isfinite(confidence)):
                 continue
-            if end <= start or confidence <= 0.0:
+            if end <= start:
                 continue
-            token, char_start, char_end = spans[script_index]
             start = max(0.0, start)
-            end = max(start + 0.02, end)
-            words.append(WordTiming(
+            acoustic[index] = (start, max(start + 0.02, end), max(0.0, confidence))
+
+        matched_by_script: dict[int, tuple[int, WordTiming]] = {}
+        matched_asr_indexes: set[int] = set()
+        for script_index, asr_index in lexical_mapping.items():
+            measured = acoustic.get(asr_index)
+            if measured is None:
+                continue
+            start, end, confidence = measured
+            token, char_start, char_end = spans[script_index]
+            word = WordTiming(
                 text=token,
                 start=start,
                 end=end,
                 confidence=confidence,
                 script_start=char_start,
                 script_end=char_end,
-            ))
-            matched_pairs.append((script_index, asr_index, words[-1]))
-            matched_script_indexes.add(script_index)
+            )
+            matched_by_script[script_index] = (asr_index, word)
             matched_asr_indexes.add(asr_index)
-        # Matching blocks are monotone, but sort defensively so injected or
-        # cached recognizers cannot make the canonical timeline regress.
-        matched_pairs.sort(key=lambda pair: (pair[2].start, pair[2].end, pair[2].script_start))
-        words = [pair[2] for pair in matched_pairs]
 
-        warnings: list[str] = []
-        unmatched_script = len(spans) - len(matched_script_indexes)
+        default_fallback = 0.24
+        minimum_fallback = 0.02
+        try:
+            bounded_fallback_end = (
+                max(0.0, float(fallback_end))
+                if fallback_end is not None and math.isfinite(float(fallback_end))
+                else None
+            )
+        except (TypeError, ValueError):
+            bounded_fallback_end = None
+        word_by_script: dict[int, WordTiming] = {
+            index: pair[1] for index, pair in matched_by_script.items()
+        }
+
+        def fallback_words(
+            indexes: list[int], left: float, right: float | None,
+        ) -> None:
+            """Fill one monotone script gap with a bounded local interval."""
+            if not indexes:
+                return
+            left = max(0.0, float(left))
+            if right is not None:
+                right = max(0.0, float(right))
+            count = len(indexes)
+            if right is not None and right > left + 1e-9:
+                # Start immediately after the preceding anchor. The interval
+                # is bounded by the next anchor and never invents a long wait.
+                slot = min(default_fallback, max(minimum_fallback, (right - left) / count))
+                for offset, script_index in enumerate(indexes):
+                    start = left + offset * slot
+                    end = min(right, start + slot)
+                    if end <= start:
+                        end = start + minimum_fallback
+                    token, char_start, char_end = spans[script_index]
+                    word_by_script[script_index] = WordTiming(
+                        text=token, start=start, end=end, confidence=0.0,
+                        script_start=char_start, script_end=char_end,
+                    )
+                return
+
+            # There is no usable gap between anchors (or no right anchor).
+            # Keep the fallback local: a 20 ms minimum is enough for a valid
+            # cue and avoids placing a missing word many seconds away.
+            if right is not None:
+                # No measurable interval remains. Preserve the next real
+                # acoustic anchor and backfill immediately before it rather
+                # than pushing a fallback word past that anchor.
+                for offset, script_index in enumerate(indexes):
+                    end = right - (count - offset - 1) * minimum_fallback
+                    start = max(0.0, end - minimum_fallback)
+                    token, char_start, char_end = spans[script_index]
+                    word_by_script[script_index] = WordTiming(
+                        text=token, start=start, end=max(start + minimum_fallback, end), confidence=0.0,
+                        script_start=char_start, script_end=char_end,
+                    )
+                return
+            slot = default_fallback
+            for offset, script_index in enumerate(indexes):
+                start = left + offset * slot
+                token, char_start, char_end = spans[script_index]
+                word_by_script[script_index] = WordTiming(
+                    text=token, start=start,
+                    end=start + slot, confidence=0.0,
+                    script_start=char_start, script_end=char_end,
+                )
+
+        anchors = sorted(
+            ((script_index, asr_index, word)
+             for script_index, (asr_index, word) in matched_by_script.items()),
+            key=lambda item: item[0],
+        )
+        valid_times = list(acoustic.values())
+        if not anchors:
+            # With no lexical anchor, retain all script words over the real
+            # acoustic span. If ASR has no usable timestamps, use a clearly
+            # bounded speaking-rate fallback from time zero.
+            if valid_times:
+                acoustic_start = min(item[0] for item in valid_times)
+                acoustic_end = max(item[1] for item in valid_times)
+                if bounded_fallback_end is not None:
+                    acoustic_start = min(acoustic_start, bounded_fallback_end)
+                    acoustic_end = min(acoustic_end, bounded_fallback_end)
+                span = max(0.0, acoustic_end - acoustic_start)
+                step = span / len(spans) if span > 1e-9 else default_fallback
+                for index, (token, char_start, char_end) in enumerate(spans):
+                    start = acoustic_start + index * step
+                    end = min(acoustic_end, start + min(default_fallback, max(minimum_fallback, step)))
+                    if end <= start:
+                        end = start + minimum_fallback
+                    word_by_script[index] = WordTiming(
+                        text=token, start=start, end=end, confidence=0.0,
+                        script_start=char_start, script_end=char_end,
+                    )
+            else:
+                fallback_words(list(range(len(spans))), 0.0, bounded_fallback_end)
+        else:
+            first_script, first_asr, first_word = anchors[0]
+            leading = list(range(0, first_script))
+            earlier = [item for index, item in acoustic.items() if index < first_asr]
+            leading_left = (
+                min(item[0] for item in earlier)
+                if earlier else max(0.0, first_word.start - len(leading) * default_fallback)
+            )
+            fallback_words(leading, leading_left, first_word.start)
+
+            for previous, current in zip(anchors, anchors[1:]):
+                previous_script, _previous_asr, previous_word = previous
+                current_script, _current_asr, current_word = current
+                missing = list(range(previous_script + 1, current_script))
+                fallback_words(missing, previous_word.end, current_word.start)
+
+            last_script, last_asr, last_word = anchors[-1]
+            trailing = list(range(last_script + 1, len(spans)))
+            later = [item for index, item in acoustic.items() if index > last_asr]
+            trailing_right = max((item[1] for item in later), default=None)
+            if trailing_right is None and bounded_fallback_end is not None and bounded_fallback_end > last_word.end:
+                trailing_right = bounded_fallback_end
+            fallback_words(trailing, last_word.end, trailing_right)
+
+        # The canonical result follows the authoritative script order. ASR
+        # timestamps are retained for anchors; fallback intervals are local to
+        # their neighboring anchors and are never silently omitted.
+        words = [word_by_script[index] for index in range(len(spans))]
+        unmatched_script = len(spans) - len(matched_by_script)
         unmatched_audio_indexes = set(range(len(asr))) - matched_asr_indexes
         unmatched_audio = len(unmatched_audio_indexes)
-        # Mark each contiguous uncaptioned acoustic run as a real subtitle
-        # boundary. This prevents a cue before an omitted spoken section from
-        # remaining visible until a later matched word.
+        warnings: list[str] = []
+        if compatibility < 0.72:
+            warnings.append(
+                "The supplied script and voiceover appear to differ; bounded fallback timing was used for "
+                "unmatched script words."
+            )
+        if not acoustic:
+            warnings.append(
+                "No acoustic words with usable timestamps were recognized; all script words were retained "
+                "with bounded fallback timestamps."
+            )
+        elif unmatched_script:
+            warnings.append(
+                f"Subtitle alignment warning: {unmatched_script} script word(s) had no reliable lexical "
+                "match and were retained with bounded fallback timestamps."
+            )
+        if unmatched_audio:
+            warnings.append(
+                f"Subtitle alignment warning: {unmatched_audio} spoken word(s) were not present in the "
+                "authoritative script or were not reliably matched."
+            )
+        # Mark contiguous uncaptioned acoustic runs as boundaries. Fallback
+        # words still cover these intervals; the boundary only prevents a cue
+        # from being held across a real silent/uncertain region.
         acoustic_gaps: list[float] = []
         index = 0
         while index < len(asr):
-            if index not in unmatched_audio_indexes:
+            if index not in unmatched_audio_indexes or index not in acoustic:
                 index += 1
                 continue
             first = index
             while index < len(asr) and index in unmatched_audio_indexes:
                 index += 1
             last = index - 1
-            for timestamp in (asr[first].start, asr[last].end):
-                try:
-                    timestamp = float(timestamp)
-                except (TypeError, ValueError):
-                    continue
-                if math.isfinite(timestamp):
-                    acoustic_gaps.append(max(0.0, timestamp))
-        # A script-only omission can occur even when every recognized acoustic
-        # word was itself matched. Split at the next reliable anchor so a cue
-        # cannot silently jump over the unreliable interval, while keeping all
-        # timestamps sourced from real acoustic words.
-        for previous, current in zip(matched_pairs, matched_pairs[1:]):
+            valid_run = [item for item in range(first, last + 1) if item in acoustic]
+            if valid_run:
+                acoustic_gaps.extend((acoustic[valid_run[0]][0], acoustic[valid_run[-1]][1]))
+        for previous, current in zip(anchors, anchors[1:]):
             if current[0] != previous[0] + 1 or current[1] != previous[1] + 1:
-                try:
-                    boundary = float(current[2].start)
-                except (TypeError, ValueError):
-                    continue
-                if math.isfinite(boundary):
-                    acoustic_gaps.append(max(0.0, boundary))
-        if compatibility < 0.72:
-            warnings.append(
-                "The supplied script and voiceover appear to differ; only reliable matching words were subtitled."
-            )
-        if unmatched_script:
-            warnings.append(
-                f"Subtitle alignment warning: {unmatched_script} script word(s) were omitted because no reliable "
-                "acoustic match and timestamp were available."
-            )
-        if unmatched_audio:
-            warnings.append(
-                f"Subtitle alignment warning: {unmatched_audio} spoken word(s) were left without subtitles because "
-                "they were not present in the supplied script or were not reliably matched."
-            )
+                acoustic_gaps.append(max(0.0, current[2].start))
         large_gaps = [
             right.start - left.end for left, right in zip(words, words[1:])
             if right.start - left.end > 5.0
@@ -557,10 +685,14 @@ class LocalWordAligner:
                 f"Subtitle alignment warning: {len(large_gaps)} unusually large speech gap(s) detected."
             )
         average = sum(word.confidence for word in words) / len(words) if words else 0.0
+        fallback_used = unmatched_script > 0 or not acoustic
         return AlignmentResult(
             words=words,
             language=detected_language,
-            method=f"faster-whisper/{self.model_name} word timestamps + reliable script mapping",
+            method=(
+                f"faster-whisper/{self.model_name} word timestamps + script mapping"
+                + (" + bounded fallback timestamps" if fallback_used else "")
+            ),
             compatibility=compatibility,
             average_confidence=average,
             warnings=warnings,

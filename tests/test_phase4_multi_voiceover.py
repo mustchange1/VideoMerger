@@ -409,7 +409,7 @@ def test_alignment_omits_extra_spoken_words_and_marks_an_acoustic_gap(tmp_path):
     assert cues[1].start >= 1.0
 
 
-def test_alignment_omits_script_only_words_without_fabricated_timing(tmp_path):
+def test_alignment_retains_script_only_words_with_local_fallback_timing(tmp_path):
     aligner = LocalWordAligner(
         "tiny",
         lambda _path, _language: (
@@ -426,13 +426,15 @@ def test_alignment_omits_script_only_words_without_fabricated_timing(tmp_path):
         "Today we discuss discipline and consistency.", tmp_path / "voice.wav", "English"
     )
     assert [word.text for word in result.words] == [
-        "Today", "we", "discuss", "discipline",
+        "Today", "we", "discuss", "discipline", "consistency.",
     ]
-    assert all(word.confidence > 0 for word in result.words)
-    assert "consistency" not in " ".join(word.text for word in result.words)
+    assert [round(word.start, 2) for word in result.words[:4]] == [0.0, 0.2, 0.4, 0.6]
+    assert result.words[-1].start == pytest.approx(0.8)
+    assert result.words[-1].end - result.words[-1].start <= 0.24
+    assert result.words[-1].confidence == 0.0
 
 
-def test_script_only_middle_word_creates_a_local_caption_gap(tmp_path):
+def test_script_only_middle_word_is_retained_with_a_local_fallback(tmp_path):
     aligner = LocalWordAligner(
         "tiny",
         lambda _path, _language: (
@@ -444,10 +446,15 @@ def test_script_only_middle_word_creates_a_local_caption_gap(tmp_path):
         ),
     )
     result = aligner.align("Alpha Bravo Gamma", tmp_path / "voice.wav", "English")
-    assert [word.text for word in result.words] == ["Alpha", "Gamma"]
+    assert [word.text for word in result.words] == ["Alpha", "Bravo", "Gamma"]
+    assert result.words[0].start == pytest.approx(0.0)
+    assert result.words[0].end == pytest.approx(0.2)
+    assert result.words[1].start == pytest.approx(0.2)
+    assert result.words[1].end == pytest.approx(0.44)
+    assert result.words[2].start == pytest.approx(0.9)
     assert result.hard_breaks == [pytest.approx(0.9)]
     cues = build_cues("Alpha Bravo Gamma", result, "long_1", program_end=2.0)
-    assert [cue.text for cue in cues] == ["Alpha", "Gamma"]
+    assert [cue.text for cue in cues] == ["Alpha Bravo", "Gamma"]
     assert cues[0].end <= 0.9
     assert cues[1].start >= 0.9
 
@@ -473,7 +480,7 @@ def test_alignment_can_resume_after_a_missing_middle_audio_phrase(tmp_path):
     assert cues[1].start >= 0.9
 
 
-def test_zero_confidence_match_is_omitted(tmp_path):
+def test_zero_confidence_match_keeps_real_acoustic_boundaries(tmp_path):
     aligner = LocalWordAligner(
         "tiny",
         lambda _path, _language: (
@@ -482,8 +489,9 @@ def test_zero_confidence_match_is_omitted(tmp_path):
         ),
     )
     result = aligner.align("spoken", tmp_path / "voice.wav", "English")
-    assert result.words == []
-    assert any("omitted" in warning for warning in result.warnings)
+    assert [word.text for word in result.words] == ["spoken"]
+    assert result.words[0].start == pytest.approx(0.2)
+    assert result.words[0].end == pytest.approx(0.5)
 
 
 @pytest.mark.parametrize("count", [2, 5, 10, 20])

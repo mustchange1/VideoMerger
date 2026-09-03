@@ -79,7 +79,7 @@ from .timeline import (
     fit_media_to_duration,
 )
 from .validation import validate_output
-from .video_pool import media_source_folder, order_media_for_video_order
+from .video_pool import ShortsVideoPool, media_source_folder, order_media_for_video_order
 from .voiceover_order import (
     normalize_voiceover_order_mode,
     order_voiceover_paths,
@@ -522,6 +522,7 @@ class MainProjectEngine:
         video_order_seed: int | None = None,
         order_already_applied: bool = False,
         output_stem: str | None = None,
+        short_video_pool: ShortsVideoPool | None = None,
     ) -> MainVideoResult:
         total_started = time.perf_counter()
         timings: dict[str, float | str | bool] = {}
@@ -665,8 +666,27 @@ class MainProjectEngine:
         max_stretch = max(1.0, min(50.0, float(getattr(settings, "max_stretch_percent", 10.0) or 10.0)))
         if voice_assets:
             target = voice_total + max(0.0, settings.final_pause)
+            selection_media = media
+            if short_video_pool is not None:
+                # The pool owns only cross-Short consumption. The established
+                # duration selector still decides the prefix for this Short;
+                # this call merely removes that raw prefix from the shared
+                # without-replacement cursor before the normal fit below.
+                selection_media = short_video_pool.take_for_duration(
+                    target,
+                    settings.transition_duration,
+                    fps,
+                    settings.short_video_mode,
+                    duration_fit_mode=duration_fit_mode,
+                    max_stretch_percent=max_stretch,
+                    playback_rate=duration_before_merge,
+                )
+                log(
+                    f"Shorts without-replacement pool: assigned {len(selection_media)} clip(s); "
+                    f"{short_video_pool.remaining_count} clip(s) remain before the next Short."
+                )
             render_media, timing_warnings = fit_media_to_duration(
-                media, target, settings.transition_duration, fps, settings.short_video_mode,
+                selection_media, target, settings.transition_duration, fps, settings.short_video_mode,
                 duration_fit_mode=duration_fit_mode,
                 max_stretch_percent=max_stretch,
                 playback_rate=duration_before_merge,
@@ -871,8 +891,13 @@ class MainProjectEngine:
                                     )
                                 if segment:
                                     try:
+                                        alignment_kwargs = (
+                                            {"fallback_end": asset.duration}
+                                            if isinstance(aligner, LocalWordAligner) else {}
+                                        )
                                         unit_alignment = aligner.align(
-                                            segment, asset.path, settings.subtitle_language
+                                            segment, asset.path, settings.subtitle_language,
+                                            **alignment_kwargs,
                                         )
                                     except Exception as exc:
                                         # ASR/alignment engine failures are
@@ -1261,12 +1286,28 @@ class MainProjectEngine:
         """Render Long-Form and/or one isolated Short per voiceover.
 
         Every Short calls the regular Stage-1/Stage-2 pipeline with a one-item
-        acoustic timeline. This deliberately preserves intro/outro, Quote /
-        Flyer, Add Image, music, original audio, transitions, chunking and the
-        established FFmpeg command builder instead of maintaining a second
-        Shorts renderer.
+        acoustic timeline. A shared :class:`ShortsVideoPool` assigns the next
+        required raw prefix without replacement; it is reset only after the
+        complete source pool is consumed. This deliberately preserves
+        intro/outro, Quote / Flyer, Add Image, music, original audio,
+        transitions, chunking and the established FFmpeg command builder
+        instead of maintaining a second Shorts renderer.
         """
         mode = normalize_export_mode(getattr(settings, "export_mode", EXPORT_MODE_LONG_FORM))
+        # Resolve the project order exactly once for the complete generation
+        # run. In particular, Random must not be re-seeded/re-shuffled for each
+        # Short: the shared pool below consumes this one effective sequence.
+        effective_media = list(media)
+        if not order_already_applied:
+            effective_media = order_media_for_video_order(
+                effective_media,
+                getattr(settings, "video_order_mode", "natural"),
+                rng=video_order_rng,
+                seed=video_order_seed,
+            )
+        short_video_pool = (
+            ShortsVideoPool(effective_media) if mode != EXPORT_MODE_LONG_FORM else None
+        )
         if mode == EXPORT_MODE_LONG_FORM:
             jobs = [("long", long_form_settings(settings), output_dir / "LongForm", "YouTube_LongForm")]
         else:
@@ -1280,6 +1321,54 @@ class MainProjectEngine:
                 ("short", short_settings(settings, job), output_dir / "Shorts", job.output_name)
                 for job in short_jobs
             )
+
+        # When FFprobe is available, reserve each Short's raw prefix before the
+        # first render starts. This makes the no-replacement assignment visible
+        # at the orchestration boundary as well as inside create_main, while
+        # probe_audio's existing cache avoids doing duplicate media analysis.
+        # If a test/extension engine cannot probe here, create_main consumes the
+        # same shared pool lazily after its normal audio validation.
+        planned_short_media: dict[str, list[MediaInfo]] = {}
+        runtime_short_pool = short_video_pool
+        short_entries = [entry for entry in jobs if entry[0] == "short"]
+        if short_entries and effective_media and hasattr(self.engine, "ffprobe_path"):
+            planning_pool = ShortsVideoPool(effective_media)
+            try:
+                planning_fps, _planning_fps_expr = choose_fps(
+                    effective_media, short_entries[0][1].fps_choice
+                )
+                planning_rate = duration_before_merge_value(short_entries[0][1])
+                planning_fit_mode = (
+                    short_entries[0][1].duration_fit_mode
+                    if short_entries[0][1].duration_fit_mode in {"cut", "stretch"}
+                    else "cut"
+                )
+                planning_stretch = max(
+                    1.0,
+                    min(50.0, float(getattr(short_entries[0][1], "max_stretch_percent", 10.0) or 10.0)),
+                )
+                for _kind, short_job_settings, _job_dir, short_stem in short_entries:
+                    voice_path = Path(short_job_settings.voiceover_path).expanduser().resolve()
+                    voice_asset = probe_audio(self.engine.ffprobe_path, voice_path)
+                    planned_short_media[short_stem] = planning_pool.take_for_duration(
+                        voice_asset.duration + max(0.0, short_job_settings.final_pause),
+                        short_job_settings.transition_duration,
+                        planning_fps,
+                        short_job_settings.short_video_mode,
+                        duration_fit_mode=planning_fit_mode,
+                        max_stretch_percent=planning_stretch,
+                        playback_rate=planning_rate,
+                    )
+                runtime_short_pool = None
+                log(
+                    "Shorts without-replacement pool planned before rendering: "
+                    + ", ".join(f"{stem}={len(value)} clip(s)" for stem, value in planned_short_media.items())
+                )
+            except Exception as exc:
+                # Preserve the normal create_main validation/error path. A
+                # failed preflight must not partially consume the live pool.
+                planned_short_media.clear()
+                log(f"Shorts pool preflight deferred to Stage 1: {exc}")
 
         output = YoutubeExportResult(mode)
         total = len(jobs)
@@ -1301,22 +1390,28 @@ class MainProjectEngine:
                     current_file=event.current_file,
                 ))
 
+            job_media = planned_short_media.get(stem, effective_media) if kind == "short" else effective_media
+            job_pool = runtime_short_pool if kind == "short" else None
             if complete:
                 result = self._create_complete_single(
-                    media, job_settings, job_dir,
+                    job_media, job_settings, job_dir,
                     progress=job_progress, log=log, cancel_event=cancel_event,
                     aligner=aligner, video_order_rng=video_order_rng,
                     video_order_seed=video_order_seed,
-                    order_already_applied=order_already_applied,
+                    # ``effective_media`` is already the single project order;
+                    # only the shared Shorts pool changes the per-job subset.
+                    order_already_applied=True,
                     output_stem=stem,
+                    short_video_pool=job_pool,
                 )
             else:
                 result = self.create_main(
-                    media, job_settings, job_dir,
+                    job_media, job_settings, job_dir,
                     progress=job_progress, log=log, cancel_event=cancel_event,
                     aligner=aligner, reuse_cached=True,
                     video_order_rng=video_order_rng, video_order_seed=video_order_seed,
-                    order_already_applied=order_already_applied, output_stem=stem,
+                    order_already_applied=True, output_stem=stem,
+                    short_video_pool=job_pool,
                 )
             if complete:
                 final_stem = result.final_video.stem if isinstance(result, CompleteWorkflowResult) else stem
@@ -1341,6 +1436,7 @@ class MainProjectEngine:
         video_order_seed: int | None = None,
         order_already_applied: bool = False,
         output_stem: str | None = None,
+        short_video_pool: ShortsVideoPool | None = None,
     ) -> CompleteWorkflowResult:
         """Execute actual Stage 1, then hand its exact MP4 to existing Stage 2.
 
@@ -1414,6 +1510,7 @@ class MainProjectEngine:
             video_order_rng=video_order_rng, video_order_seed=video_order_seed,
             order_already_applied=order_already_applied,
             output_stem=output_stem,
+            short_video_pool=short_video_pool,
         )
         if not main.video.is_file() or not main.report.ok:
             raise VideoMergerError("One-Click Stage 1 lieferte keine validierte MainVideo-Datei.")

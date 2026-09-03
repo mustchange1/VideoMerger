@@ -81,6 +81,6 @@
   "export_mode": "long_form",
   "short_subtitle_style": "short_1",
   "short_subtitle_animation": "word_highlight",
-  "short_subtitle_font": "modern_sans_bold",
+  "short_subtitle_font": "inter",
   "short_subtitle_position": "Bottom Center"
 }

@@ -81,14 +81,17 @@ def test_word_timestamps_follow_actual_recognized_boundaries_not_equal_division(
     assert result.words[2].end - result.words[2].start > result.words[0].end - result.words[0].start
 
 
-def test_mismatch_omits_unmatched_script_without_fabricated_timestamps(tmp_path):
+def test_mismatch_retains_every_script_word_with_bounded_fallback_timestamps(tmp_path):
     result = LocalWordAligner(
         "tiny", _recognizer([("completely", .1, .4, .8), ("different", .5, .9, .8)], "en")
     ).align("Authoritative script words stay here.", tmp_path / "voice.wav", "English")
     assert result.compatibility < .72
     assert any("appear to differ" in warning for warning in result.warnings)
-    assert result.words == []
-    assert all(word.confidence > 0 for word in result.words)
+    assert [word.text for word in result.words] == [
+        "Authoritative", "script", "words", "stay", "here.",
+    ]
+    assert all(0.1 <= word.start < word.end <= 0.9 for word in result.words)
+    assert all(word.confidence == 0.0 for word in result.words)
 
 
 def _perfect_alignment(script: str) -> AlignmentResult:

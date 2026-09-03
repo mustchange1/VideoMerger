@@ -27,7 +27,7 @@ Quote/Flyer bleibt nur nach Auswahl aktiv und nutzt jetzt standardmäßig 4,0 Se
 - **Sauberer Output-Ordner + wählbare Untertitel-Ausgabe:** Der Untertitel-Ausgabemodus steuert den tatsächlichen Vertrag: `With Subtitles` erzeugt das primäre Video mit eingebrannten Untertiteln sowie SRT/VTT, aber keine zusätzliche Clean-Version; `With and Without Subtitles` erzeugt beide Video-Varianten sowie SRT/VTT; `Without Subtitles` erzeugt nur das saubere primäre Video. Verifikations-PNGs und Timeline-JSON bleiben intern unter `temp/`.
 - **Automatische YouTube-Metadaten (lokal, gratis, unbegrenzt):** Nach jedem erfolgreichen One-Click-Finalvideo entsteht `FinalVideo_16x9_YouTube.txt` (TITLE/DESCRIPTION/LANGUAGE) aus dem autoritativen Voiceover-Transkript: starker Einstieg, nützliche Zusammenfassung in den eigenen Worten, Themen als wörtliche Schlüsselphrasen, natürlicher Kanal-CTA; deutsch → deutsch, englisch → englisch. Deterministischer Pure-Python-Generator (immer offline verfügbar, nichts wird erfunden); ein optional vorhandenes lokales Ollama kann unter strenger Validierung polieren. Keine OpenAI-/Claude-/Gemini-/Bezahl-API. Metadaten-Probleme blockieren nie das Rendern.
 - **One-Click:** Video-Pool + Voiceover(s) + Script(s) + Musik + Untertitel + Watermark + Intro + optionale Quote/Flyer + optionale Image Insertion + Main + Outro = FinalVideo mit einem Klick; das gerenderte MainVideo fließt automatisch in Stage 2.
-- **Neue Phase-2-Defaults:** Cross Dissolve mit 1,0 s (bei kurzen Clips sicher geklemmt) und Music Volume 44 % / Balanced (ca. +6 dB gegenüber 22 %, weiterhin unter Voiceover). Ducking, Limiter, Looping und manuelle Regler bleiben aktiv. Die übrigen Defaults bleiben: Original Audio, Static Phrase, YouTube Landscape, Maximum Quality, End-Padding ≈ 1 s, Quote-/Flyer-Upload aus (4,0 s, Fit), Cut Last Clip, 10 % Stretch, 1,00x Speed. Explizit gespeicherte Transition-/Audio-Werte bleiben erhalten.
+- **Neue Phase-2-Defaults:** Cross Dissolve mit 1,0 s (bei kurzen Clips sicher geklemmt) und Music Volume 44 % / Balanced (ca. +6 dB gegenüber 22 %, weiterhin unter Voiceover). Ducking, Limiter, Looping und manuelle Regler bleiben aktiv. Die übrigen Defaults bleiben: Original Audio, Static White Reveal, YouTube Landscape, Maximum Quality, End-Padding ≈ 1 s, Quote-/Flyer-Upload aus (4,0 s, Fit), Cut Last Clip, 10 % Stretch, 1,00x Speed. Explizit gespeicherte Transition-/Audio-Werte bleiben erhalten.
 
 # VideoMerger 1.3.0 für Windows
 
@@ -65,7 +65,7 @@ Inter, Manrope, Lora und Roboto (Regular + Bold) ergänzen die bestehende Noto-S
 
 ### 1.2.4-Defaults
 
-Intro/Main/Outro Original Audio alle standardmäßig auf **Original** (Mute/Low/Original bleiben, unabhängig wählbar); Subtitle-Animation-Standard ist **Static Phrase** (Long-Form / YouTube Landscape, alle 5 Animationen wählbar); Output Preset **YouTube Landscape** + Qualität **Maximum** bleiben unverändert.
+Intro/Main/Outro Original Audio alle standardmäßig auf **Original** (Mute/Low/Original bleiben, unabhängig wählbar); Subtitle-Animation-Standard ist **Static White Reveal** (Long-Form / YouTube Landscape, alle 5 Animationen wählbar); Output Preset **YouTube Landscape** + Qualität **Maximum** bleiben unverändert.
 
 ## Flexible Video-Reihenfolge
 
@@ -85,10 +85,10 @@ Der bestehende Button **Randomize Order** bleibt als explizite Einmal-Aktion erh
 
 ## 1.2.2 – professionelle Untertitel und One Click (weiterhin enthalten)
 
-- 16:9-Standard: **Clean Editorial + Type Reveal + Bottom**.
+- 16:9-Standard: **Clean Editorial + Static White Reveal + Center**.
 - Ruhige Satz-/Phrasenblöcke verwenden Satzzeichen, Phrasengrenzen, echte ausgewählte Font-Advances und visuelle Balance; Long Form ist strikt auf höchstens zwei Zeilen begrenzt.
 - Die vollständige finale Phrase und der kanonische Zeilenumbruch bleiben in jedem Animationsevent reserviert. Reveal/Highlight verursacht dadurch kein Resize, Recenter, Reflow oder Jitter.
-- Animationen: **Type Reveal, Color Change, Word Highlight, Outline Highlight, Static Phrase**.
+- Animationen: **Type Reveal, Color Change, Word Highlight, Outline Highlight, Static White Reveal**.
 - Positionen: **Bottom, Medium-Low, Middle, Top** mit sicheren, auflösungsabhängigen Bereichen.
 - Fontauswahl: **Eveleth Clean, Modern Sans Bold, Clean Sans**. Eveleth wird nicht mitgeliefert, sondern nur als lizenzierte Benutzerinstallation erkannt. Ohne Eveleth wird Noto Sans unter SIL OFL verwendet.
 - Sofortige eingebettete Vorschau und größere Vorschau für Stil, Font, Animation und Position.
@@ -249,7 +249,7 @@ Long Form (16:9-Standard: Clean Editorial, Position Bottom):
 4. LONG FORM 4 – Subtle Highlight
 5. LONG FORM 5 – Podcast / Interview
 
-Short Form (9:16-Standard: Kinetic Chunk, Position Medium-Low):
+Short Form (9:16-Standard: Kinetic Chunk, Inter, Position Bottom Center):
 
 1. SHORT FORM 1 – Kinetic Chunk
 2. SHORT FORM 2 – Bold Highlight
@@ -257,7 +257,7 @@ Short Form (9:16-Standard: Kinetic Chunk, Position Medium-Low):
 4. SHORT FORM 4 – Karaoke Lite
 5. SHORT FORM 5 – Impact
 
-Long-Form-Presets verwenden ruhige, satzzeichen-/phrasenorientierte Blöcke, standardmäßig keine isolierten Einzelwortblöcke und strikt maximal zwei explizite Zeilen. Short-Form-Presets behalten stabile kompakte Gruppen ohne zufällige Positionierung, Schütteln oder Flashen. Die Animation wird unabhängig vom Preset gewählt. Bei Type Reveal bleiben zukünftige Glyphen transparent, aber vollständig im Layout; bei Color/Word/Outline Highlight bleibt die gesamte Phrase sichtbar. `Static Phrase` zeigt den vollständigen Block.
+Long-Form-Presets verwenden ruhige, satzzeichen-/phrasenorientierte Blöcke, standardmäßig keine isolierten Einzelwortblöcke und strikt maximal zwei explizite Zeilen. Short-Form-Presets behalten stabile kompakte Gruppen ohne zufällige Positionierung, Schütteln oder Flashen. Die Animation wird unabhängig vom Preset gewählt. Bei Type Reveal bleiben zukünftige Glyphen transparent, aber vollständig im Layout; bei Color/Word/Outline Highlight bleibt die gesamte Phrase sichtbar. `Static White Reveal` zeigt den vollständigen Block.
 
 Fontgröße, reale verfügbare cmap/hmtx-Advances, Outline, Margin und Watermark skalieren relativ zur Zielauflösung. Reale Libass-Tests decken 1920×1080, 3840×2160 und 1080×1920 ab. Positionen: Bottom, Medium-Low, Middle, Top. Medium-Low liegt bei 9:16 über der UI-sensitiven Unterkante. Das GUI enthält eine eingebettete und eine größere Vorschau. Noto Sans Regular/Bold wird mit SIL-OFL-Datei legal gebündelt. Eveleth Clean wird niemals verteilt; nur eine vorhandene lizenzierte Installation wird erkannt.
 
@@ -376,10 +376,10 @@ Originale werden niemals gelöscht oder verändert. `-RemoveOutputs` entfernt nu
 Der Ausgabemodus ist ein echter Pipeline-Schalter:
 
 - **YouTube Long-Form** erzeugt eine vollständige Landschafts-Timeline in 16:9. Alle Voiceovers und globale bzw. gematchte Skripte bleiben auf einer gemeinsamen Timeline.
-- **YouTube Shorts** erzeugt einen unabhängigen vertikalen 9:16-Short je vorhandenem Voiceover. Dauer und Materialauswahl werden für jedes Voiceover separat berechnet; die Skriptanzahl bestimmt nicht die Ausgabeanzahl. 10 Voiceovers mit einem globalen Script ergeben deshalb 10 Shorts.
+- **YouTube Shorts** erzeugt einen unabhängigen vertikalen 9:16-Short je vorhandenem Voiceover. Ein gemeinsamer Video-Pool vergibt pro Short den nächsten benötigten Präfix ohne Ersatz; Wiederverwendung beginnt erst nach vollständigem Verbrauch des Pools. Dauer und Materialauswahl werden für jedes Voiceover separat berechnet; die Skriptanzahl bestimmt nicht die Ausgabeanzahl. 10 Voiceovers mit einem globalen Script ergeben deshalb 10 Shorts.
 - **YouTube Long-Form + YouTube Shorts** erzeugt beide Ausgabemengen.
 
-Die Ausgaben werden getrennt gespeichert: `Output/LongForm/YouTube_LongForm.mp4` und `Output/Shorts/001.mp4`, `002.mp4` usw. Intro, Outro, Quote/Flyer, Add Image, Musik, Original-Audio, Übergänge, Reihenfolgen und One-Click laufen für jeden Auftrag über die vorhandene Render-Pipeline. Jeder Short besitzt eine eigene Cache-Identität.
+Die Ausgaben werden getrennt gespeichert: `Output/LongForm/YouTube_LongForm.mp4` und `Output/Shorts/001.mp4`, `002.mp4` usw. Intro, Outro, Quote/Flyer, Add Image, Musik, Original-Audio, Übergänge, Reihenfolgen und One-Click laufen für jeden Auftrag über die vorhandene Render-Pipeline. Long-Form verwendet standardmäßig das 16:9-Profil Static White Reveal; Shorts verwenden standardmäßig Inter, Bottom Center und die eigene wort-synchronisierte 9:16-Animation. Jeder Short besitzt eine eigene Cache-Identität.
 
 Standardmäßig gilt **With Subtitles**: eingebrannte Untertitel plus SRT/VTT, aber keine zusätzliche Clean-Version. **Without Subtitles** überspringt Untertitel vollständig. **With and Without Subtitles** erzeugt beide Varianten. Long-Form und Shorts besitzen getrennte Profile; Shorts sind standardmäßig groß, lesbar, vertikal sicher, auf höchstens zwei Zeilen begrenzt und wort-synchron animiert.
 

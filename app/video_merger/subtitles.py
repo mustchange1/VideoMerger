@@ -15,7 +15,7 @@ ANIMATION_OPTIONS: tuple[tuple[str, str], ...] = (
     ("color_change", "Color Change"),
     ("word_highlight", "Word Highlight"),
     ("outline_highlight", "Outline Highlight"),
-    ("static_phrase", "Static Phrase"),
+    ("static_phrase", "Static White Reveal"),
 )
 ANIMATION_KEYS = {key for key, _label in ANIMATION_OPTIONS}
 
@@ -388,8 +388,9 @@ def write_ass(
     debug_overlay: bool = False,
 ) -> None:
     preset = get_preset(preset_key)
-    # None preserves 1.2.1's explicit API/Arial regression behavior. The 1.2.2
-    # workflow always passes its selected logical font key.
+    # None preserves 1.2.1's direct API/Arial fallback behavior. The render
+    # workflow passes its selected profile animation explicitly (Long-Form's
+    # default is Static White Reveal under the ``static_phrase`` key).
     resolved_font = resolve_font(font_key) if font_key else None
     family = resolved_font.family if resolved_font else "Arial"
     animation = animation if animation in ANIMATION_KEYS else ("type_reveal" if preset.progressive else "word_highlight")

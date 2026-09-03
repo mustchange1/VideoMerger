@@ -116,11 +116,19 @@ def build_short_jobs(settings: ExportSettings) -> list[ShortJob]:
 
 def long_form_settings(settings: ExportSettings) -> ExportSettings:
     """Return the landscape settings used by the Long-Form branch."""
+    style = str(getattr(settings, "subtitle_style", "long_1") or "long_1")
+    # The generic subtitle controls are the Long-Form profile. A stale Short
+    # preset from a 9:16 project must never leak into the landscape job; valid
+    # saved Long-Form overrides remain untouched.
+    preset = get_preset(style)
+    if preset.key != style or preset.collection != "long":
+        style = "long_1"
     return replace(
         settings,
         export_mode=EXPORT_MODE_LONG_FORM,
         aspect="16:9",
         output_preset="youtube_landscape",
+        subtitle_style=style,
         render_variant_key="youtube-long-form",
     )
 
@@ -155,7 +163,7 @@ def short_settings(settings: ExportSettings, job: ShortJob) -> ExportSettings:
         voiceover_pause=0.0,
         subtitle_style=style,
         subtitle_animation=str(getattr(settings, "short_subtitle_animation", "word_highlight") or "word_highlight"),
-        subtitle_font=str(getattr(settings, "short_subtitle_font", "modern_sans_bold") or "modern_sans_bold"),
+        subtitle_font=str(getattr(settings, "short_subtitle_font", "inter") or "inter"),
         subtitle_position=str(getattr(settings, "short_subtitle_position", "Bottom Center") or "Bottom Center"),
         render_variant_key=job.cache_key,
     )
