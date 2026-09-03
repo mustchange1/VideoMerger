@@ -1390,8 +1390,20 @@ class MainProjectEngine:
                     current_file=event.current_file,
                 ))
 
-            job_media = planned_short_media.get(stem, effective_media) if kind == "short" else effective_media
-            job_pool = runtime_short_pool if kind == "short" else None
+            if kind == "short":
+                reserved = planned_short_media.get(stem)
+                if reserved is not None:
+                    job_media, job_pool = reserved, None
+                else:
+                    # Defensive only, and unreachable while the preflight above
+                    # reserves every Short: an unreserved Short must consume the
+                    # shared without-replacement cursor. Handing it the complete
+                    # pool with no cursor would give every Short the same leading
+                    # clips and silently break the no-replacement contract.
+                    job_media = effective_media
+                    job_pool = runtime_short_pool if runtime_short_pool is not None else short_video_pool
+            else:
+                job_media, job_pool = effective_media, None
             if complete:
                 result = self._create_complete_single(
                     job_media, job_settings, job_dir,

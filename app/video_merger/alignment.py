@@ -7,7 +7,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Iterable
@@ -19,7 +19,61 @@ from .paths import project_root
 _WORD_RE = re.compile(r"[\wÄÖÜäöüß]+(?:[’'][\wÄÖÜäöüß]+)*", re.UNICODE)
 # Mapping semantics include retained fallback words; invalidate older caches that
 # intentionally omitted unmatched script words.
-_CACHE_SCHEMA = 3
+# Schema 4: fallback timing is now strictly bounded by its available gap and the
+# canonical word timeline is guaranteed strictly increasing, so cached word
+# timestamps from schema 3 may be non-monotone and must never be replayed.
+_CACHE_SCHEMA = 4
+
+# Smallest distance between two consecutive word starts that still allows one
+# displayable subtitle cue per word group. ``subtitles.build_cues`` reserves
+# ``_CUE_GAP`` (10 ms) before the next cue and needs at least
+# ``_MINIMUM_CUE_FLOOR`` (10 ms) of visible cue time, so 20 ms of word spacing
+# is the exact value that keeps every generated cue non-overlapping.
+MINIMUM_WORD_SPACING = 0.02
+
+
+def normalize_word_timeline(words: list[WordTiming]) -> list[WordTiming]:
+    """Return the same words as a strictly increasing, non-degenerate timeline.
+
+    This is a repair of last resort, never a retiming step: a canonical
+    :class:`LocalWordAligner` result already satisfies the invariant, and in
+    that case the *same list object* is returned so callers can still map cue
+    words back onto ``AlignmentResult.words`` by identity.
+
+    Legacy alignment caches, concatenated multi-unit timelines and third-party
+    aligners can still hand in words whose starts go backwards, whose intervals
+    degenerate, or that sit closer together than one displayable cue. Without
+    this repair :func:`subtitles.build_cues` emits overlapping cues and the
+    complete render aborts with ``SUBTITLE GENERATION FAILED [SRT/VTT/ASS
+    timeline creation]``.
+
+    Guarantees — with no word dropped, added, re-ordered or re-spelled, and
+    with every measured acoustic duration preserved wherever it is legal:
+
+    * ``0 <= start`` and ``start < end`` for every word;
+    * ``next.start >= start + MINIMUM_WORD_SPACING``;
+    * the repaired run never extends past the original timeline end; it only
+      grows when the input was too dense to be representable at all.
+    """
+    if not words:
+        return words
+    spacing = MINIMUM_WORD_SPACING
+    count = len(words)
+    # Latest legal start per position, so the complete repaired run still ends
+    # inside the original acoustic span instead of inventing program time.
+    limit = max(max(word.end for word in words), spacing * count)
+    repaired: list[WordTiming] = []
+    cursor = 0.0
+    changed = False
+    for index, word in enumerate(words):
+        latest = limit - spacing * (count - index)
+        start = min(max(word.start, cursor), latest)
+        end = word.end if word.end > start else start + spacing
+        if start != word.start or end != word.end:
+            changed = True
+        repaired.append(replace(word, start=start, end=end))
+        cursor = start + spacing
+    return repaired if changed else words
 
 
 @dataclass(slots=True)
@@ -527,54 +581,57 @@ class LocalWordAligner:
         def fallback_words(
             indexes: list[int], left: float, right: float | None,
         ) -> None:
-            """Fill one monotone script gap with a bounded local interval."""
+            """Fill one monotone script gap strictly inside ``[left, right]``.
+
+            Every retained script word keeps a positive, bounded interval and
+            the window is authoritative: fallback timing may never extend past
+            the next real acoustic anchor. Doing so made the canonical word
+            timeline non-monotone, which turned into overlapping subtitle cues
+            and aborted the complete render.
+            """
             if not indexes:
                 return
+            count = len(indexes)
             left = max(0.0, float(left))
             if right is not None:
                 right = max(0.0, float(right))
-            count = len(indexes)
-            if right is not None and right > left + 1e-9:
-                # Start immediately after the preceding anchor. The interval
-                # is bounded by the next anchor and never invents a long wait.
-                slot = min(default_fallback, max(minimum_fallback, (right - left) / count))
-                for offset, script_index in enumerate(indexes):
-                    start = left + offset * slot
-                    end = min(right, start + slot)
-                    if end <= start:
-                        end = start + minimum_fallback
-                    token, char_start, char_end = spans[script_index]
-                    word_by_script[script_index] = WordTiming(
-                        text=token, start=start, end=end, confidence=0.0,
-                        script_start=char_start, script_end=char_end,
-                    )
-                return
 
-            # There is no usable gap between anchors (or no right anchor).
-            # Keep the fallback local: a 20 ms minimum is enough for a valid
-            # cue and avoids placing a missing word many seconds away.
-            if right is not None:
-                # No measurable interval remains. Preserve the next real
-                # acoustic anchor and backfill immediately before it rather
-                # than pushing a fallback word past that anchor.
-                for offset, script_index in enumerate(indexes):
-                    end = right - (count - offset - 1) * minimum_fallback
-                    start = max(0.0, end - minimum_fallback)
-                    token, char_start, char_end = spans[script_index]
-                    word_by_script[script_index] = WordTiming(
-                        text=token, start=start, end=max(start + minimum_fallback, end), confidence=0.0,
-                        script_start=char_start, script_end=char_end,
-                    )
-                return
-            slot = default_fallback
-            for offset, script_index in enumerate(indexes):
-                start = left + offset * slot
+            def place(script_index: int, start: float, end: float) -> None:
                 token, char_start, char_end = spans[script_index]
                 word_by_script[script_index] = WordTiming(
-                    text=token, start=start,
-                    end=start + slot, confidence=0.0,
+                    text=token, start=start, end=end, confidence=0.0,
                     script_start=char_start, script_end=char_end,
                 )
+
+            if right is None:
+                # No following anchor exists, so nothing can be overrun. Keep
+                # the bounded 0.24 s speaking rate instead of placing a
+                # missing word many seconds away from the speech.
+                for offset, script_index in enumerate(indexes):
+                    start = left + offset * default_fallback
+                    place(script_index, start, start + default_fallback)
+                return
+
+            if right <= left + 1e-9:
+                # Overlapping or backwards acoustic anchors leave no measurable
+                # window. Keep the run tight and local (20 ms per word) rather
+                # than inverting the authoritative script order; the single
+                # global repair pass below restores a valid timeline.
+                for offset, script_index in enumerate(indexes):
+                    start = left + offset * minimum_fallback
+                    place(script_index, start, start + minimum_fallback)
+                return
+
+            # Start immediately after the preceding anchor and tile the real
+            # gap proportionally. The 0.24 s cap keeps a wide gap from
+            # inventing a long wait. There is deliberately no 0.02 s floor any
+            # more: flooring the slot is exactly what pushed fallback words
+            # past ``right`` whenever more script words were missing than the
+            # gap had room for.
+            slot = min(default_fallback, (right - left) / count)
+            for offset, script_index in enumerate(indexes):
+                start = left + offset * slot
+                place(script_index, start, min(right, start + slot))
 
         anchors = sorted(
             ((script_index, asr_index, word)
@@ -631,8 +688,12 @@ class LocalWordAligner:
 
         # The canonical result follows the authoritative script order. ASR
         # timestamps are retained for anchors; fallback intervals are local to
-        # their neighboring anchors and are never silently omitted.
-        words = [word_by_script[index] for index in range(len(spans))]
+        # their neighboring anchors and are never silently omitted. The single
+        # repair pass guarantees the timeline a subtitle cue requires
+        # (non-negative, strictly increasing starts and positive durations)
+        # without dropping, re-ordering or re-spelling one word. It is a no-op
+        # — returning the very same list — for an already valid timeline.
+        words = normalize_word_timeline([word_by_script[index] for index in range(len(spans))])
         unmatched_script = len(spans) - len(matched_by_script)
         unmatched_audio_indexes = set(range(len(asr))) - matched_asr_indexes
         unmatched_audio = len(unmatched_audio_indexes)

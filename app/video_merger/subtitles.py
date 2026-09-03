@@ -5,6 +5,7 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .alignment import MINIMUM_WORD_SPACING, normalize_word_timeline
 from .errors import VideoMergerError
 from .font_manager import resolve_font
 from .models import AlignmentResult, WordTiming
@@ -18,6 +19,18 @@ ANIMATION_OPTIONS: tuple[tuple[str, str], ...] = (
     ("static_phrase", "Static White Reveal"),
 )
 ANIMATION_KEYS = {key for key, _label in ANIMATION_OPTIONS}
+
+# Cue timing constants. ``_CUE_GAP`` is the visible breathing room reserved
+# before the next cue, the acoustic hard boundary and the program end.
+# ``_MINIMUM_CUE`` is the normal shortest display time. ``_MINIMUM_CUE_FLOOR``
+# is the absolute shortest display time and is used only when a cue's own words
+# leave less room than that. The three values are tied to the word-timeline
+# invariant: two consecutive word starts are at least MINIMUM_WORD_SPACING
+# apart, so ``MINIMUM_WORD_SPACING - _CUE_GAP == _MINIMUM_CUE_FLOOR`` and a cue
+# end can never reach the next cue start.
+_CUE_GAP = 0.01
+_MINIMUM_CUE = 0.02
+_MINIMUM_CUE_FLOOR = round(MINIMUM_WORD_SPACING - _CUE_GAP, 6)
 
 
 @dataclass(slots=True)
@@ -75,7 +88,14 @@ def build_cues(
     selected-font advances, available width and visual line balance do.
     """
     preset = get_preset(preset_key)
-    words = alignment.words
+    # Defensive normalization of the canonical word timeline. A current
+    # ``LocalWordAligner`` result is already strictly increasing and this call
+    # returns the identical list object, so authoritative acoustic timing is
+    # never touched. Legacy caches, concatenated multi-unit timelines and
+    # third-party aligners can still hand in backwards or degenerate word
+    # starts; repairing them here (never by dropping a word) is what keeps the
+    # cue mathematics below overlap-free for every possible input.
+    words = normalize_word_timeline(alignment.words)
     # A complete mismatch is valid output: the audio still renders, while the
     # subtitle track simply contains no cues. Partial matches are represented
     # by gaps in ``words`` and resume at later reliable acoustic matches.
@@ -216,19 +236,38 @@ def build_cues(
         start = group[0].start
         next_start = groups[index][0].start if index < len(groups) else None
         desired_end = group[-1].end + (0.18 if preset.collection == "long" else 0.10)
-        end = min(desired_end, next_start - 0.01) if next_start is not None else desired_end
         # A hard boundary is an acoustic silence boundary, so even a generous
-        # long-form display allowance must end before it.
+        # long-form display allowance must end before it. Near-duplicate
+        # boundaries — an unmatched acoustic run contributes both of its edges
+        # — can land inside this cue's own word span; the shared ceiling plus
+        # the room-aware minimum below absorb that instead of producing a cue
+        # end at or before ``start``.
         boundary_after_group = next(
             (boundary for boundary in hard_breaks
              if group[-1].start < boundary and (next_start is None or boundary <= next_start)),
             None,
         )
-        if boundary_after_group is not None:
-            end = min(end, boundary_after_group - 0.01)
-        if program_end is not None:
-            end = min(end, float(program_end))
-        end = max(start + 0.02, end)
+        # One shared ceiling from every "must not be displayed past here"
+        # constraint: the next cue, the acoustic boundary and the program end.
+        limits = [
+            value for value in (
+                next_start - _CUE_GAP if next_start is not None else None,
+                boundary_after_group - _CUE_GAP if boundary_after_group is not None else None,
+                float(program_end) if program_end is not None else None,
+            )
+            if value is not None
+        ]
+        hard_limit = min(limits) if limits else None
+        end = desired_end if hard_limit is None else min(desired_end, hard_limit)
+        # The minimum cue duration is derived BEFORE the ceiling is honoured
+        # and shrinks to the room that actually exists. The former unconditional
+        # ``end = max(start + 0.02, end)`` ran last, so it could push a cue end
+        # past the next cue start; validate_cues() then correctly rejected the
+        # timeline as overlapping and aborted the complete render.
+        minimum = _MINIMUM_CUE
+        if hard_limit is not None:
+            minimum = min(minimum, max(_MINIMUM_CUE_FLOOR, hard_limit - start))
+        end = max(start + minimum, end)
         text = _clean_text(" ".join(word.text for word in group))
         cues.append(SubtitleCue(index, start, end, text, group, split, 2 if split else 1))
     validate_cues(cues, len(words))
@@ -297,6 +336,25 @@ def validate_subtitle_file(path: Path, kind: str) -> None:
 
 def write_canonical_timeline(script: str, alignment: AlignmentResult, cues: list[SubtitleCue], path: Path) -> None:
     validate_cues(cues, len(alignment.words))
+    # Cue groups partition the canonical word list in order. Resolve the
+    # indexes through that partition, preferring an identity match: a
+    # defensively repaired timeline hands the cues repaired copies, where
+    # ``list.index`` would raise and abort the render, and repeated identical
+    # words would otherwise all report the first occurrence.
+    position_by_identity = {id(word): position for position, word in enumerate(alignment.words)}
+    cursor = 0
+    cue_payloads = []
+    for cue in cues:
+        word_indexes: list[int] = []
+        for word in cue.words:
+            position = position_by_identity.get(id(word), cursor)
+            word_indexes.append(position)
+            cursor = position + 1
+        cue_payloads.append({
+            "index": cue.index, "start": cue.start, "end": cue.end, "text": cue.text,
+            "word_indexes": word_indexes,
+            "line_break_after": cue.line_break_after, "line_count": cue.line_count,
+        })
     payload = {
         "schema": 2,
         "authoritative_script": script,
@@ -306,11 +364,7 @@ def write_canonical_timeline(script: str, alignment: AlignmentResult, cues: list
         "average_confidence": alignment.average_confidence,
         "hard_breaks": alignment.hard_breaks,
         "words": [asdict(word) for word in alignment.words],
-        "cues": [{
-            "index": cue.index, "start": cue.start, "end": cue.end, "text": cue.text,
-            "word_indexes": [alignment.words.index(word) for word in cue.words],
-            "line_break_after": cue.line_break_after, "line_count": cue.line_count,
-        } for cue in cues],
+        "cues": cue_payloads,
         "verification_word_indexes": (
             [0, len(alignment.words) // 2, len(alignment.words) - 1]
             if alignment.words else []
