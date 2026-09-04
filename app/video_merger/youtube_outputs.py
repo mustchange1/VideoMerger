@@ -4,6 +4,9 @@ The planner is intentionally independent from FFmpeg. It gives the GUI, CLI
 and the real render orchestrator one deterministic contract: one Long-Form
 job, or one Short job for every ordered voiceover unit. A global script remains
 one global source; it is never copied into the project's matched-script list.
+The Long-Form always receives the complete global script, while an individual
+Short receives only the section its own voiceover speaks — derived once by the
+orchestrator (see :mod:`script_sections`) and handed to :func:`short_settings`.
 """
 
 from __future__ import annotations
@@ -133,17 +136,50 @@ def long_form_settings(settings: ExportSettings) -> ExportSettings:
     )
 
 
-def short_settings(settings: ExportSettings, job: ShortJob) -> ExportSettings:
-    """Return isolated vertical settings for one Short job."""
+#: ``script_section`` sentinel: this voiceover speaks no part of the global
+#: script, so its Short is an audio-only job and must not caption text that the
+#: complete script happens to contain.
+NO_SCRIPT_SECTION = "no_script_section"
+
+
+def short_settings(
+    settings: ExportSettings,
+    job: ShortJob,
+    script_section: Path | str | None = None,
+) -> ExportSettings:
+    """Return isolated vertical settings for one Short job.
+
+    ``script_section`` carries the derived part of a global script for this
+    job's voiceover (see :mod:`script_sections`): a path uses exactly that
+    section as the Short's authoritative script, :data:`NO_SCRIPT_SECTION`
+    leaves the Short without captions, and the default ``None`` keeps the
+    project's own script configuration (individual/matched scripts, or a
+    project whose sections could not be derived).
+    """
     script_mode = "matched" if str(getattr(settings, "script_mode", "single")).casefold() in {"matched", "individual"} else "single"
-    if script_mode == "matched":
+    # ``section`` is ``None`` when no section was derived (keep the project's own
+    # script configuration), ``""`` when this voiceover speaks no part of the
+    # global script, and otherwise the resolved path of the derived section.
+    section: str | None = None
+    if script_section is not None:
+        section = (
+            "" if str(script_section) == NO_SCRIPT_SECTION
+            else str(Path(script_section).expanduser().resolve())
+        )
+    if script_mode == "matched" or section is None:
         scripts = [str(job.script_path)] if job.script_path is not None else []
         script_path = str(job.script_path) if job.script_path is not None else ""
-        global_script = ""
+        global_script = "" if script_mode == "matched" else script_path
     else:
-        scripts = [str(job.script_path)] if job.script_path is not None else []
-        script_path = str(job.script_path) if job.script_path is not None else ""
-        global_script = script_path
+        scripts = [section] if section else []
+        script_path = section
+        global_script = section
+    # Single Global Script mode cannot render subtitles without a script, so a
+    # voiceover with no spoken section becomes an explicit audio-only Short
+    # instead of failing the complete export run.
+    subtitle_enabled = bool(settings.subtitle_enabled)
+    if script_mode == "single" and section is not None and not section:
+        subtitle_enabled = False
     style = str(getattr(settings, "short_subtitle_style", "short_1") or "short_1")
     if get_preset(style).collection != "short":
         style = "short_1"
@@ -158,6 +194,7 @@ def short_settings(settings: ExportSettings, job: ShortJob) -> ExportSettings:
         script_paths=scripts,
         script_path=script_path,
         global_script_path=global_script,
+        subtitle_enabled=subtitle_enabled,
         # A Short is one acoustic unit. Inter-unit silence belongs only to the
         # combined Long-Form timeline, never to an individual Short.
         voiceover_pause=0.0,

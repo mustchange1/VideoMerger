@@ -7,7 +7,7 @@ import uuid
 from dataclasses import replace
 from pathlib import Path
 
-from .alignment import LocalWordAligner
+from .alignment import LocalWordAligner, script_word_spans
 from .engine import VideoMergerEngine
 from .errors import VideoMergerError
 from .font_manager import bundled_fonts_dir
@@ -53,6 +53,7 @@ from .render_cache import (
     stage1_fingerprint,
     stage2_fingerprint,
 )
+from .script_sections import script_section_path, split_global_script
 from .subtitle_modes import (
     SUBTITLE_OUTPUT_COMBINED,
     SUBTITLE_OUTPUT_WITH,
@@ -89,6 +90,8 @@ from .youtube_metadata import generate_youtube_metadata_file
 from .youtube_outputs import (
     EXPORT_MODE_COMBINED,
     EXPORT_MODE_LONG_FORM,
+    NO_SCRIPT_SECTION,
+    ShortJob,
     build_short_jobs,
     long_form_settings,
     normalize_export_mode,
@@ -1268,6 +1271,111 @@ class MainProjectEngine:
             shutil.copyfile(source, target)
             setattr(main, attribute, target)
 
+    def _short_script_sections(
+        self,
+        settings: ExportSettings,
+        short_jobs: list[ShortJob],
+        aligner: LocalWordAligner | None,
+        log: LogCallback,
+    ) -> dict[int, Path | str]:
+        """Derive the global-script section that each Short's voiceover speaks.
+
+        Multiple voiceovers plus ONE large global script is a single global
+        source: the Long-Form uses the complete script across the complete
+        timeline, while an individual Short may only caption the part its own
+        voiceover actually says. The sections are derived acoustically from ONE
+        global script mapping — the same ``align_global`` call (same units, same
+        durations, same pause, same script text) that the Long-Form job uses, so
+        the alignment cache turns the second request into a hit instead of
+        repeating ASR — and never by aligning the complete global script against
+        every Short.
+
+        Returns ``{job index: section file}`` for a voiceover with a spoken
+        section, ``{job index: NO_SCRIPT_SECTION}`` for a voiceover that speaks
+        no part of the script, and omits every job that keeps its previous
+        configuration. Omitting all jobs is also the deliberate fallback: the
+        multiple individual scripts workflow never reaches this method, and a
+        project whose sections cannot be derived behaves exactly as before
+        instead of failing the export.
+        """
+        script_mode = (
+            "matched" if str(settings.script_mode).casefold() in {"matched", "individual"} else "single"
+        )
+        script = global_script_path(settings) if script_mode == "single" else None
+        if script is None:
+            return {}
+        subtitle_mode = normalize_subtitle_output_mode(
+            getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
+        )
+        if subtitle_mode == SUBTITLE_OUTPUT_WITHOUT:
+            # No alignment and no captions are generated at all.
+            return {}
+        units, _unit_scripts = ordered_voiceover_units(settings)
+        # Sections exist per real acoustic unit. A configured-but-missing
+        # voiceover is not part of the timeline (create_main drops it as well)
+        # and therefore keeps its previous configuration.
+        available: list[Path] = [unit for unit in units if unit.is_file()]
+        if len(available) < 2:
+            # One voiceover speaks the complete script, so its section is the
+            # global script itself and there is nothing to derive.
+            return {}
+        notes: list[str] = []
+        try:
+            text = read_script(require_asset(script, "Textskript", {".txt", ".text", ".md"}))
+            durations = [probe_audio(self.engine.ffprobe_path, unit).duration for unit in available]
+            pause = voiceover_pause(settings)
+            aligner = aligner or LocalWordAligner(settings.subtitle_model)
+            if not hasattr(aligner, "align_global"):
+                raise VideoMergerError("the alignment engine maps no global script")
+            alignment = aligner.align_global(
+                text, list(zip(available, durations)), settings.subtitle_language, pause,
+            )
+            # Units that share one voiceover file share one section: the same
+            # audio can only speak one part of the script, however many output
+            # jobs reference it.
+            keys = [str(unit) for unit in available]
+            sections = split_global_script(
+                text, alignment.words, durations, pause, unit_keys=keys,
+            )
+            positions: dict[str, int] = {}
+            for index, key in enumerate(keys):
+                positions.setdefault(key, index)
+            result: dict[int, Path | str] = {}
+            summary: list[str] = []
+            for job_index, job in enumerate(short_jobs):
+                voice = Path(job.voiceover_path).expanduser().resolve()
+                position = positions.get(str(voice))
+                if position is None:
+                    # Not part of the acoustic timeline: keep its configuration.
+                    continue
+                section = sections[position].strip()
+                if not section:
+                    result[job_index] = NO_SCRIPT_SECTION
+                    summary.append(f"{job.output_name}=no spoken script section")
+                    notes.append(
+                        f"YouTube Short {job.output_name}: {voice.name} speaks no part of the global "
+                        "script; this Short stays without subtitles instead of showing text it never says."
+                    )
+                    continue
+                result[job_index] = script_section_path(section, f"Short_{job.output_name}")
+                summary.append(f"{job.output_name}={len(script_word_spans(section))} word(s)")
+            if not result:
+                return {}
+            for note in notes:
+                log(note)
+            log(
+                f"Global script sections for Shorts ({len(available)} voiceover units, "
+                f"{len(script_word_spans(text))} script words, complete script stays with the Long-Form): "
+                + ", ".join(summary)
+            )
+            return result
+        except Exception as exc:
+            log(
+                f"Global script sections for Shorts unavailable ({exc}); "
+                "every Short keeps the complete global script."
+            )
+            return {}
+
     def create_youtube_exports(
         self,
         media: list[MediaInfo],
@@ -1284,6 +1392,11 @@ class MainProjectEngine:
         complete: bool = False,
     ) -> YoutubeExportResult:
         """Render Long-Form and/or one isolated Short per voiceover.
+
+        The selected export mode alone decides which jobs this single action
+        creates: Long-Form only, one Short per voiceover, or BOTH from the same
+        run. The GUI's Create Main Video button, One-Click and the CLI share
+        exactly these semantics, and every job renders exactly once.
 
         Every Short calls the regular Stage-1/Stage-2 pipeline with a one-item
         acoustic timeline. A shared :class:`ShortsVideoPool` assigns the next
@@ -1317,9 +1430,18 @@ class MainProjectEngine:
             short_jobs = build_short_jobs(settings)
             if not short_jobs:
                 raise VideoMergerError("YouTube Shorts benötigen mindestens ein Voiceover.")
+            # One global script stays one global source: the Long-Form receives
+            # the complete text, each Short only the section its own voiceover
+            # speaks. Derived once here, before the per-job settings are built.
+            script_sections = self._short_script_sections(settings, short_jobs, aligner, log)
             jobs.extend(
-                ("short", short_settings(settings, job), output_dir / "Shorts", job.output_name)
-                for job in short_jobs
+                (
+                    "short",
+                    short_settings(settings, job, script_sections.get(index)),
+                    output_dir / "Shorts",
+                    job.output_name,
+                )
+                for index, job in enumerate(short_jobs)
             )
 
         # When FFprobe is available, reserve each Short's raw prefix before the
