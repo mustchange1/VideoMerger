@@ -74,7 +74,14 @@ def main() -> int:
         default="natural",
         help="Natural, Alphabetical, Random, or explicit persisted Manual order",
     )
-    parser.add_argument("--music", default="")
+    parser.add_argument(
+        "--music", default="",
+        help="background music for the Long-Form / basic Main Video (never used in Shorts)",
+    )
+    parser.add_argument(
+        "--short-music", default="",
+        help="separate background music used only for the generated YouTube Shorts",
+    )
     parser.add_argument("--original-audio", choices=["mute", "low", "original"], default="mute")
     parser.add_argument("--music-volume", type=int, default=44)
     parser.add_argument("--pause", type=float, default=1.0)
@@ -108,26 +115,7 @@ def main() -> int:
         "--max-stretch", type=float, default=10.0,
         help="maximum stretch of the final clip in percent (default 10)",
     )
-    # Optional silent Quote/Flyer artwork between Intro and Main.
-    parser.add_argument("--quote", action="store_true", help="enable the Quote / Flyer section")
-    parser.add_argument(
-        "--quote-artwork", default="",
-        help="Quote/Flyer artwork (.png, .jpg, .jpeg, .webp or .pdf)",
-    )
-    parser.add_argument(
-        "--quote-pdf-page", "--quote-page", type=int, default=1,
-        help="one-based PDF page for --quote-artwork (default: 1)",
-    )
-    parser.add_argument(
-        "--quote-fit-mode", "--quote-fit", dest="quote_fit_mode",
-        choices=["fit", "fill", "crop"], default="fit",
-        help="artwork framing mode; Fit preserves the complete artwork (default)",
-    )
-    parser.add_argument(
-        "--quote-duration", type=float, default=4.0,
-        help="Quote/Flyer duration in seconds (0.5-5.0; default 4.0)",
-    )
-    # Independent silent Stage-2 Add Image (never Quote/Flyer/PDF).
+    # Optional silent Stage-2 Add Image section.
     parser.add_argument(
         "--image-enabled", "--add-image-enabled", action="store_true",
         help="enable Add Image explicitly (normally implied by an image path)",
@@ -228,7 +216,8 @@ def main() -> int:
         global_script_path=global_script,
         voiceover_pause=max(0.0, min(10.0, args.voiceover_pause)),
         voiceover_order_mode=args.voiceover_order,
-        music_path=args.music, original_audio_mode=args.original_audio,
+        music_path=args.music, short_music_path=args.short_music,
+        original_audio_mode=args.original_audio,
         music_volume=args.music_volume, final_pause=args.pause,
         short_video_mode=args.short_video,
         duration_fit_mode=args.duration_fit,
@@ -238,12 +227,6 @@ def main() -> int:
         duration_after_merge_enabled=bool(args.enable_duration_after_merge),
         # Legacy field is retained only for old cache/API compatibility.
         video_speed=1.0,
-        quote_enabled=args.quote or bool(args.quote_artwork),
-        quote_input_mode="artwork",
-        quote_artwork_path=args.quote_artwork,
-        quote_pdf_page=args.quote_pdf_page,
-        quote_artwork_fit_mode=args.quote_fit_mode,
-        quote_duration=max(0.5, min(5.0, args.quote_duration)),
         image_enabled=bool(args.image_path) or args.image_enabled, image_path=args.image_path,
         image_position=args.image_position,
         image_duration=max(0.5, min(60.0, args.image_duration)),

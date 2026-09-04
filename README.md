@@ -8,11 +8,11 @@ Add any number of configured video folders with **Add Folder**, **Remove Folder*
 
 ### Independent merge-duration controls
 
-**Duration Before Merge** defaults to `0.70x` and applies to each normal selected visual clip (`timeline_duration = source_duration / 0.70`) before timeline construction. **Duration After Merge** defaults to disabled / `1.00x` and runs as a separate post-merge operation on the complete Stage-1 master. Smart Last-Clip Stretch remains after timeline construction and before rendering; Stage-2 Intro, Flyer, and Outro are not altered by Before Merge.
+**Duration Before Merge** defaults to `0.70x` and applies to each normal selected visual clip (`timeline_duration = source_duration / 0.70`) before timeline construction. **Duration After Merge** defaults to disabled / `1.00x` and runs as a separate post-merge operation on the complete Stage-1 master. Smart Last-Clip Stretch remains after timeline construction and before rendering; Stage-2 Intro, Add Image, and Outro are not altered by Before Merge.
 
-### Flyer, Add Image and subtitle output defaults
+### Add Image and subtitle output defaults
 
-Quote/Flyer remains an independent artwork-only Stage-2 section and defaults to 4.0 seconds. **Add Image** is a separate optional, silent Stage-2 section: PNG/JPG/JPEG/WEBP, Before Main Video by default, 4.0 seconds, Fit, 100% zoom, Natural look, and the existing Cross Dissolve transition with a 1.0 second boundary request. The legacy Image Insertion names and position aliases remain accepted. Its complete file identity and settings are included in the independent Stage-2 composition fingerprint.
+**Add Image** is an optional, silent Stage-2 section: PNG/JPG/JPEG/WEBP, Before Main Video by default, 4.0 seconds, Fit, 100% zoom, Natural look, and the existing Cross Dissolve transition with a 1.0 second boundary request. The legacy Image Insertion names and position aliases remain accepted. Its complete file identity and settings are included in the independent Stage-2 composition fingerprint.
 
 Subtitle output is explicit and defaults to **With Subtitles** whenever a subtitle source is requested. It burns the aligned ASS timeline and writes SRT/VTT but creates no clean sibling. **With and Without Subtitles** additionally retains the clean variant. **Without Subtitles** skips alignment, burn-in, SRT and VTT generation while preserving voiceover/audio timing. Landscape long-form subtitles default to **Center**; vertical short-form subtitles default to **Bottom Center**. Saved/manual position overrides remain authoritative.
 
@@ -38,15 +38,9 @@ New **Duration Fit Mode**: `Cut Last Clip` (default, exactly the proven behavior
 
 The short visual gap after the voiceover is now a free manual setting (0.0–5.0 s). The existing default of ~1 second is preserved exactly.
 
-### Quote / Flyer artwork (optional, silent)
-
-The optional Stage-2 section is composed as `Intro → Cross Dissolve → Quote/Flyer → Cross Dissolve → Main → Cross Dissolve → Outro`. It is disabled by default. Enable it and choose a finished PDF, PNG, JPG, JPEG, or WEBP artwork. PDFs expose their page count and selected page; Fit, Fill, and Crop preserve the artwork aspect ratio for 16:9, 9:16, 1080p, and 4K outputs. The artwork duration defaults to 4.0 seconds and uses the existing transition safety/clamping logic.
-
-The Quote/Flyer is visual-only: no voiceover, music, subtitles, or Main Video audio is routed into that section. PDF pages are rasterized internally with PyMuPDF into render-time temporary files, which are removed automatically and never written to the normal Output folder. The live preview updates for artwork, PDF page, Fit/Fill/Crop, aspect ratio, and output resolution.
-
 ### Add Image (optional, silent Stage 2)
 
-Add Image is independent of Quote/Flyer/PDF. The dedicated section appears directly below Add Intro. Choose one PNG, JPG, JPEG, or WEBP and place it immediately **Before Main Video** or **After Main Video**. The image uses an editable duration with a 4.0 second default, the shared transition selector with Cross Dissolve as its default, a separately clamped 1.0 second boundary duration, Fit/Fill/Crop sizing, optional zoom, and five deterministic looks: Natural, Cinematic, Moody, Film, and Dark Editorial. The live preview updates for the selected file, aspect, sizing, zoom, and look.
+The dedicated section appears directly below Add Intro. Choose one PNG, JPG, JPEG, or WEBP and place it immediately **Before Main Video** or **After Main Video**. The image uses an editable duration with a 4.0 second default, the shared transition selector with Cross Dissolve as its default, a separately clamped 1.0 second boundary duration, Fit/Fill/Crop sizing, optional zoom, and five deterministic looks: Natural, Cinematic, Moody, Film, and Dark Editorial. The live preview updates for the selected file, aspect, sizing, zoom, and look.
 
 The effective Stage-2 sequence is always `Intro → optional Add Image Before Main → Main Video → optional Add Image After Main → Outro`; with no Intro/Outro the selected image becomes the first/last section. The image section receives no voiceover, music, original audio, or subtitle timing; the graph supplies matching silence and keeps each relevant transition boundary gap-free. One-Click, normal Stage-2 export, preview/basic hand-off, landscape/portrait, 1080p/4K, subtitles, and chunked rendering use the same timeline. Settings are persisted and the complete file identity/content plus all image settings participate in the independent Stage-2 composition fingerprint; Stage-1 remains reusable when only Add Image changes. Legacy Image Insertion CLI/config names remain compatible.
 
@@ -64,11 +58,11 @@ Every successful one-click final video automatically produces `FinalVideo_16x9_Y
 
 ### One-Click workflow (Video Pool + everything)
 
-`CREATE FINAL VIDEO – ONE CLICK` produces Video Pool + Voiceover(s) + Script(s) + Background Music + Subtitles + Watermark + Intro + optional Quote/Flyer + optional Image Insertion + Main Video + Outro = **FinalVideo** in one click; the rendered Main Video flows into Stage 2 automatically (no manual Stage-1→Stage-2 selection). Stage 1 and Stage 2 remain separately usable.
+`CREATE FINAL VIDEO – ONE CLICK` produces Video Pool + Voiceover(s) + Script(s) + Background Music + Subtitles + Watermark + Intro + optional Add Image + Main Video + Outro = **FinalVideo** in one click; the rendered Main Video flows into Stage 2 automatically (no manual Stage-1→Stage-2 selection). Stage 1 and Stage 2 remain separately usable.
 
 ### Current defaults
 
-Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static White Reveal · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant) · End Padding ≈ 1 s · Quote/Flyer disabled unless enabled (4.0 s, Fit) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
+Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static White Reveal · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant), selected separately for Long-Form and Shorts · End Padding ≈ 1 s (Long-Form; every Short ends with its own fixed 0.7 s video-only ending) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
 
 # VideoMerger 1.3.0 for Windows
 
@@ -78,13 +72,7 @@ VideoMerger 1.3.0 is an additive local release built directly from the tested 1.
 
 ### Large Video Pool — Required-Only processing
 
-The Input Folder is a source library, not a render queue. Discovery uses lightweight `ffprobe` metadata only (duration, resolution, fps, codec, audio presence, size — never a full decode of every file) and caches the result. The project-level **Video Order** selector offers **Natural**, **Alphabetical**, **Random**, and **Manual**. The selected order is resolved before Required-Only duration selection, so the GUI table, pool counts, preview, One-Click, chunked rendering, and final timeline all consume the same effective sequence. Natural uses numeric-aware filenames and the existing source-folder alternation; Alphabetical uses filename order; Random performs a fresh Fisher-Yates permutation and then applies folder alternation without saving it as Manual; Manual preserves the explicitly persisted drag/move sequence. The selection stops as soon as the active order covers the voiceover-derived target duration: only the required clips are rendered. With 300 available and ~14 needed, exactly ~14 clips enter the pipeline and the rest never appear in any decode, filter, transition or encode stage. The final clip is trimmed to fit; if the material is still short, the Full-Timeline Loop repeats the selected A-B-C sequence and Hold Last Frame holds only the final frame. Pre-processing time does not scale with the unused pool size, and changing subtitle style/Quote/Flyer/Intro/Outro never re-analyzes the pool. The GUI shows `Videos in Input Folder / Required / Selected / Not Used / Target Duration` and updates after Analyze, voiceover changes, order-mode changes, Randomize and manual reorder.
-
-### Quote / Flyer artwork (optional, silent)
-
-The optional section is composed as `Intro → (Cross Dissolve) → Quote/Flyer → (Cross Dissolve) → Main → (Cross Dissolve) → Outro`. Enable it with `[ ] Include Quote / Flyer`; it is disabled by default and lasts 0.5–5.0 seconds (default 4.0 seconds). The GUI has no text Quote field and no generated-text mode. It accepts PDF, PNG, JPG, JPEG, and WEBP artwork, with selected PDF page, Fit/Fill/Crop framing, and output-aware preview. PDF pages are rasterized internally with PyMuPDF and temporary rasters are removed after export.
-
-**Quote/Flyer Audio is silent by design**: no voiceover, music, subtitles, or Main Video audio is routed into the section. It never enters the SRT/VTT/burn-in timeline. The live GUI preview updates for artwork, PDF page, Fit/Fill/Crop, aspect ratio, and output resolution.
+The Input Folder is a source library, not a render queue. Discovery uses lightweight `ffprobe` metadata only (duration, resolution, fps, codec, audio presence, size — never a full decode of every file) and caches the result. The project-level **Video Order** selector offers **Natural**, **Alphabetical**, **Random**, and **Manual**. The selected order is resolved before Required-Only duration selection, so the GUI table, pool counts, preview, One-Click, chunked rendering, and final timeline all consume the same effective sequence. Natural uses numeric-aware filenames and the existing source-folder alternation; Alphabetical uses filename order; Random performs a fresh Fisher-Yates permutation and then applies folder alternation without saving it as Manual; Manual preserves the explicitly persisted drag/move sequence. The selection stops as soon as the active order covers the voiceover-derived target duration: only the required clips are rendered. With 300 available and ~14 needed, exactly ~14 clips enter the pipeline and the rest never appear in any decode, filter, transition or encode stage. The final clip is trimmed to fit; if the material is still short, the Full-Timeline Loop repeats the selected A-B-C sequence and Hold Last Frame holds only the final frame. Pre-processing time does not scale with the unused pool size, and changing subtitle style/Add Image/Intro/Outro never re-analyzes the pool. The GUI shows `Videos in Input Folder / Required / Selected / Not Used / Target Duration` and updates after Analyze, voiceover changes, order-mode changes, Randomize and manual reorder.
 
 ### Real subtitle preview (Preview ≈ Final Render)
 
@@ -96,7 +84,7 @@ Inter, Manrope, Lora and Roboto (Regular + Bold) join the existing Noto Sans fal
 
 ### 1.2.4 defaults
 
-Intro/Main/Outro Original Audio all default to **Original** (Mute/Low/Original remain, independently settable); subtitle animation default is **Static White Reveal** (Long-Form / YouTube Landscape, all 5 animations still selectable); Output Preset **YouTube Landscape** + Quality **Maximum** are unchanged. The one-click workflow now covers Video Pool + Voiceovers + Scripts + Music + Intro + optional Quote + Main + Outro + Subtitles + Watermark → FinalVideo, still handing the actual rendered `MainVideo.mp4` to Stage 2.
+Intro/Main/Outro Original Audio all default to **Original** (Mute/Low/Original remain, independently settable); subtitle animation default is **Static White Reveal** (Long-Form / YouTube Landscape, all 5 animations still selectable); Output Preset **YouTube Landscape** + Quality **Maximum** are unchanged. The one-click workflow now covers Video Pool + Voiceovers + Scripts + Music + Intro + optional Add Image + Main + Outro + Subtitles + Watermark → FinalVideo, still handing the actual rendered `MainVideo.mp4` to Stage 2.
 
 ## New in 1.2.3
 
@@ -220,8 +208,16 @@ The export mode is an actual pipeline setting, not a cosmetic aspect toggle:
 - **YouTube Shorts** renders one independent 9:16 Short per available voiceover. A shared without-replacement media pool assigns each Short the next required prefix; clips are reused only after the complete pool is exhausted. Script count does not determine output count. One global script with ten voiceovers therefore still produces ten Shorts.
 - **YouTube Long-Form + YouTube Shorts** renders both sets.
 
-Outputs are separated into `Output/LongForm/` and `Output/Shorts/` (`YouTube_LongForm.mp4`, `001.mp4`, `002.mp4`, …). Intro, Outro, Quote/Flyer, Add Image, music, original audio, transitions, ordering and One-Click use the existing render pipeline for every job. Each Short has its own cache identity.
+Outputs are separated into `Output/LongForm/` and `Output/Shorts/` (`YouTube_LongForm.mp4`, `001.mp4`, `002.mp4`, …). Intro, Outro, Add Image, music, original audio, transitions, ordering and One-Click use the existing render pipeline for every job. Each Short has its own cache identity.
+
+**Separate background music.** Long-Form and Shorts use two independent music selections: **Background Music (Long-Form)** and **Background Music (Shorts)**. The two tracks are strictly separate — the Long-Form track is never mixed into a Short, and a Short whose own track is empty simply has no background music. Volume, preset, ducking, looping and trimming behave exactly as before for whichever track is active, and in the combined mode each output type uses only its own track.
+
+**Fixed 0.7 second video-only ending.** Every Short is exactly its own voiceover duration plus `0.7 s` of additional visual material. The spoken audio stays the authoritative duration and is never extended; the ending contains no speech, no voiceover audio and no subtitles — the caption timeline ends with the voiceover, so no cue from this or any other Short can appear in it. The extra material comes from the regular timeline logic (clip selection, transitions, Hold/Loop, chunking and the without-replacement Shorts pool, which reserves the ending up front). The Long-Form keeps the freely configurable **Main Video End Padding**.
+
+**One script text file per Short.** Beside every rendered Short, VideoMerger automatically writes `<same name>.txt` (`001.mp4` → `001.txt`) containing exactly the script text that Short uses: its own section of a global script, or its matched/individual script. Nothing is transcribed again — the file reuses the already derived content, so it always matches the spoken/captioned words of that Short and never contains text from another Short. An explicit audio-only Short (a voiceover that speaks no part of the global script) has no text and therefore no sidecar.
 
 Subtitle output is **With Subtitles** by default. It burns the selected profile and writes SRT/VTT without creating an extra clean video. **Without Subtitles** skips subtitle rendering; **With and Without Subtitles** writes both variants. Long-Form and Shorts use separate subtitle profile settings: Long-Form defaults to 16:9 Static White Reveal, while Shorts use a larger Inter mobile profile, a safe Bottom Center position, and word-synchronized animation.
 
-The CLI equivalents are `--export-mode long_form|shorts|long_form_and_shorts`, `--subtitle-output-mode with_subtitles|without_subtitles|with_and_without_subtitles`, and `--short-subtitle-style`, `--short-subtitle-animation`, `--short-subtitle-font`, `--short-subtitle-position`.
+With one global script and several voiceovers, the Long-Form still uses the complete script over the complete timeline while each Short receives only the section its own voiceover speaks — derived acoustically from one shared global mapping, never by aligning the complete script against every Short.
+
+The CLI equivalents are `--export-mode long_form|shorts|long_form_and_shorts`, `--music` (Long-Form), `--short-music` (Shorts), `--subtitle-output-mode with_subtitles|without_subtitles|with_and_without_subtitles`, and `--short-subtitle-style`, `--short-subtitle-animation`, `--short-subtitle-font`, `--short-subtitle-position`.

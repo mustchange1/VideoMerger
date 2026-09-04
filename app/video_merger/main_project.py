@@ -42,11 +42,6 @@ from .image_insertion import (
     normalize_image_position,
     normalize_image_transition,
 )
-from .quote_artwork import (
-    cleanup_prepared_quote_artwork,
-    prepare_quote_artwork,
-    quote_artwork_path,
-)
 from .render_cache import (
     Stage1RenderCache,
     load_cached_alignment,
@@ -96,6 +91,7 @@ from .youtube_outputs import (
     long_form_settings,
     normalize_export_mode,
     short_settings,
+    write_short_script_text,
 )
 
 
@@ -180,36 +176,6 @@ def voiceover_timeline_duration(durations: list[float], pause: float) -> float:
     return sum(max(0.0, float(value)) for value in durations) + max(0.0, float(pause)) * max(0, len(durations) - 1)
 
 
-def _quote_is_active(settings: ExportSettings) -> bool:
-    """Return whether the optional artwork section has been requested."""
-    return bool(
-        settings.quote_enabled
-        and (getattr(settings, "quote_artwork_path", "") or "").strip()
-    )
-
-
-def _validate_quote_artwork_settings(settings: ExportSettings) -> None:
-    """Validate the source path before any Stage-1 work begins.
-
-    This keeps an invalid Stage-2-only choice from needlessly invalidating or
-    rerendering the Main Video cache. PDF parsing/rasterization remains lazy
-    until Stage 2, when the selected page is actually needed.
-    """
-    if not settings.quote_enabled:
-        return
-    value = (getattr(settings, "quote_artwork_path", "") or "").strip()
-    if not value:
-        raise VideoMergerError(
-            "Include Quote / Flyer ist aktiviert, aber keine Artwork-Datei ausgewählt."
-        )
-    quote_artwork_path(value)
-
-
-def _quote_fit_mode(settings: ExportSettings) -> str:
-    value = str(getattr(settings, "quote_artwork_fit_mode", "fit") or "fit").strip().casefold()
-    return value if value in {"fit", "fill", "crop"} else "fit"
-
-
 
 def _image_is_active(settings: ExportSettings) -> bool:
     return bool(
@@ -253,17 +219,17 @@ def _image_dimensions(engine: VideoMergerEngine, path: Path) -> tuple[int, int]:
         raise VideoMergerError(f"Image Insertion hat keine gültige Auflösung: {path.name}")
     return width, height
 
-def _quote_artwork_target(
+def _stage2_image_target(
     settings: ExportSettings, reference: MediaInfo | list[MediaInfo]
 ) -> tuple[int, int]:
-    """Choose the actual output dimensions for PDF rasterization.
+    """Choose the actual output dimensions for a Stage-2 still image.
 
     The final target is still resolved by :mod:`target`; these dimensions only
-    determine how much detail a vector PDF receives before FFmpeg fits it. In
-    particular, Auto must honor a portrait project even when the Main Video is
-    landscape (and vice versa), rather than using the source video's shape as
-    the raster target.  When the complete Stage-2 sequence is available, use
-    it so a 4K Intro or Outro also promotes an Auto project to a 4K raster.
+    determine the canvas an uploaded image is fitted into. In particular, Auto
+    must honor a portrait project even when the Main Video is landscape (and
+    vice versa), rather than using the source video's shape as the target.
+    When the complete Stage-2 sequence is available, use it so a 4K Intro or
+    Outro also promotes an Auto project to a 4K canvas.
     """
     if str(settings.resolution or "").casefold() != "auto":
         return parse_resolution(settings.resolution)
@@ -821,7 +787,7 @@ class MainProjectEngine:
         render_folders = [
             media_source_folder(item)
             for item in render_media
-            if not item.is_quote_artwork and not item.is_image_insertion
+            if not item.is_image_insertion
         ]
         if len(set(render_folders)) > 1:
             log("Folder-aware alternation: consecutive clips use different source folders whenever an alternative remains.")
@@ -1271,6 +1237,39 @@ class MainProjectEngine:
             shutil.copyfile(source, target)
             setattr(main, attribute, target)
 
+    def _publish_short_script_text(
+        self,
+        result: MainVideoResult | CompleteWorkflowResult,
+        job_settings: ExportSettings,
+        log: LogCallback,
+    ) -> None:
+        """Write one ``<Short video name>.txt`` with that Short's own script text.
+
+        Every Short automatically gets exactly one plain-text sidecar beside its
+        video, containing the script text this Short uses: the derived section of
+        a global script, its basename-matched individual script, or — for a
+        single voiceover — the complete global script. The content is read back
+        from the script that this job's render settings already resolved, so no
+        additional transcription/ASR runs and the file can never contain text
+        from another Short. The name follows the FINAL video (including a name
+        that was bumped because the file already existed), which keeps the stable
+        per-Short numbering identical for video and text.
+
+        An explicit audio-only Short (its voiceover speaks no part of the global
+        script) has no text to publish and gets no sidecar; a sidecar problem is
+        logged and never turns a rendered Short into a failed job.
+        """
+        video = result.final_video if isinstance(result, CompleteWorkflowResult) else result.video
+        try:
+            target = write_short_script_text(video, global_script_path(job_settings))
+        except Exception as exc:
+            log(f"YouTube Short script text not written for {Path(video).name}: {exc}")
+            return
+        if target is None:
+            log(f"YouTube Short {Path(video).name} speaks no script text; no .txt sidecar created.")
+            return
+        log(f"YouTube Short script text: {target}")
+
     def _short_script_sections(
         self,
         settings: ExportSettings,
@@ -1308,8 +1307,20 @@ class MainProjectEngine:
             getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
         )
         if subtitle_mode == SUBTITLE_OUTPUT_WITHOUT:
-            # No alignment and no captions are generated at all.
-            return {}
+            # Without Subtitles still renders no alignment, no burn-in, no SRT
+            # and no VTT for the video: create_main decides that from the output
+            # mode, not from the script assignment. The sections are derived
+            # anyway because every Short must ship its own ``.txt`` script
+            # sidecar — without them each Short would keep the COMPLETE global
+            # script and its text file would claim words this Short never
+            # speaks. This is one shared global mapping (the same cached
+            # ``align_global`` call a combined Long-Form run makes), never one
+            # alignment per Short, and it stays fail-soft below when no
+            # alignment engine is available.
+            log(
+                "Subtitle output mode Without Subtitles: no captions are rendered, but the global "
+                "script is mapped once so every Short still receives its own script text file."
+            )
         units, _unit_scripts = ordered_voiceover_units(settings)
         # Sections exist per real acoustic unit. A configured-but-missing
         # voiceover is not part of the timeline (create_main drops it as well)
@@ -1402,7 +1413,7 @@ class MainProjectEngine:
         acoustic timeline. A shared :class:`ShortsVideoPool` assigns the next
         required raw prefix without replacement; it is reset only after the
         complete source pool is consumed. This deliberately preserves
-        intro/outro, Quote / Flyer, Add Image, music, original audio,
+        intro/outro, Add Image, music, original audio,
         transitions, chunking and the established FFmpeg command builder
         instead of maintaining a second Shorts renderer.
         """
@@ -1550,6 +1561,10 @@ class MainProjectEngine:
             if complete:
                 final_stem = result.final_video.stem if isinstance(result, CompleteWorkflowResult) else stem
                 self._publish_youtube_sidecars(result, job_dir, final_stem)
+            if kind == "short":
+                # Automatic, always: one script text file per Short, named like
+                # the video that was just produced.
+                self._publish_short_script_text(result, job_settings, log)
             if kind == "long":
                 output.long_form = result
             else:
@@ -1579,14 +1594,12 @@ class MainProjectEngine:
         WITHOUT burned-in subtitles is composed from the clean Main Video,
         and the YouTube metadata file is created from the authoritative
         voiceover transcript.
-        Eine aktivierte Quote-/Flyer-Datei ist ein gültiger Grund für Stage 2,
+        Eine aktivierte Add-Image-Datei ist ein gültiger Grund für Stage 2,
         auch ohne Intro und ohne Outro.
         """
-        _validate_quote_artwork_settings(settings)
         _validate_image_settings(settings)
-        quote_active = _quote_is_active(settings)
         image_active = _image_is_active(settings)
-        if not optional_path(settings.intro_path) and not optional_path(settings.outro_path) and not quote_active and not image_active:
+        if not optional_path(settings.intro_path) and not optional_path(settings.outro_path) and not image_active:
             raise VideoMergerError("One-Click benötigt eine zugewiesene Intro-, Image- und/oder Outro-Datei.")
 
         # Same subtitle-expectation rule as create_main: voiceover + script
@@ -1746,121 +1759,32 @@ class MainProjectEngine:
             require_asset(intro_path, "Intro", {".mp4", ".mov", ".mkv", ".m4v"})
         if outro_path:
             require_asset(outro_path, "Outro", {".mp4", ".mov", ".mkv", ".m4v"})
-        _validate_quote_artwork_settings(settings)
         _validate_image_settings(settings)
-        quote_artwork_value = (getattr(settings, "quote_artwork_path", "") or "").strip()
-        quote_active = _quote_is_active(settings)
         image_active = _image_is_active(settings)
         if not intro_path and not outro_path:
-            if not quote_active and not image_active:
+            if not image_active:
                 raise VideoMergerError("Stage 2 benötigt mindestens ein Intro-, Image- oder Outro-Video.")
         ordered_paths = [path for path in (intro_path, main_path, outro_path) if path]
         media = list(self.engine.analyze(ordered_paths, log))
-        # PDF pages are rasterized only for this synchronous Stage-2 export.
-        # Keep the source PDF untouched and remove the derived PNG in every
-        # normal success/failure path after FFmpeg no longer needs it.
-        prepared_quote_artwork = None
         stage2_resolution = settings.resolution
 
-        # Quote / Flyer: optional artwork section between Intro and Main Video.
-        # The selected image/PDF page uses the same duration and transition
-        # pipeline as every other Stage-2 section.
-        quote_position: int | None = None
-        if settings.quote_enabled:
-            quote_duration = float(settings.quote_duration)
-            if not (0.5 - 1e-9 <= quote_duration <= 5.0 + 1e-9):
-                raise VideoMergerError(
-                    f"Ungültige Quote-Dauer: {settings.quote_duration}; erlaubt: 0.5–5.0 s"
-                )
-            quote_index = 1 if intro_path else 0
-            # The main video is the stable quality reference, regardless of an
-            # optional Intro. It is already in ``media`` at index 1/0.
-            main_reference = media[1 if intro_path else 0]
-            reference = main_reference
-            # Uploaded PNG/JPG/JPEG/WEBP or one selected PDF page becomes
-            # a real, silent Stage-2 image input. The source file is never
-            # copied into the normal Output folder.
-            target_width, target_height = _quote_artwork_target(settings, media)
-            # An uploaded poster must be fitted into the project's target;
-            # its source pixel count must not unexpectedly promote an Auto
-            # video project to a different export resolution.
-            if str(settings.resolution or "").casefold() == "auto":
-                stage2_resolution = f"{target_width}x{target_height}"
-
-            def image_dimensions(path: Path) -> tuple[int, int]:
-                try:
-                    data = self.engine.analyzer.probe_raw(path)
-                    stream = next(
-                        item for item in data.get("streams", [])
-                        if item.get("codec_type") == "video"
-                    )
-                    width = int(stream.get("width") or 0)
-                    height = int(stream.get("height") or 0)
-                except (StopIteration, TypeError, ValueError, KeyError) as exc:
-                    raise VideoMergerError(
-                        f"Quote-Artwork konnte nicht analysiert werden: {path.name}"
-                    ) from exc
-                if width <= 0 or height <= 0:
-                    raise VideoMergerError(f"Quote-Artwork hat keine gültige Auflösung: {path.name}")
-                return width, height
-
-            prepared = prepare_quote_artwork(
-                quote_artwork_value,
-                int(getattr(settings, "quote_pdf_page", 1) or 1),
-                target_width,
-                target_height,
-                project_root() / "temp",
-                image_dimensions,
-            )
-            if prepared.pdf_page is not None:
-                prepared_quote_artwork = prepared
-            quote_item = MediaInfo(
-                path=prepared.path,
-                duration=quote_duration,
-                width=prepared.width,
-                height=prepared.height,
-                fps=reference.fps,
-                effective_width=prepared.width,
-                effective_height=prepared.height,
-                fps_fraction=reference.fps_fraction,
-                video_codec="image",
-                pixel_format="yuv420p",
-                sar="1:1",
-                dar="",
-                source_duration=quote_duration,
-                is_quote_artwork=True,
-                quote_fit_mode=_quote_fit_mode(settings),
-            )
-            log(
-                f"Quote Artwork aktiv: {prepared.source_path.name}"
-                + (f", PDF-Seite {prepared.pdf_page}" if prepared.pdf_page else "")
-                + f", Fit-Modus {quote_item.quote_fit_mode}; Audio: stumm"
-            )
-            media.insert(quote_index, quote_item)
-            quote_position = quote_index
-            log(
-                f"Position zwischen {'Intro und MainVideo' if intro_path else '(Start) und MainVideo'}"
-            )
-
-        # Independent Image Insertion: unlike Quote/Flyer this is not a PDF
-        # workflow and it has its own persisted framing/look controls. Insert
-        # exactly one occurrence at the requested semantic boundary. The
-        # image is never sent through the Stage-1 media list.
+        # Add Image (legacy name: Image Insertion) has its own persisted
+        # framing/look controls. Insert exactly one occurrence at the requested
+        # semantic boundary. The image is never sent through the Stage-1 media
+        # list.
         image_position: int | None = None
         if image_active:
-            if str(settings.resolution or "").casefold() == "auto" and stage2_resolution.casefold() == "auto":
-                image_target_width, image_target_height = _quote_artwork_target(settings, media)
+            if str(settings.resolution or "").casefold() == "auto":
+                image_target_width, image_target_height = _stage2_image_target(settings, media)
                 stage2_resolution = f"{image_target_width}x{image_target_height}"
             image_path = image_insertion_path(settings.image_path)
             image_width, image_height = _image_dimensions(self.engine, image_path)
             image_duration = clamp_image_duration(settings.image_duration)
-            # Quote/Flyer may already be inserted at index 0/1. Resolve the
-            # actual MainVideo reference by role rather than relying on a
+            # Resolve the actual MainVideo reference by role rather than by a
             # positional index; the reference supplies only cadence metadata.
             image_reference = next(
                 item for item in media
                 if item.path == main_path
-                and not item.is_quote_artwork
                 and not item.is_image_insertion
             )
             image_item = MediaInfo(
@@ -1888,13 +1812,11 @@ class MainProjectEngine:
             main_index = next(
                 index for index, item in enumerate(media)
                 if item.path == main_path
-                and not item.is_quote_artwork
                 and not item.is_image_insertion
             )
             if _image_position(settings) == "before_main":
                 # Before Main is semantic, rather than merely "after Intro":
-                # it stays immediately before Main even when Quote/Flyer is
-                # also enabled between Intro and Main.
+                # the image stays immediately before the Main Video.
                 image_position = main_index
             else:
                 # After Main is likewise immediately after Main, before an
@@ -1909,16 +1831,13 @@ class MainProjectEngine:
                 f"Filter {image_item.image_filter}; Audio: stumm"
             )
 
-        # Per-section original-audio gain and role in composition order. Both
-        # artwork features are explicit mute slots; no application voiceover,
-        # music, or original audio can attach to either still image.
+        # Per-section original-audio gain and role in composition order. Add
+        # Image is an explicit mute slot; no application voiceover, music, or
+        # original audio can attach to the still image.
         audio_modes: list[str] = []
         stage2_roles: list[str] = []
         for item in media:
-            if item.is_quote_artwork:
-                stage2_roles.append("quote")
-                audio_modes.append("mute")
-            elif item.is_image_insertion:
+            if item.is_image_insertion:
                 stage2_roles.append("image")
                 audio_modes.append("mute")
             elif intro_path and item.path == intro_path and "intro" not in stage2_roles:
@@ -1946,76 +1865,62 @@ class MainProjectEngine:
             original_audio_mode="original",
             stage2_audio_modes=audio_modes,
             stage2_roles=stage2_roles,
-            # The Quote/Flyer must join the section chain with the same
-            # transition system, so transitions stay active when it is on.
             transition_duration=(
-                settings.transition_duration
-                if (settings.outro_transition_enabled or quote_position is not None) else 0.0
+                settings.transition_duration if settings.outro_transition_enabled else 0.0
             ),
         )
-        try:
-            resolved = self.engine.make_plan(media, outro_settings, log)
-            # The existing "Use transition into Outro" switch remains
-            # authoritative.  A Quote/Flyer needs transitions on its own two
-            # boundaries, but must not silently re-enable Main → Outro.
-            if quote_position is not None and outro_path and not settings.outro_transition_enabled:
-                resolved.transitions[-1] = 0.0
-                log("Übergang zum Outro deaktiviert; Quote-Übergänge bleiben aktiv.")
-            if quote_position is not None:
-                resolved.expected_duration = max(
-                    0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
+        resolved = self.engine.make_plan(media, outro_settings, log)
+        # The existing "Use transition into Outro" switch remains
+        # authoritative for the section chain.
+        if image_position is not None:
+            # Keep the selected transition family, but let the image have
+            # its own persisted duration request. Clamp at each boundary
+            # so short sections never create duplicate/overlapping
+            # dissolves, hard cuts, black frames, or timeline gaps.
+            try:
+                image_transition = max(
+                    0.0, min(5.0, float(getattr(settings, "image_transition_duration", 1.0)))
                 )
-            if image_position is not None:
-                # Keep the selected transition family, but let the image have
-                # its own persisted duration request. Clamp at each boundary
-                # so short sections never create duplicate/overlapping
-                # dissolves, hard cuts, black frames, or timeline gaps.
-                try:
-                    image_transition = max(
-                        0.0, min(5.0, float(getattr(settings, "image_transition_duration", 1.0)))
-                    )
-                except (TypeError, ValueError):
-                    image_transition = 1.0
-                for boundary in (image_position - 1, image_position):
-                    if 0 <= boundary < len(resolved.transitions):
-                        left = resolved.effective_durations[boundary]
-                        right = resolved.effective_durations[boundary + 1]
-                        if image_transition <= 0.0:
-                            resolved.transitions[boundary] = 0.0
-                        else:
-                            resolved.transitions[boundary] = max(
-                                0.01, min(image_transition, left * 0.45, right * 0.45)
-                            )
-                resolved.expected_duration = max(
-                    0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
-                )
-            stage2_digest, _stage2_payload = stage2_fingerprint(media, settings, resolved)
-            log(f"Stage 2 composition fingerprint: {stage2_digest}")
-            if output_path is not None:
-                output = Path(output_path).expanduser().resolve()
-            else:
-                output = _available_bundle(
-                    output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4",)
-                )["mp4"]
-            if intro_path:
-                log("Stage 2 – Add Intro / Main / Outro")
-                log(
-                    f"Intro: {media[0].duration:.3f} s; audio available: "
-                    f"{'yes' if media[0].audio.present else 'no'}"
-                )
-            else:
-                log("Stage 2 – Add Outro")
+            except (TypeError, ValueError):
+                image_transition = 1.0
+            for boundary in (image_position - 1, image_position):
+                if 0 <= boundary < len(resolved.transitions):
+                    left = resolved.effective_durations[boundary]
+                    right = resolved.effective_durations[boundary + 1]
+                    if image_transition <= 0.0:
+                        resolved.transitions[boundary] = 0.0
+                    else:
+                        resolved.transitions[boundary] = max(
+                            0.01, min(image_transition, left * 0.45, right * 0.45)
+                        )
+            resolved.expected_duration = max(
+                0.0, sum(resolved.effective_durations) - sum(resolved.transitions)
+            )
+        stage2_digest, _stage2_payload = stage2_fingerprint(media, settings, resolved)
+        log(f"Stage 2 composition fingerprint: {stage2_digest}")
+        if output_path is not None:
+            output = Path(output_path).expanduser().resolve()
+        else:
+            output = _available_bundle(
+                output_dir, f"FinalVideo_{_aspect_token(settings.aspect)}", ("mp4",)
+            )["mp4"]
+        if intro_path:
+            log("Stage 2 – Add Intro / Main / Outro")
             log(
-                f"Outro: {media[-1].duration:.3f} s; audio available: "
-                f"{'yes' if media[-1].audio.present else 'no'}"
+                f"Intro: {media[0].duration:.3f} s; audio available: "
+                f"{'yes' if media[0].audio.present else 'no'}"
             )
-            log("Intro/Outro receive no application voiceover, no background music, and no subtitles.")
-            log(f"Intro original audio mode: {settings.intro_audio_mode}")
-            log(f"Outro original audio mode: {settings.outro_audio_mode}")
-            report = self.engine.export(
-                media, outro_settings, resolved, output,
-                progress=progress, log=log, cancel_event=cancel_event,
-            )
-            return output, report
-        finally:
-            cleanup_prepared_quote_artwork(prepared_quote_artwork)
+        else:
+            log("Stage 2 – Add Outro")
+        log(
+            f"Outro: {media[-1].duration:.3f} s; audio available: "
+            f"{'yes' if media[-1].audio.present else 'no'}"
+        )
+        log("Intro/Outro receive no application voiceover, no background music, and no subtitles.")
+        log(f"Intro original audio mode: {settings.intro_audio_mode}")
+        log(f"Outro original audio mode: {settings.outro_audio_mode}")
+        report = self.engine.export(
+            media, outro_settings, resolved, output,
+            progress=progress, log=log, cancel_event=cancel_event,
+        )
+        return output, report

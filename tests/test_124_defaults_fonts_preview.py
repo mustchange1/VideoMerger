@@ -305,20 +305,18 @@ def test_gui_defaults_and_live_preview_updates_without_export(qapp, monkeypatch)
         alignment, margin_v = subtitles._position("Top", 1920, 1080, "long")
         assert (layout.alignment, layout.margin_v) == (alignment, margin_v)
 
-        # --- Quote/Flyer artwork defaults and artwork-only GUI ---
-        assert window.quote_check.isChecked() is False
-        assert not hasattr(window, "quote_text_edit")
-        assert not hasattr(window, "quote_attribution_edit")
-        assert not hasattr(window, "quote_mode_combo")
-        assert window.quote_duration_spin.value() == 4.0
-        assert [window.quote_artwork_fit_combo.itemData(i) for i in range(window.quote_artwork_fit_combo.count())] == [
-            "fit", "fill", "crop"
-        ]
-        assert window.quote_pdf_page_spin.value() == 1
-        window.quote_check.setChecked(True)
-        assert window.quote_artwork_path_edit.isEnabled()
-        assert window.quote_artwork_choose.isEnabled()
-        assert window.quote_artwork_fit_combo.isEnabled()
-        assert window.quote_pdf_page_spin.isEnabled() is False
+        # --- Quote/Flyer section removed; Add Image preview stays ---
+        for removed in (
+            "quote_check", "quote_artwork_path_edit", "quote_artwork_choose",
+            "quote_pdf_page_spin", "quote_artwork_fit_combo", "quote_duration_spin",
+            "quote_preview", "quote_text_edit", "quote_attribution_edit",
+            "quote_mode_combo", "_update_quote_preview", "_sync_quote_visibility",
+        ):
+            assert not hasattr(window, removed)
+        assert window.image_check.isChecked() is False
+        assert window.image_preview is not None
+        window.image_check.setChecked(True)
+        assert window.image_path_edit.isEnabled()
+        assert window.image_fit_combo.isEnabled()
     finally:
         window.close()

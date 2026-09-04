@@ -93,6 +93,24 @@ def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
         assert window._settings().final_pause == 1.0
         assert window.music_volume_slider.value() == 44
         assert window.music_preset_combo.currentData() == ("balanced", 44)
+        # Separate background music: one Long-Form field, one Shorts field.
+        assert window.music_edit.text() == ""
+        assert window.short_music_edit.text() == ""
+        assert window._settings().music_path == ""
+        assert window._settings().short_music_path == ""
+        window.music_edit.setText("long_form_theme.mp3")
+        window.short_music_edit.setText("shorts_theme.mp3")
+        assert window._settings().music_path == "long_form_theme.mp3"
+        assert window._settings().short_music_path == "shorts_theme.mp3"
+        window.music_edit.setText("")
+        window.short_music_edit.setText("")
+        # The removed Quote/Flyer section left no widget or handler behind.
+        for removed in (
+            "quote_check", "quote_artwork_path_edit", "quote_pdf_page_spin",
+            "quote_artwork_fit_combo", "quote_duration_spin", "quote_preview",
+            "_update_quote_preview", "_sync_quote_visibility", "_quote_dimensions",
+        ):
+            assert not hasattr(window, removed)
         assert window.ducking_check.isChecked()
         assert window.subtitle_language_combo.currentText() == "German"
         assert window.subtitle_style_combo.currentData() == "long_1"

@@ -57,7 +57,7 @@ Set-ExecutionPolicy -Scope Process Bypass
   -Transition 1.0
 ```
 
-For the warm pass, use a new `-RunId` and the same input/settings. If the real project uses 9:16, 4K, NVENC, a watermark, Quote/Flyer artwork, or another subtitle preset, pass those exact values. The harness supports `-Watermark` and `-QuoteArtwork`; Quote/Flyer behavior is not changed by the harness.
+For the warm pass, use a new `-RunId` and the same input/settings. If the real project uses 9:16, 4K, NVENC, a watermark, Add Image, or another subtitle preset, pass those exact values. The harness supports `-Watermark`; Add Image behavior is not changed by the harness.
 
 If `-OutputRoot` is omitted, results are stored under the repository’s ignored
 `benchmark_results\phase2_baseline` directory. The input assets may be on another
@@ -220,4 +220,4 @@ Attach `baseline.result.json` and the complete logs to the result. Do not declar
 
 ## Scope gate after the baseline
 
-No production optimization is authorized by this preparation alone. After the real baseline is captured, use the measured encode/process breakdown to select the smallest safe optimization. Preserve the current pool selection, cache invalidation rules, transitions, audio, subtitles, watermark, Quote/Flyer, Intro, Outro, SRT/VTT, dual outputs, resolution, FPS, CRF, and preset.
+No production optimization is authorized by this preparation alone. After the real baseline is captured, use the measured encode/process breakdown to select the smallest safe optimization. Preserve the current pool selection, cache invalidation rules, transitions, audio, subtitles, watermark, Add Image, Intro, Outro, SRT/VTT, dual outputs, resolution, FPS, CRF, and preset.

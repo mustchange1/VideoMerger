@@ -22,7 +22,6 @@ from ..image_insertion import clamp_image_duration, clamp_image_zoom, normalize_
 from ..models import ExportSettings, ProgressEvent
 from ..project_order import natural_order, natural_sort_key, randomize_order
 from ..project_assets import probe_audio
-from ..quote_artwork import quote_artwork_path
 from ..quality import QUALITY_KEYS, QUALITY_PRESETS, quality_label
 from ..subtitles import ANIMATION_OPTIONS
 from ..paths import ensure_project_directories, locate_ffmpeg, project_root
@@ -36,7 +35,7 @@ from ..subtitle_modes import (
     SUBTITLE_OUTPUT_WITHOUT,
     normalize_subtitle_output_mode,
 )
-from ..subtitle_preview import ImageInsertionPreviewCanvas, QuotePreviewCanvas, SubtitlePreviewCanvas, sample_subtitle_text
+from ..subtitle_preview import ImageInsertionPreviewCanvas, SubtitlePreviewCanvas, sample_subtitle_text
 from ..timeline import duration_before_merge_value
 from ..video_pool import (
     VIDEO_ORDER_ALPHABETICAL,
@@ -153,7 +152,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.setStyleSheet(APP_STYLE)
         self._load_settings()
-        self._append_log("VideoMerger 1.5.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Before/After Merge, Quote/Flyer-Artwork, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
+        self._append_log("VideoMerger 1.5.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Before/After Merge, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
 
     def _build_ui(self) -> None:
         scroll = QScrollArea()
@@ -169,7 +168,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("VideoMerger")
         title.setObjectName("title")
-        subtitle = QLabel("Zwei Stufen · Voiceover · Musik · Wort-Sync · Untertitel · Video-Pool · Quote/Flyer · Smart Stretch · Before/After Merge · lokal")
+        subtitle = QLabel("Zwei Stufen · Voiceover · Musik · Wort-Sync · Untertitel · Video-Pool · Add Image · Smart Stretch · Before/After Merge · lokal")
         subtitle.setObjectName("subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -232,8 +231,26 @@ class MainWindow(QMainWindow):
         audio_group = QGroupBox("2 · Audio & Script")
         audio_layout = QGridLayout(audio_group)
         self.music_edit = QLineEdit()
+        self.music_edit.setToolTip(
+            "Background music for the YouTube Long-Form video (and the basic merge). "
+            "This track never plays in a YouTube Short."
+        )
         music_button = QPushButton("Choose …")
         music_button.clicked.connect(lambda: self._browse_asset(self.music_edit, "audio"))
+        # Separate Shorts music: strictly its own selection, never inherited
+        # from the Long-Form track. Empty means the Short has no music.
+        self.short_music_edit = QLineEdit()
+        self.short_music_edit.setPlaceholderText(
+            "Own track for every YouTube Short; empty = no music in Shorts …"
+        )
+        self.short_music_edit.setToolTip(
+            "Background music used only for the generated YouTube Shorts. "
+            "The Long-Form track above is never mixed into a Short."
+        )
+        short_music_button = QPushButton("Choose …")
+        short_music_button.clicked.connect(
+            lambda: self._browse_asset(self.short_music_edit, "audio")
+        )
         self.script_mode_combo = QComboBox()
         self.script_mode_combo.addItem("One Global Script (eine Textdatei für die komplette Voiceover-Timeline)", "single")
         self.script_mode_combo.addItem("Individual Scripts (Basename-Matching pro Voiceover)", "matched")
@@ -317,25 +334,28 @@ class MainWindow(QMainWindow):
         pause_row.addWidget(self.voiceover_pause_combo)
         pause_row.addWidget(self.voiceover_pause_spin)
         audio_layout.addLayout(pause_row, 5, 1, 1, 2)
-        audio_layout.addWidget(QLabel("Background Music"), 6, 0)
+        audio_layout.addWidget(QLabel("Background Music (Long-Form)"), 6, 0)
         audio_layout.addWidget(self.music_edit, 6, 1)
         audio_layout.addWidget(music_button, 6, 2)
+        audio_layout.addWidget(QLabel("Background Music (Shorts)"), 7, 0)
+        audio_layout.addWidget(self.short_music_edit, 7, 1)
+        audio_layout.addWidget(short_music_button, 7, 2)
         # 1.2.4 Default: Original Audio (Mute/Low bleiben unabhängig wählbar).
         self.original_audio_combo = QComboBox()
         self.original_audio_combo.addItem("Original (Standard)", "original")
         self.original_audio_combo.addItem("Low", "low")
         self.original_audio_combo.addItem("Mute", "mute")
-        audio_layout.addWidget(QLabel("Original Video Audio"), 7, 0)
-        audio_layout.addWidget(self.original_audio_combo, 7, 1)
+        audio_layout.addWidget(QLabel("Original Video Audio"), 8, 0)
+        audio_layout.addWidget(self.original_audio_combo, 8, 1)
         self.voice_volume_slider = QSlider(Qt.Horizontal)
         self.voice_volume_slider.setRange(0, 125)
         self.voice_volume_value = QLabel()
         self.voice_volume_slider.valueChanged.connect(
             lambda value: self.voice_volume_value.setText(f"{value} %")
         )
-        audio_layout.addWidget(QLabel("Voiceover Volume"), 8, 0)
-        audio_layout.addWidget(self.voice_volume_slider, 8, 1)
-        audio_layout.addWidget(self.voice_volume_value, 8, 2)
+        audio_layout.addWidget(QLabel("Voiceover Volume"), 9, 0)
+        audio_layout.addWidget(self.voice_volume_slider, 9, 1)
+        audio_layout.addWidget(self.voice_volume_value, 9, 2)
         self.music_preset_combo = QComboBox()
         for label, key, value in (
             ("Very Quiet", "very_quiet", 10), ("Quiet / Background", "quiet", 22),
@@ -347,13 +367,13 @@ class MainWindow(QMainWindow):
         self.music_volume_slider.setRange(0, 100)
         self.music_volume_value = QLabel()
         self.music_volume_slider.valueChanged.connect(self._music_volume_changed)
-        audio_layout.addWidget(QLabel("Music Preset"), 9, 0)
-        audio_layout.addWidget(self.music_preset_combo, 9, 1)
-        audio_layout.addWidget(QLabel("Music Volume"), 10, 0)
-        audio_layout.addWidget(self.music_volume_slider, 10, 1)
-        audio_layout.addWidget(self.music_volume_value, 10, 2)
+        audio_layout.addWidget(QLabel("Music Preset"), 10, 0)
+        audio_layout.addWidget(self.music_preset_combo, 10, 1)
+        audio_layout.addWidget(QLabel("Music Volume"), 11, 0)
+        audio_layout.addWidget(self.music_volume_slider, 11, 1)
+        audio_layout.addWidget(self.music_volume_value, 11, 2)
         self.ducking_check = QCheckBox("Voiceover Ducking – Musik weich unter Sprache absenken")
-        audio_layout.addWidget(self.ducking_check, 11, 0, 1, 3)
+        audio_layout.addWidget(self.ducking_check, 12, 0, 1, 3)
         # 1.3.0 Main Video End Padding: manual, free setting (0.0–5.0 s);
         # the existing ~1 second default is preserved exactly.
         self.end_padding_spin = QDoubleSpinBox()
@@ -361,6 +381,11 @@ class MainWindow(QMainWindow):
         self.end_padding_spin.setSingleStep(0.1)
         self.end_padding_spin.setDecimals(1)
         self.end_padding_spin.setSuffix(" sec")
+        self.end_padding_spin.setToolTip(
+            "Video-only padding after the voiceover for the Long-Form / basic Main Video. "
+            "YouTube Shorts always end with their own fixed 0.7 s video-only ending "
+            "(no speech, no subtitles), independent of this value."
+        )
         self.end_padding_spin.setValue(1.0)
         self.short_video_combo = QComboBox()
         self.short_video_combo.addItem("Hold Last Frame – finalen Frame halten", "hold")
@@ -413,24 +438,24 @@ class MainWindow(QMainWindow):
         self.duration_before_merge_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_check.toggled.connect(self._update_pool_status)
-        audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 12, 0)
-        audio_layout.addWidget(self.end_padding_spin, 12, 1)
-        audio_layout.addWidget(QLabel("If Video Is Too Short"), 13, 0)
-        audio_layout.addWidget(self.short_video_combo, 13, 1)
-        audio_layout.addWidget(QLabel("Duration Fit Mode"), 14, 0)
-        audio_layout.addWidget(self.duration_fit_combo, 14, 1)
-        audio_layout.addWidget(QLabel("Maximum Stretch"), 15, 0)
+        audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 13, 0)
+        audio_layout.addWidget(self.end_padding_spin, 13, 1)
+        audio_layout.addWidget(QLabel("If Video Is Too Short"), 14, 0)
+        audio_layout.addWidget(self.short_video_combo, 14, 1)
+        audio_layout.addWidget(QLabel("Duration Fit Mode"), 15, 0)
+        audio_layout.addWidget(self.duration_fit_combo, 15, 1)
+        audio_layout.addWidget(QLabel("Maximum Stretch"), 16, 0)
         stretch_row = QHBoxLayout()
         stretch_row.addWidget(self.max_stretch_combo)
         stretch_row.addWidget(self.max_stretch_spin)
-        audio_layout.addLayout(stretch_row, 15, 1)
-        audio_layout.addWidget(QLabel("Duration Before Merge"), 16, 0)
-        audio_layout.addWidget(self.duration_before_merge_combo, 16, 1)
-        audio_layout.addWidget(QLabel("Duration After Merge"), 17, 0)
+        audio_layout.addLayout(stretch_row, 16, 1)
+        audio_layout.addWidget(QLabel("Duration Before Merge"), 17, 0)
+        audio_layout.addWidget(self.duration_before_merge_combo, 17, 1)
+        audio_layout.addWidget(QLabel("Duration After Merge"), 18, 0)
         after_row = QHBoxLayout()
         after_row.addWidget(self.duration_after_merge_check)
         after_row.addWidget(self.duration_after_merge_combo)
-        audio_layout.addLayout(after_row, 17, 1, 1, 2)
+        audio_layout.addLayout(after_row, 18, 1, 1, 2)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -534,16 +559,14 @@ class MainWindow(QMainWindow):
         self.radio_16 = QRadioButton("16:9 · YouTube / Landscape")
         self.radio_9 = QRadioButton("9:16 · Shorts / Reels / TikTok")
         self.radio_16.toggled.connect(self._update_resolution_choices)
-        self.radio_16.toggled.connect(self._update_quote_preview)
         self.radio_16.toggled.connect(self._update_image_preview)
-        self.radio_9.toggled.connect(self._update_quote_preview)
         self.radio_9.toggled.connect(self._update_image_preview)
         format_layout.addWidget(self.radio_16, 0, 0)
         format_layout.addWidget(self.radio_9, 0, 1)
         format_layout.addWidget(QLabel("Resolution"), 1, 0)
         self.resolution_combo = QComboBox()
         self.resolution_combo.currentIndexChanged.connect(self._mark_preset_custom)
-        self.resolution_combo.currentIndexChanged.connect(self._update_quote_preview)
+        self.resolution_combo.currentIndexChanged.connect(self._update_image_preview)
         format_layout.addWidget(self.resolution_combo, 1, 1)
         format_layout.addWidget(QLabel("Fit Mode"), 2, 0)
         self.fit_combo = QComboBox()
@@ -741,7 +764,7 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.cancel_button)
         outer.addLayout(action_layout)
 
-        outro_group = QGroupBox("7 · Optional Stage 2 – Intro / Add Image / Quote-Flyer / Outro")
+        outro_group = QGroupBox("7 · Optional Stage 2 – Intro / Add Image / Outro")
         outro_layout = QGridLayout(outro_group)
         self.intro_edit = QLineEdit()
         self.main_video_edit = QLineEdit()
@@ -761,44 +784,9 @@ class MainWindow(QMainWindow):
         self.outro_audio_combo.addItem("Low", "low")
         self.outro_audio_combo.addItem("Mute", "mute")
         self.outro_transition_check = QCheckBox("Use selected visual transition between sections")
-        # Optional, silent Stage-2 artwork between Intro and Main Video.
-        # The finished visual is created outside VideoMerger; there is no
-        # Uploaded Quote/Flyer artwork is the only Quote workflow in the GUI.
-        self.quote_check = QCheckBox("Include Quote / Flyer")
-        self.quote_artwork_path_edit = QLineEdit()
-        self.quote_artwork_path_edit.setPlaceholderText(
-            "PDF, PNG, JPG, JPEG oder WEBP auswählen …"
-        )
-        self.quote_artwork_choose = QPushButton("Choose File …")
-        self.quote_artwork_choose.clicked.connect(
-            lambda: self._browse_asset(self.quote_artwork_path_edit, "quote_artwork")
-        )
-        self.quote_pdf_page_spin = QSpinBox()
-        self.quote_pdf_page_spin.setRange(1, 9999)
-        self.quote_pdf_page_spin.setValue(1)
-        self.quote_pdf_page_spin.setToolTip("One-based page number for a multi-page PDF.")
-        self.quote_artwork_fit_combo = QComboBox()
-        self.quote_artwork_fit_combo.addItem("Fit", "fit")
-        self.quote_artwork_fit_combo.addItem("Fill", "fill")
-        self.quote_artwork_fit_combo.addItem("Crop", "crop")
-        self.quote_duration_spin = QDoubleSpinBox()
-        self.quote_duration_spin.setRange(0.5, 5.0)
-        self.quote_duration_spin.setSingleStep(0.1)
-        self.quote_duration_spin.setDecimals(1)
-        self.quote_duration_spin.setSuffix(" sec")
-        self.quote_duration_spin.setValue(4.0)
-        self.quote_preview = QuotePreviewCanvas()
-        self.quote_preview.setMinimumHeight(180)
-        self.quote_check.toggled.connect(self._sync_quote_visibility)
-        self.quote_artwork_path_edit.textChanged.connect(self._sync_quote_artwork_controls)
-        self.quote_pdf_page_spin.valueChanged.connect(self._update_quote_preview)
-        self.quote_artwork_fit_combo.currentIndexChanged.connect(self._update_quote_preview)
-        self.quote_duration_spin.valueChanged.connect(self._update_quote_preview)
-
-        # Add Image (Stage 2 only). This is intentionally a separate control
-        # namespace from Quote/Flyer, including its own framing, zoom, look,
-        # duration, boundary transition and position state. Image Insertion is
-        # retained as the legacy API/persistence name.
+        # Add Image (Stage 2 only) has its own control namespace, including its
+        # own framing, zoom, look, duration, boundary transition and position
+        # state. Image Insertion is retained as the legacy API/persistence name.
         self.image_group = QGroupBox("Add Image (silent Stage 2)")
         image_layout = QGridLayout(self.image_group)
         self.image_check = QCheckBox("Include Image")
@@ -878,7 +866,7 @@ class MainWindow(QMainWindow):
         outro_layout.addWidget(QLabel("Outro Original Audio"), 5, 0)
         outro_layout.addWidget(self.outro_audio_combo, 5, 1)
         # Add Image is deliberately the first Stage-2 section directly below
-        # Add Intro. Quote/Flyer remains a separate section below it.
+        # Add Intro.
         image_layout.addWidget(self.image_check, 0, 0, 1, 3)
         image_layout.addWidget(QLabel("Image File"), 1, 0)
         image_layout.addWidget(self.image_path_edit, 1, 1)
@@ -904,19 +892,7 @@ class MainWindow(QMainWindow):
         image_layout.addWidget(self.image_preview, 9, 1, 1, 2)
         outro_layout.addWidget(self.image_group, 1, 0, 1, 3)
         outro_layout.addWidget(self.outro_transition_check, 6, 0, 1, 2)
-        outro_layout.addWidget(self.quote_check, 7, 0, 1, 3)
-        outro_layout.addWidget(QLabel("Quote / Flyer File"), 8, 0)
-        outro_layout.addWidget(self.quote_artwork_path_edit, 8, 1)
-        outro_layout.addWidget(self.quote_artwork_choose, 8, 2)
-        outro_layout.addWidget(QLabel("PDF Page"), 9, 0)
-        outro_layout.addWidget(self.quote_pdf_page_spin, 9, 1)
-        outro_layout.addWidget(QLabel("Artwork Fit"), 10, 0)
-        outro_layout.addWidget(self.quote_artwork_fit_combo, 10, 1, 1, 2)
-        outro_layout.addWidget(QLabel("Duration"), 11, 0)
-        outro_layout.addWidget(self.quote_duration_spin, 11, 1)
-        outro_layout.addWidget(QLabel("Preview"), 12, 0)
-        outro_layout.addWidget(self.quote_preview, 12, 1, 1, 2)
-        outro_layout.addWidget(self.final_button, 13, 1)
+        outro_layout.addWidget(self.final_button, 7, 1)
         outer.addWidget(outro_group)
 
         summary_group = QGroupBox("Projekt-Reihenfolge · Videos – Natural, Alphabetical, Random oder Manual")
@@ -1078,6 +1054,7 @@ class MainWindow(QMainWindow):
         self.crf_spin.setValue(self.saved.crf)
         self.output_name_edit.setText(self.saved.output_name)
         self.music_edit.setText(self.saved.music_path)
+        self.short_music_edit.setText(getattr(self.saved, "short_music_path", ""))
         self.main_video_edit.setText(self.saved.main_video_path)
         self.intro_edit.setText(self.saved.intro_path)
         self.outro_edit.setText(self.saved.outro_path)
@@ -1214,18 +1191,6 @@ class MainWindow(QMainWindow):
         self.duck_attack_spin.setValue(self.saved.ducking_attack_ms)
         self.duck_release_spin.setValue(self.saved.ducking_release_ms)
         self.subtitle_model_combo.setCurrentText(self.saved.subtitle_model)
-        # Quote / Flyer artwork. Legacy text Quote fields are intentionally
-        # not copied into the new UI; they remain harmlessly loadable in the
-        # settings model, but can never trigger text rendering.
-        self.quote_check.setChecked(bool(self.saved.quote_enabled))
-        self.quote_artwork_path_edit.setText(getattr(self.saved, "quote_artwork_path", ""))
-        self.quote_pdf_page_spin.setValue(max(1, int(getattr(self.saved, "quote_pdf_page", 1) or 1)))
-        fit_index = self.quote_artwork_fit_combo.findData(
-            getattr(self.saved, "quote_artwork_fit_mode", "fit")
-        )
-        self.quote_artwork_fit_combo.setCurrentIndex(fit_index if fit_index >= 0 else 0)
-        self.quote_duration_spin.setValue(max(0.5, min(5.0, float(self.saved.quote_duration))))
-        self._sync_quote_visibility()
         self.image_check.setChecked(bool(getattr(self.saved, "image_enabled", False)))
         self.image_path_edit.setText(getattr(self.saved, "image_path", ""))
         image_position_index = self.image_position_combo.findData(
@@ -1253,7 +1218,6 @@ class MainWindow(QMainWindow):
         self._sync_image_visibility()
         self._sync_subtitle_request()
         self._update_subtitle_live_preview()
-        self._update_quote_preview()
         self._update_pool_status()
 
     def _settings(self) -> ExportSettings:
@@ -1301,6 +1265,7 @@ class MainWindow(QMainWindow):
             voiceover_order_mode=normalize_voiceover_order_mode(self.voiceover_order_combo.currentData()),
             voiceover_pause=float(self.voiceover_pause_spin.value()),
             music_path=self.music_edit.text().strip(),
+            short_music_path=self.short_music_edit.text().strip(),
             main_video_path=self.main_video_edit.text().strip(),
             intro_path=self.intro_edit.text().strip(),
             outro_path=self.outro_edit.text().strip(),
@@ -1342,14 +1307,6 @@ class MainWindow(QMainWindow):
             watermark_margin=self.watermark_margin_spin.value(),
             watermark_scope=str(self.watermark_scope_combo.currentData()),
             outro_transition_enabled=self.outro_transition_check.isChecked(),
-            # Stage-2 Quote / Flyer artwork. Legacy text settings are not
-            # written from the GUI and cannot produce a generated card.
-            quote_enabled=self.quote_check.isChecked(),
-            quote_input_mode="artwork",
-            quote_artwork_path=self.quote_artwork_path_edit.text().strip(),
-            quote_pdf_page=int(self.quote_pdf_page_spin.value()),
-            quote_artwork_fit_mode=str(self.quote_artwork_fit_combo.currentData()),
-            quote_duration=float(self.quote_duration_spin.value()),
             image_enabled=self.image_check.isChecked(),
             image_path=self.image_path_edit.text().strip(),
             image_position=normalize_image_position(self.image_position_combo.currentData()),
@@ -1562,7 +1519,7 @@ class MainWindow(QMainWindow):
                     self.subtitle_animation_combo.setCurrentIndex(animation_index)
             self._update_subtitle_live_preview()
         self._mark_preset_custom()
-        self._update_quote_preview()
+        self._update_image_preview()
 
     def _toggle_advanced(self, checked: bool) -> None:
         self.advanced_box.setVisible(checked)
@@ -1595,7 +1552,6 @@ class MainWindow(QMainWindow):
             "audio": "Audio (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.opus);;All files (*)",
             "script": "Text Script (*.txt *.text *.md);;All files (*)",
             "image": "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;All files (*)",
-            "quote_artwork": "Quote/Flyer (*.pdf *.png *.jpg *.jpeg *.webp);;All files (*)",
             "image_insertion": "Image Insertion (*.png *.jpg *.jpeg *.webp);;All files (*)",
             "video": "Videos (*.mp4 *.mov *.mkv *.m4v *.avi *.webm);;All files (*)",
         }
@@ -1683,71 +1639,6 @@ class MainWindow(QMainWindow):
             width=frame[0],
             height=frame[1],
         )
-
-    # ------------------------------------------------------------------ #
-    # Quote / Flyer artwork preview
-    # ------------------------------------------------------------------ #
-    def _quote_dimensions(self) -> tuple[int, int]:
-        """Return the selected output canvas for the artwork preview."""
-        value = self.resolution_combo.currentText().strip().lower().replace("×", "x")
-        if "x" in value:
-            try:
-                width, height = (int(part) for part in value.split("x", 1))
-                if width > 0 and height > 0:
-                    return width, height
-            except ValueError:
-                pass
-        return (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
-
-    def _update_quote_preview(self, *_args) -> None:
-        if not hasattr(self, "quote_preview"):
-            return
-        width, height = self._quote_dimensions()
-        self.quote_preview.set_artwork(
-            self.quote_artwork_path_edit.text().strip(),
-            int(self.quote_pdf_page_spin.value()),
-            str(self.quote_artwork_fit_combo.currentData()),
-            width,
-            height,
-        )
-
-    def _sync_quote_artwork_controls(self, *_args) -> None:
-        enabled = self.quote_check.isChecked()
-        artwork_path = self.quote_artwork_path_edit.text().strip()
-        is_pdf = artwork_path.casefold().endswith(".pdf")
-        if is_pdf:
-            try:
-                from ..quote_artwork import pdf_page_count
-                page_count = max(1, pdf_page_count(artwork_path))
-                self.quote_pdf_page_spin.setMaximum(page_count)
-                self.quote_pdf_page_spin.setValue(
-                    min(self.quote_pdf_page_spin.value(), page_count)
-                )
-            except Exception:
-                # Export performs the authoritative validation and reports the
-                # dependency, corruption, or invalid-page error clearly.
-                self.quote_pdf_page_spin.setMaximum(9999)
-        else:
-            self.quote_pdf_page_spin.setMaximum(9999)
-        self.quote_artwork_path_edit.setEnabled(enabled)
-        self.quote_artwork_choose.setEnabled(enabled)
-        self.quote_pdf_page_spin.setEnabled(enabled and is_pdf)
-        self.quote_artwork_fit_combo.setEnabled(enabled)
-        self.quote_duration_spin.setEnabled(enabled)
-        self._update_quote_preview()
-
-    def _sync_quote_visibility(self, *_args) -> None:
-        enabled = self.quote_check.isChecked()
-        for widget in (
-            self.quote_artwork_path_edit,
-            self.quote_artwork_choose,
-            self.quote_pdf_page_spin,
-            self.quote_artwork_fit_combo,
-            self.quote_duration_spin,
-            self.quote_preview,
-        ):
-            widget.setEnabled(enabled)
-        self._sync_quote_artwork_controls()
 
     def _preview_subtitle_style(self) -> None:
         """1.3.0: größere Untertitel-Vorschau mit DER Renderer-Logik.
@@ -2423,23 +2314,8 @@ class MainWindow(QMainWindow):
             if settings.watermark_enabled and not settings.watermark_path:
                 QMessageBox.warning(self, "Watermark fehlt", "Bitte ein Watermark-Bild wählen oder Watermark deaktivieren.")
                 return
-        # Quote / Flyer is artwork-only. Validate it before starting Stage 1
-        # so a missing or unsupported Stage-2 asset does not waste a render.
-        quote_active = False
-        if settings.quote_enabled:
-            artwork_value = (settings.quote_artwork_path or "").strip()
-            if not artwork_value:
-                QMessageBox.warning(
-                    self, "Quote / Flyer File fehlt",
-                    "Include Quote / Flyer ist aktiviert, aber keine Datei ausgewählt.",
-                )
-                return
-            try:
-                quote_artwork_path(artwork_value)
-            except VideoMergerError as exc:
-                QMessageBox.warning(self, "Quote / Flyer ungültig", str(exc))
-                return
-            quote_active = True
+        # Add Image is validated before starting Stage 1 so a missing or
+        # unsupported Stage-2 asset does not waste a render.
         image_active = False
         if settings.image_enabled:
             image_value = (settings.image_path or "").strip()
@@ -2456,10 +2332,10 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Image Insertion ungültig", str(exc))
                 return
             image_active = True
-        if mode == "complete" and not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active and not image_active:
+        if mode == "complete" and not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not image_active:
             QMessageBox.warning(
-                self, "Intro/Outro/Quote fehlen",
-                "One-Click benötigt mindestens ein gültiges Intro- oder Outro-Video oder eine aktive Quote-/Flyer-Datei.",
+                self, "Intro/Outro/Image fehlen",
+                "One-Click benötigt mindestens ein gültiges Intro- oder Outro-Video oder eine aktive Add-Image-Datei.",
             )
             return
         if mode == "outro":
@@ -2468,10 +2344,10 @@ class MainWindow(QMainWindow):
                     self, "Stage 2 Inputs fehlen", "Bitte ein gültiges MainVideo auswählen."
                 )
                 return
-            if not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active and not image_active:
+            if not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not image_active:
                 QMessageBox.warning(
                     self, "Stage 2 Inputs fehlen",
-                    "Bitte mindestens ein Intro- oder Outro-Video auswählen oder eine aktive Quote-/Flyer-/Image-Datei auswählen.",
+                    "Bitte mindestens ein Intro- oder Outro-Video auswählen oder eine aktive Add-Image-Datei auswählen.",
                 )
                 return
         self.store.save(settings)
@@ -2530,9 +2406,6 @@ class MainWindow(QMainWindow):
             self.source_folders_list, self.video_order_combo, self.export_mode_combo,
             self.duration_before_merge_combo, self.duration_after_merge_check,
             self.duration_after_merge_combo,
-            self.quote_check, self.quote_artwork_path_edit, self.quote_artwork_choose,
-            self.quote_pdf_page_spin, self.quote_artwork_fit_combo,
-            self.quote_duration_spin, self.quote_preview,
             self.image_check, self.image_path_edit, self.image_choose,
             self.image_position_combo, self.image_duration_combo,
             self.image_duration_spin, self.image_transition_combo,
@@ -2545,7 +2418,6 @@ class MainWindow(QMainWindow):
             widget.setEnabled(not busy)
         if not busy:
             self._sync_script_mode_controls()
-            self._sync_quote_visibility()
             self._sync_image_visibility()
 
     def _cancel(self) -> None:

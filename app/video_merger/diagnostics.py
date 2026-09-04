@@ -144,7 +144,21 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
         except Exception as exc:
             items.append(DiagnosticItem("Background Music", False, str(exc)))
     else:
-        items.append(DiagnosticItem("Background Music", True, "optional · not assigned"))
+        items.append(DiagnosticItem("Background Music", True, "optional · not assigned (Long-Form)"))
+    # Shorts use their own strictly separate track; report it independently so
+    # an unreadable Shorts file is visible before the export starts.
+    short_music = optional_path(getattr(settings, "short_music_path", ""))
+    if short_music:
+        try:
+            info = probe_audio(ffprobe, short_music)
+            items.append(DiagnosticItem(
+                "Background Music (Shorts)", True,
+                f"{info.duration:.3f} s · {info.sample_rate} Hz · loops only inside YouTube Shorts"
+            ))
+        except Exception as exc:
+            items.append(DiagnosticItem("Background Music (Shorts)", False, str(exc)))
+    else:
+        items.append(DiagnosticItem("Background Music (Shorts)", True, "optional · not assigned (Shorts stay without music)"))
     script = global_script_path(settings) if str(settings.script_mode).casefold() not in {"matched", "individual"} else (
         optional_path(settings.script_path)
     )

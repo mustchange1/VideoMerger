@@ -1,4 +1,4 @@
-"""1.2.4: Echte Untertitel- und Quote-Vorschau für die GUI.
+"""1.2.4: Echte Untertitel-Vorschau für die GUI.
 
 Die Vorschau berechnet ihre Geometrie mit denselben Funktionen, die der
 eingebrannte Renderer verwendet:
@@ -11,8 +11,8 @@ eingebrannte Renderer verwendet:
 * Safe-Area: ``margin_h``/``margin_v``/Positions-Mathematik aus
   :func:`subtitles._position` (identische Werte wie in :func:`subtitles.write_ass`)
 * Outline/Box/Akzent: selbe Ratios und Farben wie :func:`subtitles.write_ass`
-* Quote/Flyer: the selected image/PDF page is framed with the same
-  aspect-safe Fit/Fill/Crop rules as the FFmpeg filter graph.
+* Add Image: the selected image is framed with the same aspect-safe
+  Fit/Fill/Crop rules as the FFmpeg filter graph.
 
 Damit ist die Vorschau proportional identisch zum Final Render in der
 gewählten Auflösung – kein dekoratives QLabel, keine FFmpeg-Render.
@@ -384,111 +384,6 @@ if _QIMPORTS_OK:
             )
             painter.end()
 
-    class QuotePreviewCanvas(_PreviewCanvasBase):
-        """Preview the selected Quote/Flyer artwork with aspect-safe framing."""
-
-        def __init__(self, parent=None) -> None:
-            super().__init__(parent)
-            self._artwork: QImage | None = None
-            self._artwork_fit_mode = "fit"
-            self._artwork_error = ""
-            self._artwork_width = 16
-            self._artwork_height = 9
-
-        def set_artwork(
-            self, path: str, page: int, fit_mode: str, width: int, height: int,
-        ) -> None:
-            """Load an uploaded image or the selected PDF page for preview."""
-            self._artwork = None
-            self._artwork_error = ""
-            self._artwork_fit_mode = fit_mode if fit_mode in {"fit", "fill", "crop"} else "fit"
-            source = str(path or "").strip()
-            if source:
-                if source.casefold().endswith(".pdf"):
-                    try:
-                        import fitz  # type: ignore[import-not-found]
-                        document = fitz.open(source)
-                        try:
-                            page_number = int(page)
-                            if not 1 <= page_number <= document.page_count:
-                                raise ValueError(
-                                    f"PDF Page {page_number} is not available"
-                                )
-                            pdf_page = document.load_page(page_number - 1)
-                            pixmap = pdf_page.get_pixmap(alpha=False)
-                            self._artwork = QImage(
-                                pixmap.samples, pixmap.width, pixmap.height,
-                                pixmap.stride, QImage.Format.Format_RGB888,
-                            ).copy()
-                        finally:
-                            document.close()
-                    except Exception as exc:  # preview must not block export
-                        self._artwork_error = f"PDF preview unavailable: {exc}"
-                else:
-                    image = QImage(source)
-                    if not image.isNull():
-                        self._artwork = image
-                    else:
-                        self._artwork_error = "Artwork preview unavailable"
-            self._artwork_width, self._artwork_height = width, height
-            self.update()
-
-        def paintEvent(self, event) -> None:  # noqa: N802
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-            video = self._video_rect(self._artwork_width, self._artwork_height)
-            if video is None:
-                self._paint_backdrop(painter, None)
-                painter.end()
-                return
-            rect, _scale = video
-            self._paint_backdrop(painter, rect)
-            if self._artwork is None:
-                if self._artwork_error:
-                    painter.setPen(QPen(QColor(255, 210, 100)))
-                    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._artwork_error)
-                painter.end()
-                return
-
-            image = self._artwork
-            target = QSize(max(1, round(rect.width())), max(1, round(rect.height())))
-            if self._artwork_fit_mode == "fit":
-                painter.fillRect(rect, QColor(0, 0, 0))
-                shown = image.scaled(
-                    target, Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            else:
-                if self._artwork_fit_mode == "crop" and image.height() > 0:
-                    target_ratio = rect.width() / max(1.0, rect.height())
-                    source_ratio = image.width() / max(1.0, image.height())
-                    if source_ratio > target_ratio:
-                        crop_w = max(1, round(image.height() * target_ratio))
-                        image = image.copy(
-                            (image.width() - crop_w) // 2, 0, crop_w, image.height()
-                        )
-                    else:
-                        crop_h = max(1, round(image.width() / target_ratio))
-                        image = image.copy(
-                            0, (image.height() - crop_h) // 2, image.width(), crop_h
-                        )
-                shown = image.scaled(
-                    target, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            x = rect.left() + (rect.width() - shown.width()) / 2
-            y = rect.top() + (rect.height() - shown.height()) / 2
-            painter.save()
-            painter.setClipRect(rect)
-            painter.drawImage(QPointF(x, y), shown)
-            painter.restore()
-            if self._artwork_error:
-                painter.setPen(QPen(QColor(255, 210, 100)))
-                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._artwork_error)
-            painter.end()
-
-
     class ImageInsertionPreviewCanvas(_PreviewCanvasBase):
         """Live preview for the independent Image Insertion section.
 
@@ -600,13 +495,6 @@ else:  # pragma: no cover - PySide6 fehlt
 
         def set_state(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
             raise RuntimeError("PySide6 ist für die Untertitel-Vorschau erforderlich.")
-
-    class QuotePreviewCanvas(QWidget):  # type: ignore[no-redef]
-        def __init__(self, parent=None) -> None:
-            super().__init__()
-
-        def set_artwork(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
-            raise RuntimeError("PySide6 ist für die Quote-Vorschau erforderlich.")
 
     class ImageInsertionPreviewCanvas(QWidget):  # type: ignore[no-redef]
         def __init__(self, parent=None) -> None:

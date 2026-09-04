@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .models import ExportSettings
+from .project_assets import read_script
 from .subtitle_presets import get_preset
 from .voiceover_order import normalize_voiceover_order_mode, voiceover_order_indices
 
@@ -28,6 +29,14 @@ EXPORT_MODE_LABELS = {
     EXPORT_MODE_SHORTS: "YouTube Shorts",
     EXPORT_MODE_COMBINED: "YouTube Long-Form + YouTube Shorts",
 }
+
+#: Every YouTube Short ends with this much video-only material after its own
+#: voiceover has finished: no speech, no voiceover audio and no subtitle — the
+#: spoken audio stays the authoritative duration and the caption timeline ends
+#: with it, so the ending can never show text from this or another Short. The
+#: additional material comes from the existing video timeline logic (clip
+#: selection, transitions, Hold/Loop and chunking), not from a new renderer.
+SHORT_ENDING_SECONDS = 0.7
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +127,12 @@ def build_short_jobs(settings: ExportSettings) -> list[ShortJob]:
 
 
 def long_form_settings(settings: ExportSettings) -> ExportSettings:
-    """Return the landscape settings used by the Long-Form branch."""
+    """Return the landscape settings used by the Long-Form branch.
+
+    ``music_path`` is deliberately left untouched: it is the Long-Form (and
+    basic merge) background music, and the separate Shorts track below is
+    never mixed into a landscape render.
+    """
     style = str(getattr(settings, "subtitle_style", "long_1") or "long_1")
     # The generic subtitle controls are the Long-Form profile. A stale Short
     # preset from a 9:16 project must never leak into the landscape job; valid
@@ -195,12 +209,62 @@ def short_settings(
         script_path=script_path,
         global_script_path=global_script,
         subtitle_enabled=subtitle_enabled,
+        # Strictly separate background music: a Short plays only its own
+        # selected track, and an unselected Shorts track means no music at all.
+        # The Long-Form track above is never mixed into a vertical render.
+        music_path=str(getattr(settings, "short_music_path", "") or ""),
         # A Short is one acoustic unit. Inter-unit silence belongs only to the
         # combined Long-Form timeline, never to an individual Short.
         voiceover_pause=0.0,
+        # The spoken audio stays the authoritative duration; the Short simply
+        # continues with video-only material for the fixed visual ending.
+        final_pause=SHORT_ENDING_SECONDS,
         subtitle_style=style,
         subtitle_animation=str(getattr(settings, "short_subtitle_animation", "word_highlight") or "word_highlight"),
         subtitle_font=str(getattr(settings, "short_subtitle_font", "inter") or "inter"),
         subtitle_position=str(getattr(settings, "short_subtitle_position", "Bottom Center") or "Bottom Center"),
         render_variant_key=job.cache_key,
     )
+
+
+#: Every Short receives one plain-text sidecar with its own script text.
+SHORT_SCRIPT_TEXT_SUFFIX = ".txt"
+
+
+def short_script_text_path(video_path: Path | str) -> Path:
+    """Return the ``.txt`` sidecar path that belongs to one Short video.
+
+    The sidecar always follows the *final* video name, including a name that was
+    bumped because the target file already existed, so video and text can never
+    drift apart and the stable per-Short numbering stays identical.
+    """
+    return Path(video_path).with_suffix(SHORT_SCRIPT_TEXT_SUFFIX)
+
+
+def write_short_script_text(
+    video_path: Path | str,
+    script_path: Path | str | None,
+) -> Path | None:
+    """Write the exact script text a Short uses next to its rendered video.
+
+    The text is read back from the script that the Short's own render settings
+    already resolved — the derived global-script section, its basename-matched
+    individual script, or the project's single global script. Nothing is
+    transcribed again: no ASR, no alignment and no second subtitle pass runs for
+    the sidecar, so the file always matches the spoken/captioned content of that
+    Short and never contains text from another Short.
+
+    Returns the written path, or ``None`` when the Short has no script text at
+    all (an explicit audio-only Short), in which case no sidecar is created.
+    """
+    source = str(script_path or "").strip()
+    if not source:
+        return None
+    text = read_script(Path(source).expanduser())
+    target = short_script_text_path(video_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # One trailing newline keeps the file a well-formed text file; the script
+    # text itself is written exactly as derived (spelling, punctuation and line
+    # breaks included) and never re-wrapped or normalized.
+    target.write_text(text + "\n", encoding="utf-8")
+    return target

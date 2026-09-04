@@ -51,11 +51,8 @@ class MediaInfo:
     # clip down (stretch), > 1.0 speeds it up. The render graph applies this
     # via setpts on the video chain and atempo on the clip's own audio.
     playback_rate: float = 1.0
-    # Quote/Flyer artwork is a real, silent Stage-2 image input.
-    is_quote_artwork: bool = False
-    quote_fit_mode: str = "fit"  # fit | fill | crop
-    # Add Image is a different Stage-2 input. Keeping a distinct flag/settings
-    # payload prevents Quote/Flyer changes from being silently applied to it.
+    # Add Image is a real, silent Stage-2 image input with its own flag and
+    # settings payload, so image composition changes are always explicit.
     is_image_insertion: bool = False
     image_fit_mode: str = "fit"  # fit | fill | crop
     image_zoom: int = 100
@@ -104,7 +101,13 @@ class ExportSettings:
     workflow_stage: str = "basic"  # basic | main | outro
     voiceover_path: str = ""
     script_path: str = ""
+    # ``music_path`` is the Long-Form/basic background music. YouTube Shorts
+    # use their own track: the two selections are strictly separate, so the
+    # Long-Form music never plays in a Short and an empty Shorts track means
+    # that Short simply has no background music. Volume, preset, ducking,
+    # looping and trimming stay shared behavior for whichever track is active.
     music_path: str = ""
+    short_music_path: str = ""
     main_video_path: str = ""
     outro_path: str = ""
     intro_path: str = ""
@@ -183,19 +186,10 @@ class ExportSettings:
     watermark_scope: str = "both"  # main | outro | both
     outro_transition_enabled: bool = True
 
-    # Optional Quote/Flyer artwork between Intro and Main (Stage 2 only).
-    # The legacy text fields were intentionally removed from the active model;
-    # SettingsStore ignores them when loading older project JSON files.
-    quote_enabled: bool = False
-    quote_input_mode: str = "artwork"  # retained as a migration marker
-    quote_artwork_path: str = ""
-    quote_pdf_page: int = 1  # one-based page number for a multi-page PDF
-    quote_artwork_fit_mode: str = "fit"  # fit | fill | crop
-    quote_duration: float = 4.0  # seconds; new Flyer default
-
-    # Independent optional Stage-2 Add Image section (legacy API name:
-    # Image Insertion). It is always silent and is intentionally separate from
-    # Quote/Flyer. The position aliases keep existing saved projects usable.
+    # Optional Stage-2 Add Image section (legacy API name: Image Insertion).
+    # It is always silent. The position aliases keep existing saved projects
+    # usable. The former Quote/Flyer PDF artwork section was removed; its keys
+    # are ignored when an older project JSON file is loaded.
     image_enabled: bool = False
     image_path: str = ""
     image_position: str = "after_intro"  # before_main/after_main; legacy aliases accepted
@@ -245,10 +239,10 @@ class ExportSettings:
     program_duration: float = 0.0
     timeline_target_duration: float = 0.0
     # Stage-2 only: per-clip original-audio gains in composition order
-    # (intro/quote/main/outro). Filled by MainProjectEngine.add_outro().
+    # (intro/image/main/outro). Filled by MainProjectEngine.add_outro().
     stage2_audio_modes: list[str] = field(default_factory=list)
     # Stage-2 only: per-section role names in composition order
-    # ("intro"/"quote"/"main"/"outro"). Filled by MainProjectEngine.add_outro().
+    # ("intro"/"image"/"main"/"outro"). Filled by MainProjectEngine.add_outro().
     stage2_roles: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:

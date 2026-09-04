@@ -131,9 +131,8 @@ class FFmpegCommandBuilder:
         lines: list[str] = []
         video_labels: list[str] = []
         audio_labels: list[str] = []
-        # Every Stage-2 section is a real media input. Uploaded Quote/Flyer
-        # artwork and Add Image are looped at input level; no synthetic
-        # text-card input exists.
+        # Every Stage-2 section is a real media input. Add Image is looped at
+        # input level; no synthetic text-card input exists.
         real_input = list(range(len(media)))
         next_input = len(media)
         voice_indices: list[int] = []
@@ -155,9 +154,9 @@ class FFmpegCommandBuilder:
             base = f"base{index}"
             visual_base = base
             if item.is_image_insertion:
-                # Add Image is a real looped Stage-2 input, not a text card
-                # and not Quote/Flyer. It is deliberately silent: the
-                # audio branch below creates only a matching null source.
+                # Add Image is a real looped Stage-2 input, not a text card.
+                # It is deliberately silent: the audio branch below creates
+                # only a matching null source.
                 source = f"[{real_input[index]}:v:0]"
                 pre = f"pre{index}"
                 lines.append(
@@ -202,53 +201,6 @@ class FFmpegCommandBuilder:
                 if image_filter:
                     framing += "," + image_filter
                 lines.append(f"[{pre}]{framing},setsar=1,format=yuv420p[{base}]")
-            elif item.is_quote_artwork:
-                # Uploaded artwork is looped at input level and trimmed to the
-                # exact Quote duration. It never receives text overlays, audio,
-                # subtitles, voiceover, or music. Every fit mode preserves the
-                # source aspect ratio; only the intentional crop modes remove
-                # pixels, never non-uniformly stretch the artwork.
-                source = f"[{real_input[index]}:v:0]"
-                pre = f"pre{index}"
-                lines.append(
-                    f"{source}fps={resolved.fps_expr}:round=near,"
-                    f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
-                )
-                configured_fit = str(getattr(settings, "quote_artwork_fit_mode", "") or "").strip().casefold()
-                item_fit = str(getattr(item, "quote_fit_mode", "fit") or "fit").casefold()
-                # MainProjectEngine stamps the setting onto the item. The
-                # item still wins for direct graph callers that construct an
-                # explicit non-default artwork occurrence.
-                fit_mode = item_fit if item_fit in {"fill", "crop"} else configured_fit
-                if fit_mode not in {"fit", "fill", "crop"}:
-                    fit_mode = "fit"
-                if fit_mode == "fit":
-                    # Contain: the complete artwork remains visible and the
-                    # unused canvas is deliberately letterboxed black.
-                    lines.append(
-                        f"[{pre}]scale=w={width}:h={height}:"
-                        f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
-                        f"pad=w={width}:h={height}:x=(ow-iw)/2:y=(oh-ih)/2:color=black,"
-                        f"setsar=1,format=yuv420p[{base}]"
-                    )
-                elif fit_mode == "fill":
-                    # Cover: fill the output and center-crop the excess.
-                    lines.append(
-                        f"[{pre}]scale=w={width}:h={height}:"
-                        f"force_original_aspect_ratio=increase:force_divisible_by=2:flags=lanczos,"
-                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,setsar=1,format=yuv420p[{base}]"
-                    )
-                else:
-                    # Crop the source to the target aspect first, then scale
-                    # that already matching rectangle. Escaped commas are
-                    # required because these are FFmpeg expression commas,
-                    # not filter-option separators.
-                    crop_w = f"min(iw\\,ih*{width}/{height})"
-                    crop_h = f"min(ih\\,iw*{height}/{width})"
-                    lines.append(
-                        f"[{pre}]crop=w={crop_w}:h={crop_h}:x=(iw-ow)/2:y=(ih-oh)/2,"
-                        f"scale=w={width}:h={height}:flags=lanczos,setsar=1,format=yuv420p[{base}]"
-                    )
             else:
                 original_duration = item.source_duration or item.duration
                 # 1.3.0 playback_rate: global Main Video speed and/or Smart
@@ -395,7 +347,6 @@ class FFmpegCommandBuilder:
             if (
                 item.audio.present
                 and real_input[index] is not None
-                and not item.is_quote_artwork
                 and not item.is_image_insertion
             ):
                 # 1.3.0: the clip's own audio follows its playback rate so a
@@ -686,9 +637,9 @@ class FFmpegCommandBuilder:
         )
         command = [self.ffmpeg_path, "-hide_banner", "-y"]
         for item in media:
-            if item.is_quote_artwork or item.is_image_insertion:
+            if item.is_image_insertion:
                 # One still-image input is looped for the exact section duration;
-                # the filter graph trims it and keeps Quote/Add Image silent.
+                # the filter graph trims it and keeps Add Image silent.
                 command += ["-loop", "1", "-i", str(item.path)]
             else:
                 # Never stream-loop a normal video occurrence: repeated media

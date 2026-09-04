@@ -670,16 +670,34 @@ def test_sections_fall_back_to_the_previous_behaviour_when_not_derivable(tmp_pat
     assert any("keeps the complete global script" in line for line in run.logs)
 
 
-def test_without_subtitles_never_derives_sections(tmp_path):
+def test_without_subtitles_derives_sections_for_the_script_text_file_only(tmp_path):
+    """Without Subtitles renders no captions, yet every Short still gets its own
+    script text: ONE shared global mapping feeds the ``.txt`` sidecars.
+
+    Deriving the sections is required here, because otherwise each Short would
+    keep the COMPLETE global script and its text file would claim words this
+    Short never speaks. It must stay one mapping for all Shorts (never one
+    alignment per Short) and it must not turn the caption-free output mode into
+    a subtitle render.
+    """
     voices, script, recognize = _project(tmp_path, {name: _spoken(name, duration)
                                                     for name, duration in zip(SECTIONS, DURATIONS)})
     settings = _settings(
         tmp_path, voices, script, EXPORT_MODE_SHORTS, subtitle_output_mode="without_subtitles",
     )
     run = _run_export(tmp_path, settings, recognize=recognize)
-    assert run.aligner.global_calls == []
-    for job in _shorts(run.jobs):
-        assert global_script_path(job.settings) == script.resolve()
+    assert len(run.aligner.global_calls) == 1
+    shorts = _shorts(run.jobs)
+    assert [job.stem for job in shorts] == ["001", "002", "003"]
+    for job, section in zip(shorts, SECTIONS):
+        # The render itself stays caption-free even though a script is assigned.
+        assert subtitle_render_requested(
+            normalize_subtitle_output_mode(job.settings.subtitle_output_mode), True
+        ) is False
+        assert global_script_path(job.settings).read_text(encoding="utf-8") == section
+        sidecar = job.directory / f"{job.stem}.txt"
+        assert sidecar.read_text(encoding="utf-8") == section + "\n"
+    assert any("Without Subtitles" in message for message in run.logs)
 
 
 def test_missing_voiceover_file_keeps_its_previous_configuration(tmp_path):

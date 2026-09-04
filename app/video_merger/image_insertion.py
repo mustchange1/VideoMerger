@@ -1,9 +1,10 @@
 """Validation and deterministic FFmpeg styling for the Add Image section.
 
-Add Image is deliberately separate from Quote/Flyer artwork.  It is a single
-optional, silent Stage-2 composition section.  The legacy Image Insertion
-names remain accepted so existing projects and CLI scripts keep their exact
-meaning while the GUI exposes the clearer Before Main/After Main wording.
+Add Image is a single optional, silent Stage-2 composition section with its
+own settings, its own media payload and its own deterministic FFmpeg styling.
+The legacy Image Insertion names remain accepted so existing projects and CLI
+scripts keep their exact meaning while the GUI exposes the clearer Before
+Main/After Main wording.
 """
 
 from __future__ import annotations
