@@ -71,6 +71,18 @@ def _rms(values):
     return math.sqrt(sum(value * value for value in values) / max(1, len(values)))
 
 
+def _frequency_strength(values, frequency, sample_rate=48000):
+    # Correlation at one deterministic test frequency; enough to tell the music
+    # tone from the voiceover tone without an optional NumPy dependency.
+    sine = 0.0
+    cosine = 0.0
+    for index, value in enumerate(values):
+        angle = 2.0 * math.pi * frequency * index / sample_rate
+        sine += value * math.sin(angle)
+        cosine += value * math.cos(angle)
+    return math.hypot(sine, cosine) / max(1, len(values))
+
+
 def _tone(values, frequency, rate=48000):
     # Direct DFT at one frequency is sufficient for these short deterministic tones.
     real = imag = 0.0
@@ -145,9 +157,13 @@ def test_complete_two_stage_workflow_with_exact_order_subtitles_music_watermark_
     assert script in result.srt.read_text(encoding="utf-8")
     assert "WEBVTT" in result.vtt.read_text(encoding="utf-8")
     assert result.alignment.words[0].start == pytest.approx(.10)
-    # Voiceover and looped music both stop at the spoken-program boundary; the
-    # configured final half-second is quiet before Stage 2.
-    assert _rms(_samples(ffmpeg, result.video, start=2.35)) < .003
+    # The voiceover stops at the spoken-program boundary, but the looped music
+    # covers the COMPLETE video: it is still audible in the configured final
+    # half-second (music tone 220 Hz) and no voiceover (900 Hz) reaches into it,
+    # so the visual outro is never silent and never contains speech.
+    outro_audio = _samples(ffmpeg, result.video, start=2.35)
+    assert _rms(outro_audio) > .003
+    assert _frequency_strength(outro_audio, 220) > _frequency_strength(outro_audio, 900) * 4
 
     frame = _frame(ffmpeg, result.video, .2)
     center = _pixel(frame, 160, 80, 45)

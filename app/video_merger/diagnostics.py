@@ -218,6 +218,56 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
         # An invalid saved section length is reported, never raised: the
         # diagnostics view must stay readable for a broken project.
         items.append(DiagnosticItem("Visual Timeline Sections", False, str(exc)))
+    try:
+        from .models import (
+            LONG_FORM_MUSIC_VOLUME,
+            LONG_FORM_TRANSITION_DURATION,
+            SHORTS_MUSIC_VOLUME,
+            SHORTS_TRANSITION_DURATION,
+        )
+        from .transition_effects import transition_label
+        from .youtube_outputs import (
+            output_music_volume,
+            output_transition_duration,
+            output_transition_type,
+        )
+        # The values each output really renders with: Long-Form and Shorts own
+        # their music volume and transition, and the resolved values make an old
+        # project's migrated shared setting visible instead of ambiguous.
+        long_volume = output_music_volume(
+            settings, getattr(settings, "long_form_music_volume", None),
+            label="Long-Form Music Volume", default=LONG_FORM_MUSIC_VOLUME,
+        )
+        short_volume = output_music_volume(
+            settings, getattr(settings, "shorts_music_volume", None),
+            label="Shorts Music Volume", default=SHORTS_MUSIC_VOLUME,
+        )
+        long_type = output_transition_type(
+            settings, getattr(settings, "long_form_transition_type", ""),
+            label="Long-Form Transition",
+        )
+        short_type = output_transition_type(
+            settings, getattr(settings, "shorts_transition_type", ""),
+            label="Shorts Transition",
+        )
+        long_duration = output_transition_duration(
+            settings, getattr(settings, "long_form_transition_duration", None),
+            label="Long-Form Transition Duration", default=LONG_FORM_TRANSITION_DURATION,
+        )
+        short_duration = output_transition_duration(
+            settings, getattr(settings, "shorts_transition_duration", None),
+            label="Shorts Transition Duration", default=SHORTS_TRANSITION_DURATION,
+        )
+        items.append(DiagnosticItem(
+            "Output Music & Transitions", True,
+            f"Long-Form music {long_volume} % · Shorts music {short_volume} % · "
+            "a selected track plays 0.000 s → video end (visual intro and outro "
+            f"included) · Long-Form transition {transition_label(long_type)} / "
+            f"{long_duration:.3f} s · Shorts transition {transition_label(short_type)} / "
+            f"{short_duration:.3f} s"
+        ))
+    except VideoMergerError as exc:
+        items.append(DiagnosticItem("Output Music & Transitions", False, str(exc)))
     if media:
         visual = sum(item.source_duration or item.duration for item in media)
         items.append(DiagnosticItem(

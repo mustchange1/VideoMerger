@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,45 @@ def _percent_gain(value: int) -> float:
     # Slider is presented as percent; the filter receives a proper linear gain
     # (20*log10(gain) dB). Zero remains true silence.
     return max(0.0, min(1.5, float(value) / 100.0))
+
+
+# Upper bound for the audio a loop window may buffer (15 s ≈ 5.8 MB stereo
+# float). A long voiceover must never be buffered completely just to cover a
+# short visual outro.
+MUSIC_LOOP_WINDOW_SECONDS = 15.0
+AUDIO_GRAPH_SAMPLE_RATE = 48000
+
+
+def music_outro_loop(program: float, target: float) -> str:
+    """Repeat the tail of the trimmed music so it covers the visual outro.
+
+    Background music has to be audible from ``0.000 s`` to the final video frame,
+    i.e. also through the visual outro behind the spoken program. The stream
+    looped music *input* is deliberately only asked for the spoken program: with
+    FFmpeg 6.0 a ``-stream_loop -1`` source that must feed a branch right up to
+    the output end deadlocks at 0 % CPU (measured: ``atrim=duration=<target>``
+    stalls, ``atrim=duration=<target-0.1>`` finishes in 0.4 s, both from the same
+    0.6 s track). The outro is therefore produced inside the filter graph by
+    looping the tail window of the already trimmed music.
+
+    The window starts exactly where the program ends, so the outro continues the
+    track seamlessly instead of jumping back to its beginning; the bounded
+    ``loop`` count plus the caller's final ``atrim`` cut it exactly at the video
+    end. Returns an empty string when there is no outro to cover, which keeps the
+    historical chain byte-identical.
+    """
+    needed = float(target) - float(program)
+    if needed <= 1e-6 or program <= 1e-6:
+        return ""
+    window = min(float(program), max(needed, 1.0), MUSIC_LOOP_WINDOW_SECONDS)
+    # ``round`` already returns an int for a float argument in Python 3.
+    size = max(1, round(window * AUDIO_GRAPH_SAMPLE_RATE))
+    start = max(0, round((float(program) - window) * AUDIO_GRAPH_SAMPLE_RATE))
+    loops = max(1, math.ceil(needed / window - 1e-9))
+    return (
+        f",aloop=loop={loops}:size={size}:start={start},"
+        f"atrim=duration={_number(target)},asetpts=PTS-STARTPTS"
+    )
 
 
 def _filter_path(value: str) -> str:
@@ -506,9 +546,14 @@ class FFmpegCommandBuilder:
         )
 
         # Audio in Stage 1 is explicitly tied to the resolved visual timeline.
-        # Voiceover is never looped. Music is looped at input level, then
-        # trimmed at the spoken-program boundary and padded with silence for
-        # the configurable final pause.
+        # Voiceover is never looped and never reaches into the visual outro; it
+        # is trimmed at the spoken-program boundary and padded with silence.
+        # Background music is the opposite: it is looped at input level and
+        # trimmed to the COMPLETE video window, so it starts at 0.000 s (never
+        # delayed by the visual intro), plays under the voiceover and continues
+        # through the visual outro until the final frame. No silent gap and no
+        # silent ending can appear while a track is configured; without one, no
+        # artificial audio is invented.
         final_audio = audio_chain
         if settings.workflow_stage == "main":
             target = window_duration
@@ -594,6 +639,14 @@ class FFmpegCommandBuilder:
                 mix_labels.append(voice_mix)
             if music_index is not None:
                 music_gain = _percent_gain(settings.music_volume)
+                # The music WINDOW is the complete rendered video (``target``):
+                # the track starts at 0.000 s, plays under the voiceover and is
+                # still audible in the last frame of the visual outro. The
+                # stream-looped INPUT is only read for the spoken program — the
+                # proven-safe amount — and ``music_outro_loop`` extends that
+                # audio inside the graph to the video end (see its docstring for
+                # the measured FFmpeg deadlock). The trailing apad/atrim pair
+                # stays as the safety net for a source that cannot be looped.
                 music_trim = (
                     f"atrim=start={_number(audio_window_start)}:duration={_number(program)}"
                     if audio_window_start > 1e-9 else f"atrim=duration={_number(program)}"
@@ -601,7 +654,8 @@ class FFmpegCommandBuilder:
                 lines.append(
                     f"[{music_index}:a:0]aresample=48000:async=1:first_pts=0,"
                     f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
-                    f"volume={_number(music_gain)},{music_trim},asetpts=PTS-STARTPTS,"
+                    f"volume={_number(music_gain)},{music_trim},asetpts=PTS-STARTPTS"
+                    f"{music_outro_loop(program, target)},"
                     f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[music_pre]"
                 )
                 music_label = "music_pre"

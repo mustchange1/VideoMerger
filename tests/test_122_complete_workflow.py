@@ -157,10 +157,15 @@ def test_actual_one_click_stage1_handoff_stage2_validation_and_outro_isolation(f
     assert any(item.stage.startswith("One-Click 3/") for item in progress)
     assert any(item.stage.startswith("One-Click – Complete") for item in progress)
 
-    # Stage 1 duration is voiceover 1.20 s plus the configured quiet .50 s.
+    # Stage 1 duration is voiceover 1.20 s plus the configured visual outro .50 s.
     assert result.main.report.duration == pytest.approx(1.70, abs=.08)
-    quiet = _samples(ffmpeg, result.final_video, 1.35, .20)
-    assert _rms(quiet) < .004
+    # The background music covers the COMPLETE video: it is still audible inside
+    # the visual outro (music tone 220 Hz), while the voiceover (850 Hz) ended
+    # with the spoken content at 1.20 s. So the ending is never silent when a
+    # track is configured, and the outro never contains voiceover.
+    outro_music = _samples(ffmpeg, result.final_video, 1.35, .20)
+    assert _rms(outro_music) > .004
+    assert _frequency_strength(outro_music, 220) > _frequency_strength(outro_music, 850) * 4
 
     # With transition disabled, the outro begins after the intact quiet gap.
     outro_audio = _samples(ffmpeg, result.final_video, 1.82, .25)

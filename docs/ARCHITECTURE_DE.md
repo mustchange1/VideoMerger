@@ -153,14 +153,14 @@ Die Subtitle-Modi sind `with_subtitles`, `without_subtitles` und `with_and_witho
 
 ### Getrennte Musik für Long-Form und Shorts
 
-`ExportSettings.music_path` ist die Long-Form-/Basic-Musik, `ExportSettings.short_music_path` die eigene Shorts-Musik. `youtube_outputs.short_settings()` ersetzt `music_path` eines Short-Auftrags strikt durch die Shorts-Auswahl: ohne eigene Auswahl bleibt der Short ohne Hintergrundmusik, die Long-Form-Spur wird nie in einen vertikalen Render gemischt. `long_form_settings()` lässt `music_path` unverändert. Lautstärke, Preset, Ducking, Looping (`-stream_loop -1`) und Trimming bleiben die gemeinsame, unveränderte Musik-Pipeline der jeweils aktiven Spur. Die Stage-1-Cache-Identität entsteht weiterhin über das geprobte Musik-Asset-Payload, weshalb ein Musikwechsel korrekt invalidiert und beide Spuren getrennt cachefähig sind. `app/cli.py` ergänzt `--short-music`, die GUI eine zweite Auswahlzeile, `diagnostics.py` einen eigenen Prüfeintrag.
+`ExportSettings.music_path` ist die Long-Form-/Basic-Musik, `ExportSettings.short_music_path` die eigene Shorts-Musik. `youtube_outputs.short_settings()` ersetzt `music_path` eines Short-Auftrags strikt durch die Shorts-Auswahl: ohne eigene Auswahl bleibt der Short ohne Hintergrundmusik, die Long-Form-Spur wird nie in einen vertikalen Render gemischt. `long_form_settings()` lässt `music_path` unverändert. Die Lautstärke ist seit Phase 23 ebenfalls getrennt: `long_form_music_volume` und `shorts_music_volume` (Sentinel `None`, Standard je `MUSIC_VOLUME_PERCENT = 44`) werden von `youtube_outputs.output_music_volume()` pro Auftrag aufgelöst und in das kanonische `music_volume` des jeweiligen Jobs kopiert – ein Wert ändert nie den anderen. Fehlt beiden Feldern ein Wert, dient das gespeicherte gemeinsame `music_volume` als Migrations-Fallback (`SettingsStore.load()` kopiert es in beide neuen Felder, überschreibt aber niemals explizit gespeicherte Werte). Preset, Ducking, Looping (`-stream_loop -1`) und Trimming bleiben die gemeinsame, unveränderte Musik-Pipeline der jeweils aktiven Spur. Die Stage-1-Cache-Identität entsteht weiterhin über das geprobte Musik-Asset-Payload, weshalb ein Musikwechsel korrekt invalidiert und beide Spuren getrennt cachefähig sind. `app/cli.py` ergänzt `--short-music`, die GUI eine zweite Auswahlzeile, `diagnostics.py` einen eigenen Prüfeintrag.
 
 ### Festes 0,7-Sekunden-Ende jedes Shorts
 
 `youtube_outputs.SHORT_ENDING_SECONDS = 0.7` ist die einzige Quelle dieses Werts
 und dient nur noch als garantierte Untergrenze für Settings-Objekte ohne das Feld
 `short_outro_seconds`; `short_settings()` setzt `final_pause` jedes Short-Auftrags
-auf das explizite Short-Outro (Nutzerstandard 1,5 s), das diesen Wert **ersetzt**
+auf das explizite Short-Outro (Nutzerstandard 0,7 s), das diesen Wert **ersetzt**
 statt ihn zu einem zweiten sichtbaren Ende aufzustocken, während das Long-Form das
 frei wählbare Long-Form-Outro behält. Die vorhandene Timeline-Logik setzt das Ziel deterministisch um: `create_main` berechnet `voice_total + final_pause` als Video-Zieldauer, `fit_media_to_duration` liefert dafür zusätzliches Bildmaterial (Clip-Auswahl, Übergänge, Hold/Loop, Chunked Rendering bleiben unverändert), und `subtitle_program_end = voice_total` begrenzt die Untertitel-Zeitleiste auf das gesprochene Audio. Das bestehende Guard-Raise verhindert zusätzlich, dass ein Cue in das Ende reicht; Voiceover-Audio endet ohnehin mit der Datei. Der Shorts-Pool ohne Ersatz reserviert pro Short `voice_total + final_pause` und stellt damit vorab genug Material für das Ende bereit.
 
@@ -189,8 +189,8 @@ GUI-Obergrenze `MAX_VISUAL_SECTION_SECONDS = 60` ist reine Widget-Range).
 `ExportSettings` trennt weiterhin kanonische und nutzerseitige Felder: kanonisch
 bleiben `visual_intro_seconds = 0.0` und `final_pause = 1.0`, sodass ein direkter
 `create_main(ExportSettings())`-Render exakt das frühere Verhalten zeigt;
-nutzerseitig kommen `long_form_intro_seconds`/`long_form_outro_seconds` (je 2,5 s),
-`short_intro_seconds`/`short_outro_seconds` (je 1,5 s), `opening_effect` (`"none"`)
+nutzerseitig kommen `long_form_intro_seconds`/`long_form_outro_seconds` (je 1,5 s),
+`short_intro_seconds`/`short_outro_seconds` (je 0,7 s), `opening_effect` (`"none"`)
 und `legacy_input_root` (`""`) hinzu. `long_form_settings()` und `short_settings()`
 kopieren die nutzerseitigen Werte in die kanonischen Felder – das Long-Form-Outro
 **ist** damit das frühere Main Video End Padding: ein einziger Tail, der sich nie
@@ -256,3 +256,96 @@ der GUI (`_settings()`) und der CLI (aufgelöstes `--input`) gesetzt und über
 `_log_legacy_priority()` protokolliert genau eine Zeile mit den reservierten
 Clipnamen – nur im Random-Modus, nur wenn wirklich reserviert wurde und nur dort,
 wo die Reihenfolge erzeugt wurde.
+
+## Phase 23: Musikfenster, eigene Übergänge, robuste Verifikation
+
+### Musik von 0,000 s bis zum Video-Ende
+
+`MainTimeline` kennt neben `voiceover_start`, `spoken_end`, `subtitle_start` und
+`subtitle_end` auch `video_start` (immer `0.0`), `video_end` (= `target`),
+`music_start` (immer `0.0`) und `music_end` (= `video_end`); `log_lines()` gibt
+diese Werte einmal pro Auftrag aus und unterscheidet dabei
+`music_configured=True/False` („Music: not configured …“ statt eines Fensters).
+Der Audio-Graph folgt genau diesem Fenster: Musik wird nie per `adelay`
+verschoben, erhält ihre Lautstärke **vor** dem Schnitt und endet exakt mit dem
+letzten Frame. Das Voiceover bleibt unverändert an das gesprochene Programm
+gebunden (`anullsrc`-Intro + `atrim=duration=<Programm>` + `apad`), sodass im
+visuellen Outro zwar Musik, aber keine Sprache liegt.
+
+`command_builder.music_outro_loop(program, target)` erzeugt die Erweiterung für
+das visuelle Outro. Der geloopte Input wird weiterhin nur für das gesprochene
+Programm gelesen (`atrim=duration=<Programm>`) – genau die historisch sichere
+Menge: FFmpeg 6.0 blockiert bei 0 % CPU, sobald ein `-stream_loop -1`-Input eine
+Verzweigung bis unmittelbar an das Ausgabe-Ende versorgen muss (gemessen mit
+derselben 0,6-s-Spur: `atrim=duration=<Ziel>` hängt, `<Ziel − 0,1 s>` läuft in
+0,4 s durch; unabhängig von `aresample async`, `asetpts`, `apad`-Variante und
+endlicher `-t`-Begrenzung des Inputs). Deshalb wiederholt `aloop` das
+**Ende** des bereits geschnittenen Programms: `window = min(programm,
+max(outro, 1 s), MUSIC_LOOP_WINDOW_SECONDS = 15 s)`, `start =
+(programm − window) · 48000`, `loop = ceil(outro / window)`. Die Wiederholung
+beginnt exakt am Programmende (nahtlos), der Puffer ist auf 15 s begrenzt (ein
+10-Minuten-Voiceover wird nie vollständig gepuffert), und das folgende
+`atrim=duration=<Ziel>` schneidet exakt am Video-Ende. Ohne Outro
+(`target == program`) ist die Kette byte-identisch zur früheren Form.
+
+### Übergänge und Lautstärken pro Ausgabe
+
+`output_transition_type()` und `output_transition_duration()` lösen
+`long_form_transition_type`/`long_form_transition_duration` bzw.
+`shorts_transition_type`/`shorts_transition_duration` pro Auftrag auf; leere
+Sentinel-Werte fallen auf die gemeinsamen `transition_type`/`transition_duration`
+zurück (Migrationspfad alter Projekte), und `TRANSITION_DURATION_LEGACY_DEFAULT`
+bleibt der Wert für Basic-Merge/kanonische Direkt-Renders. Beide Ausgaben
+starten mit `Cross Dissolve / 2,0 s`; `long_form_settings()` und
+`short_settings()` schreiben die aufgelösten Werte in die kanonischen Felder,
+sodass Combined-Modus und One-Click automatisch die jeweils eigenen Werte
+verwenden. Alle Resolver klemmen und validieren (0–150 %, ≥ 0 s, endlich) und
+werfen `VideoMergerError` mit lesbarem Label, den `diagnostics.py` im Eintrag
+„Output Music & Transitions“ fail-closed anzeigt, statt ihn zu verschlucken.
+
+`render_cache.FINGERPRINT_SCHEMA` steht auf `4`: Die Stage-1-Identität enthält
+die vier Abschnittsdauern, beide Musik-Lautstärken (nur bei konfigurierter Spur)
+und die vier Übergangswerte (unbedingt) neben Opening Effect,
+Animations-/Profilwerten und der effektiven Medienreihenfolge. `load()` bleibt
+fail-closed – abweichendes Schema oder Digest liefert `None`, kein Eintrag einer
+älteren Version wird still wiederverwendet. Stage 2 behält Schema `2`.
+
+### Visuelle Verifikation: begrenzt, wiederholt, getrennt klassifiziert
+
+`subtitle_verification.py` dekodiert die Nachweisbilder aus der fertigen,
+FFprobe-validierten MP4. `frame_safe_margin(duration, fps)` leitet den Abstand
+vom Dateiende aus der realen Framerate ab (zwei Frame-Perioden, mindestens
+`MINIMUM_FRAME_MARGIN_SECONDS = 0.04`), schrumpft ihn für sehr kurze Dateien auf
+ein Viertel ihrer Dauer und greift ohne verwertbare Dauer auf
+`DEFAULT_VERIFICATION_FPS = 25` zurück. `bounded_verification_times()` liefert
+den angefragten Zeitstempel (aus dem Wort-Timing) plus bis zu drei strikt
+frühere Kandidaten (`MAXIMUM_VERIFICATION_ATTEMPTS = 4`); kein Kandidat liegt am
+oder hinter dem Dateiende, keiner ist negativ, Dubletten entfallen.
+
+`png_frame_status()` akzeptiert eine PNG nur, wenn sie existiert, nicht leer ist,
+Signatur und `IHDR` trägt, von Null verschiedene Dimensionen hat und `IEND`
+enthält – eine 0-Byte- oder abgeschnittene Datei wird entfernt und erneut
+versucht. `_extract_frame()` meldet `OSError`, `TimeoutExpired`, einen
+Returncode ≠ 0 und jede ungültige Datei als `(False, Grund)` statt zu werfen.
+`verify_subtitle_frames()` liefert ein `VisualVerification`-Objekt
+(`FrameVerification` pro Label mit `requested`, `used`, `attempts`, `detail`,
+`status` ∈ PASS/DEGRADED/FAIL/SKIPPED) und protokolliert genau eine Zeile pro
+Bild; `create_visual_verification_frames()` bleibt als kompatibler Wrapper
+erhalten, der nur die erfolgreich dekodierten Pfade zurückgibt.
+
+`main_project.create_main()` trennt die Kategorien: Der kritische Block prüft
+weiterhin kanonische Timeline sowie SRT/VTT und wirft bei einem echten Problem
+`SUBTITLE GENERATION FAILED [subtitle output artifacts]`; die optionale
+Verifikation läuft danach in einem eigenen `try`, dessen Fehler lediglich
+`WARNUNG: Visuelle Verifikation nicht möglich, Ausgabe bleibt gültig: …`
+protokolliert. `MainVideoResult.verification_status` transportiert die
+Klassifizierung (`CACHED` bei einem Cache-Hit), während `verification_frames`
+weiterhin die Liste der dekodierten Bilder ist. Ein fehlgeschlagenes
+Verifikationsbild löscht damit nie wieder eine gültige Ausgabe – der frühere
+Realfehler (`SUBTITLE GENERATION FAILED [first/middle/final visual
+verification]: … keine gültige PNG-Ausgabe` bei 80,792 s Dauer, obwohl MP4,
+FFprobe, Audio, Video und Burn-in gültig waren) ist strukturell ausgeschlossen,
+weil der letzte Zeitstempel aus der Wort-Zeitleiste stets am oder hinter dem
+Dateiende liegen konnte. Echte Fehler – Untertitel-Erzeugung, ungültige
+Zeitachse, fehlende/leere Artefakte, Burn-in, FFprobe-Validierung – behalten die
+strikte Klassifizierung und räumen weiterhin auf.

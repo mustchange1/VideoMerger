@@ -29,7 +29,12 @@ CACHE_SCHEMA = 1
 # effect were added to the Stage-1 payload. A cached render from schema 2 has a
 # different timeline (no visual intro, a different tail) and must never be
 # reused silently for the new settings.
-FINGERPRINT_SCHEMA = 3
+# 4: background music now covers the COMPLETE video (it used to be trimmed at
+# the spoken end, which left the visual outro silent) and Long-Form/Shorts
+# received independent music volume and transition settings with new defaults.
+# A cached render from schema 3 therefore contains different audio bytes and
+# possibly different transitions, and must never be reused silently.
+FINGERPRINT_SCHEMA = 4
 STAGE2_FINGERPRINT_SCHEMA = 2
 
 # These are the settings that can change the bytes or duration of the Stage-1
@@ -43,6 +48,14 @@ _STAGE1_SETTING_FIELDS = (
     "transition_type",
     "transition_ease",
     "transition_duration",
+    # Output-specific transition settings. The canonical pair above already
+    # carries the value this job resolved; these four participate as well, so a
+    # Long-Form or Shorts transition change can never reuse an incompatible
+    # cached render, even before the planner copied the value over.
+    "long_form_transition_type",
+    "long_form_transition_duration",
+    "shorts_transition_type",
+    "shorts_transition_duration",
     "background_blur",
     "background_darkness",
     "background_zoom",
@@ -253,13 +266,26 @@ def build_stage1_payload(
     if music_asset is not None:
         values.update({
             "music_volume": settings.music_volume,
+            # Independent per-output music volumes. Like the canonical value
+            # they only matter while a track is really mixed, so an unused
+            # control must not invalidate an otherwise identical render.
+            "long_form_music_volume": getattr(settings, "long_form_music_volume", None),
+            "shorts_music_volume": getattr(settings, "shorts_music_volume", None),
             "music_preset": settings.music_preset,
             "ducking_enabled": settings.ducking_enabled,
             "ducking_attack_ms": settings.ducking_attack_ms,
             "ducking_release_ms": settings.ducking_release_ms,
         })
     else:
-        for name in ("music_volume", "music_preset", "ducking_enabled", "ducking_attack_ms", "ducking_release_ms"):
+        for name in (
+            "music_volume",
+            "long_form_music_volume",
+            "shorts_music_volume",
+            "music_preset",
+            "ducking_enabled",
+            "ducking_attack_ms",
+            "ducking_release_ms",
+        ):
             values[name] = None
 
     values["watermark_active"] = bool(

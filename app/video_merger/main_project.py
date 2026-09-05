@@ -58,7 +58,7 @@ from .subtitle_modes import (
     subtitle_render_requested,
     subtitle_sidecars_requested,
 )
-from .subtitle_verification import create_visual_verification_frames
+from .subtitle_verification import VERIFICATION_LABELS, create_visual_verification_frames
 from .subtitles import (
     build_cues,
     validate_subtitle_file,
@@ -74,6 +74,7 @@ from .timeline import (
     duration_before_merge_value,
     fit_media_to_duration,
 )
+from .transition_effects import transition_label
 from .validation import validate_output
 from .video_pool import (
     VIDEO_ORDER_RANDOM,
@@ -92,6 +93,7 @@ from .youtube_metadata import generate_youtube_metadata_file
 from .youtube_outputs import (
     EXPORT_MODE_COMBINED,
     EXPORT_MODE_LONG_FORM,
+    EXPORT_MODE_SHORTS,
     NO_SCRIPT_SECTION,
     MainTimeline,
     ShortJob,
@@ -102,6 +104,20 @@ from .youtube_outputs import (
     short_settings,
     write_short_script_text,
 )
+
+
+#: Human-readable output name used by the concise per-job log lines.
+_OUTPUT_LABELS = {
+    EXPORT_MODE_LONG_FORM: "Long-Form",
+    EXPORT_MODE_SHORTS: "Short",
+    EXPORT_MODE_COMBINED: "Combined",
+}
+
+
+def _output_label(settings: ExportSettings) -> str:
+    """Name the output a render job belongs to (log only, never a decision)."""
+    mode = normalize_export_mode(getattr(settings, "export_mode", ""))
+    return _OUTPUT_LABELS.get(mode, "Main Video")
 
 
 def _raw_voiceover_paths(settings: ExportSettings) -> list[Path]:
@@ -528,6 +544,7 @@ class MainProjectEngine:
             warnings=[],
             canonical_timeline=timeline if subtitle_requested else None,
             verification_frames=[],
+            verification_status="CACHED",
             timings=timings,
             video_no_subtitles=clean_video if clean_variant_requested else None,
         )
@@ -730,9 +747,12 @@ class MainProjectEngine:
                 folder_aware=False,
             )
             warnings.extend(timing_warnings)
-            # Music and clip-original audio cover the visual intro and the
+            # Voiceover and clip-original audio cover the visual intro and the
             # spoken timeline; the visual outro stays without them, exactly like
-            # the historical end padding did.
+            # the historical end padding did. Background music is NOT bounded by
+            # this window: the command builder trims the looped track to the
+            # complete target, so it plays from 0.000 s through the outro to the
+            # final video frame (see ``MainTimeline.music_start/music_end``).
             program_duration = timeline_plan.audio_program if timeline_plan else voice_total
         else:
             target = 0.0
@@ -845,6 +865,7 @@ class MainProjectEngine:
         alignment = None
         ass_path: Path | None = None
         verification_frames: list[Path] = []
+        verification_status = "SKIPPED"
         if subtitle_requested:
             timeline_path = temp_dir / f"{output_video.stem}.subtitle_timeline.json"
             if sidecars_requested:
@@ -879,8 +900,8 @@ class MainProjectEngine:
                 )
             if timeline_plan is not None:
                 # One concise timeline block per job: visual sections, voiceover
-                # start, spoken end and the resulting caption window.
-                for timeline_line in timeline_plan.log_lines():
+                # start, spoken end, the music window and the caption window.
+                for timeline_line in timeline_plan.log_lines(music_configured=music is not None):
                     log(timeline_line)
             log(
                 f"Script Mode: {'Multiple Matched Scripts' if script_mode == 'matched' else 'Single Global Script'}"
@@ -889,11 +910,22 @@ class MainProjectEngine:
             log("Voiceover: nicht zugewiesen; bestehender Video-Workflow bleibt aktiv.")
         if music:
             log(
-                f"Music: {music.duration:.3f} s, {music.sample_rate} Hz; wird geloopt und auf "
-                f"{render_settings.program_duration:.3f} s begrenzt."
+                f"Music: {music.duration:.3f} s, {music.sample_rate} Hz; wird geloopt und deckt "
+                f"das komplette Video ab (0.000 s → {resolved.expected_duration:.3f} s = Video-Ende)."
             )
         else:
-            log("Music: nicht zugewiesen.")
+            log("Music: nicht zugewiesen – keine künstliche Stille-Alternative, die visuellen Abschnitte bleiben ohne Musik.")
+        # One concise line per job for the output-specific audio/transition
+        # values that this render actually uses (Long-Form and Shorts resolve
+        # their own independent music volume and transition).
+        log(
+            f"Output settings ({_output_label(render_settings)}): "
+            f"Music volume {render_settings.music_volume} % · "
+            f"Voiceover volume {render_settings.voiceover_volume} % · "
+            f"Ducking {'on' if render_settings.ducking_enabled else 'off'} · "
+            f"Transition {transition_label(render_settings.transition_type)} / "
+            f"{render_settings.transition_duration:.3f} s"
+        )
 
         try:
             if subtitle_requested:
@@ -1171,28 +1203,10 @@ class MainProjectEngine:
             finalization_started = time.perf_counter()
             if subtitle_requested:
                 try:
-                    # Internal test evidence only (1.3.0 Clean Output): the
-                    # verification frames live under temp/ — they never
-                    # clutter the user-facing Output folder (explicitly
-                    # allowed as internal evidence) and remain available for
-                    # decoding checks after the render.
-                    frame_paths = {
-                        label: temp_dir / f"{output_video.stem}.subtitle_{label}.png"
-                        for label in ("first", "middle", "final")
-                    }
-                    if alignment.words:
-                        verification_frames = create_visual_verification_frames(
-                            self.engine.ffmpeg_path, output_video, alignment, frame_paths,
-                        )
-                    else:
-                        # An all-mismatch timeline is valid audio-only subtitle
-                        # output. There is no spoken word at which a visual
-                        # verification frame could be sampled, so do not turn
-                        # the intentionally empty subtitle track into a render
-                        # failure.
-                        verification_frames = []
-                        log("Visual subtitle verification skipped: no reliable matched words.")
-                    required = [timeline_path, *verification_frames]
+                    # CRITICAL pipeline result: the canonical timeline and the
+                    # requested SRT/VTT sidecars define a complete subtitle
+                    # render. A genuine problem here must still fail the job.
+                    required = [timeline_path]
                     if sidecars_requested:
                         required = [srt_path, vtt_path, *required]
                     if not all(path and path.is_file() and path.stat().st_size > 0 for path in required):
@@ -1202,15 +1216,10 @@ class MainProjectEngine:
                         "Subtitle Generation: PASS · Word-Level Alignment: PASS · "
                         + sidecar_status + " · Burned-In Subtitles: PASS"
                     )
-                    log(
-                        "Visual verification frames (decoded from final MP4, internal evidence): "
-                        + ", ".join(path.name for path in verification_frames)
-                    )
                     if sidecars_requested:
                         log(
                             "Subtitle output mode: With Burned-in Subtitles + SRT + VTT · "
-                            + output_video.name + " (burned) + "
-                            + output_video_clean.name + " (clean master)"
+                            + output_video.name + " (burned) + " + output_video_clean.name + " (clean master)"
                         )
                     else:
                         log(
@@ -1218,7 +1227,57 @@ class MainProjectEngine:
                             + output_video.name + " (burned); no SRT/VTT files generated."
                         )
                 except Exception as exc:
-                    raise _subtitle_failure("first/middle/final visual verification", exc) from exc
+                    raise _subtitle_failure("subtitle output artifacts", exc) from exc
+
+                # OPTIONAL internal quality evidence (1.3.0 Clean Output): the
+                # verification frames live under temp/ — they never clutter the
+                # user-facing Output folder. They are decoded from the already
+                # rendered, FFprobe-validated MP4 at timestamps clamped strictly
+                # inside its real duration. A frame that cannot be decoded is a
+                # verification warning only: it must never turn a long, valid
+                # render into "SUBTITLE GENERATION FAILED" or delete the output.
+                frame_paths = {
+                    label: temp_dir / f"{output_video.stem}.subtitle_{label}.png"
+                    for label in VERIFICATION_LABELS
+                }
+                if alignment.words:
+                    try:
+                        verification_frames = create_visual_verification_frames(
+                            self.engine.ffmpeg_path, output_video, alignment, frame_paths,
+                            duration=max(
+                                _seconds(report.duration), _seconds(resolved.expected_duration)
+                            ),
+                            fps=_seconds(report.fps), log=log,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - evidence must never kill a render
+                        verification_frames = []
+                        log(f"WARNUNG: Visuelle Verifikation nicht möglich, Ausgabe bleibt gültig: {exc}")
+                    if len(verification_frames) == len(frame_paths):
+                        verification_status = "PASS"
+                    elif verification_frames:
+                        verification_status = "DEGRADED"
+                    else:
+                        verification_status = "FAIL"
+                    if verification_status == "PASS":
+                        log(
+                            "Visual verification frames (decoded from final MP4, internal evidence): "
+                            + ", ".join(path.name for path in verification_frames)
+                        )
+                    else:
+                        log(
+                            f"Visual verification: PNG={verification_status} · "
+                            f"{len(verification_frames)}/{len(frame_paths)} frames decoded · "
+                            "rendered output retained · overall render status=SUCCESS"
+                        )
+                else:
+                    # An all-mismatch timeline is valid audio-only subtitle
+                    # output. There is no spoken word at which a visual
+                    # verification frame could be sampled, so do not turn
+                    # the intentionally empty subtitle track into a render
+                    # failure.
+                    verification_frames = []
+                    verification_status = "SKIPPED"
+                    log("Visual subtitle verification skipped: no reliable matched words.")
             timings["finalization_seconds"] = time.perf_counter() - finalization_started
             timings["total_pipeline_seconds"] = time.perf_counter() - total_started
             for key in (
@@ -1251,6 +1310,7 @@ class MainProjectEngine:
                 output_video, srt_path, vtt_path, report, alignment, warnings,
                 canonical_timeline=timeline_path,
                 verification_frames=verification_frames,
+                verification_status=verification_status,
                 timings=timings,
                 video_no_subtitles=output_video_clean if clean_variant_requested else None,
             )

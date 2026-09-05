@@ -260,7 +260,7 @@ def _fake_probe(project: Project):
     return probe
 
 
-def _fake_frames(_ffmpeg, _video, _alignment, frame_paths):
+def _fake_frames(_ffmpeg, _video, _alignment, frame_paths, **_kwargs):
     return [_write(Path(path), b"\x89PNG\r\n\x1a\n" + b"0" * 32) for path in frame_paths.values()]
 
 
@@ -346,12 +346,15 @@ def _short_videos(output_dir: Path) -> list[Path]:
 # --------------------------------------------------------------------------- #
 
 
-def test_user_facing_defaults_are_two_and_a_half_and_one_and_a_half_seconds():
+def test_user_facing_defaults_are_one_and_a_half_and_zero_point_seven_seconds():
     settings = ExportSettings()
-    assert settings.long_form_intro_seconds == LONG_FORM_INTRO_SECONDS == 2.5
-    assert settings.long_form_outro_seconds == LONG_FORM_OUTRO_SECONDS == 2.5
-    assert settings.short_intro_seconds == SHORT_INTRO_SECONDS == 1.5
-    assert settings.short_outro_seconds == SHORT_OUTRO_SECONDS == 1.5
+    assert settings.long_form_intro_seconds == LONG_FORM_INTRO_SECONDS == 1.5
+    assert settings.long_form_outro_seconds == LONG_FORM_OUTRO_SECONDS == 1.5
+    assert settings.short_intro_seconds == SHORT_INTRO_SECONDS == 0.7
+    assert settings.short_outro_seconds == SHORT_OUTRO_SECONDS == 0.7
+    # The historical fixed Short ending is reused cleanly as the semantic Short
+    # outro: one value, one visible tail, never the two added together.
+    assert SHORT_OUTRO_SECONDS == SHORT_ENDING_SECONDS == 0.7
     assert settings.opening_effect == "none"
     assert settings.legacy_input_root == ""
     # The canonical render fields keep their historical values, so a direct
@@ -409,8 +412,11 @@ def test_the_timeline_is_exactly_intro_voiceover_outro():
     assert timeline.subtitle_start == timeline.voiceover_start
     assert timeline.subtitle_end == timeline.spoken_end
     assert timeline.target == pytest.approx(7.7)
-    # Music may already play during the visual intro and stops with the speech.
+    # The spoken program (voiceover and clip-original audio) ends with the
+    # speech; music is NOT bounded by it and covers the complete video instead.
     assert timeline.audio_program == pytest.approx(5.7)
+    assert (timeline.video_start, timeline.music_start) == (0.0, 0.0)
+    assert timeline.video_end == timeline.music_end == pytest.approx(7.7)
     log = "\n".join(timeline.log_lines())
     assert "Intro 1.500 s (visual only)" in log
     assert "Spoken end 5.700 s" in log
@@ -436,8 +442,10 @@ def test_the_short_outro_replaces_the_legacy_seven_tenths_ending():
     job = build_short_jobs(settings)[0]
     short = short_settings(settings, job)
     assert short.visual_intro_seconds == 1.5
-    assert short.final_pause == SHORT_OUTRO_SECONDS
-    # The requested outro is what is visible — never 1.5 s stacked on 0.7 s.
+    # The explicitly requested outro is what is visible — an explicit value is
+    # never replaced by the default and never stacked on the legacy 0.7 s.
+    assert short.final_pause == 1.5
+    assert short.final_pause != pytest.approx(1.5 + SHORT_ENDING_SECONDS)
     assert short.final_pause != pytest.approx(SHORT_OUTRO_SECONDS + SHORT_ENDING_SECONDS)
     timeline = main_timeline(short, 3.0)
     assert (timeline.intro, timeline.spoken, timeline.outro) == (1.5, 3.0, 1.5)
@@ -707,11 +715,12 @@ def test_the_timeline_structure_is_logged_once_per_job(tmp_path):
     # One Long-Form plus one line per Short — and nothing per clip or frame.
     assert len(timeline_lines) == 1 + len(project.durations)
     assert len(caption_lines) == 1 + len(project.durations)
-    assert "Intro 2.500 s (visual only)" in timeline_lines[0]
-    assert "Voiceover start 2.500 s" in timeline_lines[0]
-    assert "Outro 2.500 s (visual only)" in timeline_lines[0]
+    assert "Intro 1.500 s (visual only)" in timeline_lines[0]
+    assert "Voiceover start 1.500 s" in timeline_lines[0]
+    assert "Outro 1.500 s (visual only)" in timeline_lines[0]
+    assert "Video start 0.000 s" in timeline_lines[0]
     assert "no caption in the visual intro or outro" in caption_lines[0]
-    assert "Intro 1.500 s (visual only)" in timeline_lines[1]
+    assert "Intro 0.700 s (visual only)" in timeline_lines[1]
 
 
 def test_the_visual_sections_are_part_of_the_stage1_cache_identity(tmp_path):

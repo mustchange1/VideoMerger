@@ -7,10 +7,17 @@ from .video_merger.discovery import discover_videos
 from .video_merger.engine import VideoMergerEngine
 from .video_merger.main_project import MainProjectEngine
 from .video_merger.models import (
+    DEFAULT_TRANSITION_TYPE,
     LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_MUSIC_VOLUME,
     LONG_FORM_OUTRO_SECONDS,
+    LONG_FORM_TRANSITION_DURATION,
+    MUSIC_VOLUME_PERCENT,
     SHORT_INTRO_SECONDS,
     SHORT_OUTRO_SECONDS,
+    SHORTS_MUSIC_VOLUME,
+    SHORTS_TRANSITION_DURATION,
+    TRANSITION_DURATION_LEGACY_DEFAULT,
     ExportSettings,
 )
 from .video_merger.opening_effects import (
@@ -50,10 +57,50 @@ def main() -> int:
     )
     parser.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
     parser.add_argument("--resolution", default="Auto")
-    parser.add_argument("--transition", type=float, default=1.0, help="transition duration in seconds")
     parser.add_argument(
-        "--transition-effect", default="cross_dissolve",
+        "--transition", type=float, default=None,
+        help=(
+            f"shared transition duration in seconds for the basic/Main Video merge "
+            f"(default {TRANSITION_DURATION_LEGACY_DEFAULT}). An explicit value is also the "
+            "migration fallback for both YouTube outputs unless --long-transition / "
+            "--short-transition override it"
+        ),
+    )
+    parser.add_argument(
+        "--transition-effect", default=DEFAULT_TRANSITION_TYPE,
         choices=["smooth_blur", "cross_dissolve", "film_dissolve", "additive_dissolve"],
+    )
+    # Long-Form and Shorts own their transition completely: changing one output
+    # never changes the other. Both default to Cross Dissolve / 2.0 s.
+    parser.add_argument(
+        "--long-transition-effect", default=None,
+        choices=["smooth_blur", "cross_dissolve", "film_dissolve", "additive_dissolve"],
+        help=(
+            f"Long-Form transition family (default {DEFAULT_TRANSITION_TYPE}); "
+            "independent from --short-transition-effect"
+        ),
+    )
+    parser.add_argument(
+        "--long-transition", type=float, default=None,
+        help=(
+            f"Long-Form transition duration in seconds (default {LONG_FORM_TRANSITION_DURATION}); "
+            "independent from --short-transition"
+        ),
+    )
+    parser.add_argument(
+        "--short-transition-effect", default=None,
+        choices=["smooth_blur", "cross_dissolve", "film_dissolve", "additive_dissolve"],
+        help=(
+            f"YouTube Shorts transition family (default {DEFAULT_TRANSITION_TYPE}); "
+            "independent from --long-transition-effect"
+        ),
+    )
+    parser.add_argument(
+        "--short-transition", type=float, default=None,
+        help=(
+            f"YouTube Shorts transition duration in seconds (default {SHORTS_TRANSITION_DURATION}); "
+            "independent from --long-transition"
+        ),
     )
     parser.add_argument(
         "--transition-ease", default="ease_in_out",
@@ -98,13 +145,34 @@ def main() -> int:
         help="separate background music used only for the generated YouTube Shorts",
     )
     parser.add_argument("--original-audio", choices=["mute", "low", "original"], default="mute")
-    parser.add_argument("--music-volume", type=int, default=44)
+    parser.add_argument(
+        "--music-volume", type=int, default=MUSIC_VOLUME_PERCENT,
+        help=(
+            f"shared background music volume in percent (default {MUSIC_VOLUME_PERCENT}). It is the "
+            "migration fallback for both YouTube outputs unless --long-music-volume / "
+            "--short-music-volume override it"
+        ),
+    )
+    parser.add_argument(
+        "--long-music-volume", type=int, default=None,
+        help=(
+            f"Long-Form background music volume in percent (default {LONG_FORM_MUSIC_VOLUME}); "
+            "independent from --short-music-volume"
+        ),
+    )
+    parser.add_argument(
+        "--short-music-volume", type=int, default=None,
+        help=(
+            f"YouTube Shorts background music volume in percent (default {SHORTS_MUSIC_VOLUME}); "
+            "independent from --long-music-volume"
+        ),
+    )
     parser.add_argument(
         "--pause", "--end-padding", dest="pause", type=float, default=None,
         help=(
             "legacy Main Video end padding. It is the same timeline section as "
             "--long-outro, so the visual outro is never applied twice; when "
-            "omitted, --long-outro (default 2.5 s) is used"
+            f"omitted, --long-outro (default {LONG_FORM_OUTRO_SECONDS} s) is used"
         ),
     )
     parser.add_argument(
@@ -264,6 +332,30 @@ def main() -> int:
     if script_mode == "single":
         script_paths = [global_script] if global_script else []
     subtitle_position = args.subtitle_position or ("Center" if args.aspect == "16:9" else "Bottom Center")
+    # Output-specific transitions and music volumes. An omitted per-output flag
+    # falls back to an explicitly given shared flag, and otherwise to the new
+    # per-output default - exactly the migration rule the model resolvers use,
+    # so CLI, GUI and project files behave identically. The shared transition
+    # duration keeps its historical default for the basic/Main Video merge.
+    shared_transition_duration = (
+        TRANSITION_DURATION_LEGACY_DEFAULT if args.transition is None else args.transition
+    )
+    long_transition_duration = (
+        args.long_transition
+        if args.long_transition is not None
+        else (args.transition if args.transition is not None else LONG_FORM_TRANSITION_DURATION)
+    )
+    short_transition_duration = (
+        args.short_transition
+        if args.short_transition is not None
+        else (args.transition if args.transition is not None else SHORTS_TRANSITION_DURATION)
+    )
+    long_music_volume = (
+        args.long_music_volume if args.long_music_volume is not None else args.music_volume
+    )
+    short_music_volume = (
+        args.short_music_volume if args.short_music_volume is not None else args.music_volume
+    )
     configured_sources = [str(Path(value).expanduser().resolve()) for value in args.source_folder]
     settings = ExportSettings(
         export_mode=normalize_export_mode(args.export_mode),
@@ -271,7 +363,14 @@ def main() -> int:
         source_folders=configured_sources,
         video_order_mode=args.video_order,
         transition_type=args.transition_effect, transition_ease=args.transition_ease,
-        transition_duration=args.transition, encoding=args.encoding,
+        transition_duration=shared_transition_duration, encoding=args.encoding,
+        # Independent per-output transition settings (Cross Dissolve / 2.0 s by
+        # default for both). Combined mode and One-Click use the Long-Form pair
+        # for the Long-Form job and the Shorts pair for every Short.
+        long_form_transition_type=args.long_transition_effect or args.transition_effect,
+        long_form_transition_duration=long_transition_duration,
+        shorts_transition_type=args.short_transition_effect or args.transition_effect,
+        shorts_transition_duration=short_transition_duration,
         crf=args.crf, quality_preset=args.quality, output_preset=args.output_preset,
         normalize_audio=not args.no_normalize,
         workflow_stage=args.stage, voiceover_path=voiceover_paths[0] if voiceover_paths else "",
@@ -301,6 +400,10 @@ def main() -> int:
         ),
         original_audio_mode=args.original_audio,
         music_volume=args.music_volume,
+        # Independent per-output music volumes (44 % by default for both). The
+        # music itself always plays from 0.000 s to the final video frame.
+        long_form_music_volume=long_music_volume,
+        shorts_music_volume=short_music_volume,
         short_video_mode=args.short_video,
         duration_fit_mode=args.duration_fit,
         max_stretch_percent=max(1.0, min(50.0, args.max_stretch)),

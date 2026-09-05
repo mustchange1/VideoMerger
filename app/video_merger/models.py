@@ -19,13 +19,39 @@ _SUBTITLE_DEFAULT = object()
 #: pair into the canonical render-time fields (``visual_intro_seconds`` and
 #: ``final_pause``) for every Long-Form/Short job, so the timeline mathematics,
 #: the subtitle offset and the cache fingerprint each read exactly one value.
-LONG_FORM_INTRO_SECONDS = 2.5
-LONG_FORM_OUTRO_SECONDS = 2.5
-SHORT_INTRO_SECONDS = 1.5
-SHORT_OUTRO_SECONDS = 1.5
+#:
+#: Both visual sections are ``[visual + music]``: configured background music
+#: already plays from video time 0.000 s and keeps playing through the outro
+#: until the final video endpoint, while voiceover and subtitles are confined to
+#: the spoken part in between.
+LONG_FORM_INTRO_SECONDS = 1.5
+LONG_FORM_OUTRO_SECONDS = 1.5
+SHORT_INTRO_SECONDS = 0.7
+SHORT_OUTRO_SECONDS = 0.7
 #: Upper bound used by the GUI spin boxes. The model itself accepts any finite
 #: value >= 0; 0.0 disables a section completely.
 MAX_VISUAL_SECTION_SECONDS = 60.0
+
+#: Output-specific audio and transition defaults. Long-Form and Shorts keep
+#: fully independent music volume and transition settings: changing one output
+#: never changes the other. The values below are what a new project, a new GUI
+#: session, the CLI defaults and a project file without these keys receive.
+DEFAULT_TRANSITION_TYPE = "cross_dissolve"
+LONG_FORM_TRANSITION_DURATION = 2.0
+SHORTS_TRANSITION_DURATION = 2.0
+#: Historic shared transition duration. It remains the canonical field default
+#: for the basic/Main-Video merge path and doubles as the "was never set"
+#: marker when resolving an output-specific duration (see
+#: :func:`app.video_merger.youtube_outputs.output_transition_duration`).
+TRANSITION_DURATION_LEGACY_DEFAULT = 1.0
+#: Background music gain in percent. 44 % is approximately +6 dB over the
+#: former 22 % linear gain and stays below the 100 % voiceover gain.
+MUSIC_VOLUME_PERCENT = 44
+LONG_FORM_MUSIC_VOLUME = MUSIC_VOLUME_PERCENT
+SHORTS_MUSIC_VOLUME = MUSIC_VOLUME_PERCENT
+#: Upper bound of the music gain accepted by the render graph
+#: (``command_builder._percent_gain`` clamps to 1.5 == 150 %).
+MAX_MUSIC_VOLUME_PERCENT = 150
 
 
 @dataclass(slots=True)
@@ -94,9 +120,25 @@ class ExportSettings:
     aspect: str = "16:9"
     resolution: str = "Auto"
     fit_mode: str = "contain_blur"
-    transition_type: str = "cross_dissolve"
+    # Canonical transition of the render that is currently being planned. The
+    # basic/Main-Video merge path keeps these shared values, while every YouTube
+    # job receives its own output-specific pair below (``youtube_outputs`` copies
+    # the resolved value into these canonical fields before the render, the cache
+    # fingerprint and the timeline mathematics read them).
+    transition_type: str = DEFAULT_TRANSITION_TYPE
     transition_ease: str = "ease_in_out"
-    transition_duration: float = 1.0
+    transition_duration: float = TRANSITION_DURATION_LEGACY_DEFAULT
+    # Output-specific transition settings (Long-Form and Shorts are fully
+    # independent). An empty string / ``None`` means "not configured": the
+    # shared value of an existing project or API caller is used as the migration
+    # fallback, and a project without any of them receives the new defaults
+    # Cross Dissolve / 2.0 s for both outputs. Combined mode and One-Click use
+    # the Long-Form pair for the Long-Form job and the Shorts pair for every
+    # Short, so changing one output never changes the other.
+    long_form_transition_type: str = ""
+    long_form_transition_duration: float | None = None
+    shorts_transition_type: str = ""
+    shorts_transition_duration: float | None = None
     background_blur: int = 30
     background_darkness: int = 10
     background_zoom: int = 100
@@ -154,10 +196,22 @@ class ExportSettings:
     intro_audio_mode: str = "original"  # mute | low | original
     outro_audio_mode: str = "original"
     voiceover_volume: int = 100
-    # 44 % is approximately +6 dB over the former 22 % linear gain. It stays
-    # below the 100 % voiceover gain while the limiter and ducking remain the
-    # final safety net in the mixed graph.
-    music_volume: int = 44
+    # Canonical music gain of the render that is currently being planned
+    # (44 % ≈ +6 dB over the former 22 % linear gain; it stays below the 100 %
+    # voiceover gain while the limiter and ducking remain the final safety net
+    # in the mixed graph). The basic/Main-Video merge path keeps this shared
+    # value; every YouTube job receives its own output-specific volume below.
+    music_volume: int = MUSIC_VOLUME_PERCENT
+    # Output-specific background music volume in percent, fully independent for
+    # Long-Form and Shorts (44 % each by default). ``None`` means "not
+    # configured": the shared ``music_volume`` of an existing project or API
+    # caller is used as the migration fallback, so an old project never loses
+    # its saved loudness. The volume applies through the complete video —
+    # visual intro, spoken part and visual outro — because the music itself
+    # plays from 0.000 s to the final video endpoint. Voiceover volume stays
+    # independent, and a Short still plays only its own Shorts track.
+    long_form_music_volume: int | None = None
+    shorts_music_volume: int | None = None
     music_preset: str = "balanced"
     ducking_enabled: bool = True
     ducking_attack_ms: int = 25
@@ -389,6 +443,10 @@ class MainVideoResult:
     warnings: list[str] = field(default_factory=list)
     canonical_timeline: Path | None = None
     verification_frames: list[Path] = field(default_factory=list)
+    # Optional internal quality evidence, classified separately from the render
+    # result: PASS / DEGRADED / FAIL / SKIPPED. A FAIL never invalidates the
+    # successfully rendered, probed and validated output video.
+    verification_status: str = "SKIPPED"
     timings: dict[str, float | str | bool] = field(default_factory=dict)
     # 1.3.0: additional user-facing output WITHOUT burned-in subtitles. None
     # when no subtitles were generated; otherwise this file always exists.

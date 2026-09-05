@@ -212,9 +212,9 @@ The export mode is an actual pipeline setting, not a cosmetic aspect toggle:
 
 Outputs are separated into `Output/LongForm/` and `Output/Shorts/` (`YouTube_LongForm.mp4`, `001.mp4`, `002.mp4`, …). Intro, Outro, Add Image, music, original audio, transitions, ordering and One-Click use the existing render pipeline for every job. Each Short has its own cache identity.
 
-**Separate background music.** Long-Form and Shorts use two independent music selections: **Background Music (Long-Form)** and **Background Music (Shorts)**. The two tracks are strictly separate — the Long-Form track is never mixed into a Short, and a Short whose own track is empty simply has no background music. Volume, preset, ducking, looping and trimming behave exactly as before for whichever track is active, and in the combined mode each output type uses only its own track.
+**Separate background music, separate volume.** Long-Form and Shorts use two independent music selections: **Background Music (Long-Form)** and **Background Music (Shorts)**. The two tracks are strictly separate — the Long-Form track is never mixed into a Short, and a Short whose own track is empty simply has no background music (no artificial audio is ever generated). Each output type also owns its **music volume**: `Long-Form Music Volume` and `Shorts Music Volume`, both `44 %` by default and independently adjustable from `0 %` to `150 %`; changing one never changes the other. A selected track **starts at `0.000 s`**, plays continuously through the visual intro, the voiceover and the visual outro, and is looped/trimmed to the **final video end** — never to the spoken end — so a configured track can never leave a silent intro or a silent ending. Preset, ducking and looping behave exactly as before for whichever track is active, and in the combined mode (and in One-Click) each output type uses only its own track at its own volume.
 
-**Video-only Short intro and outro.** Every Short is `[1.5 s visual intro][its own voiceover][1.5 s visual outro]`. The spoken audio stays the authoritative duration and is never extended; intro and outro contain no speech, no voiceover audio and no subtitles — the caption timeline is shifted by the intro inside the timeline model and ends with the voiceover, so no cue from this or any other Short can appear in either section. The material comes from the regular timeline logic (clip selection, transitions, Hold/Loop, chunking and the without-replacement Shorts pool, which reserves intro, spoken part and outro up front). The former fixed `0.7 s` ending is *replaced* by the configurable Short outro, never stacked behind it; `0.7 s` survives only as the guaranteed floor for settings objects that carry no explicit Short outro. The Long-Form keeps its freely configurable **Long-Form Outro** (the former Main Video End Padding).
+**Video-only Short intro and outro.** Every Short is `[0.7 s visual intro][its own voiceover][0.7 s visual outro]`. The spoken audio stays the authoritative duration and is never extended; intro and outro contain no speech, no voiceover audio and no subtitles — the caption timeline is shifted by the intro inside the timeline model and ends with the voiceover, so no cue from this or any other Short can appear in either section. The material comes from the regular timeline logic (clip selection, transitions, Hold/Loop, chunking and the without-replacement Shorts pool, which reserves intro, spoken part and outro up front). The former fixed `0.7 s` ending is *replaced* by the configurable Short outro, never stacked behind it — the new Short outro default is exactly that `0.7 s`, so the visible result is one single ending; `0.7 s` also survives as the guaranteed floor for settings objects that carry no explicit Short outro. The Long-Form keeps its freely configurable **Long-Form Outro** (the former Main Video End Padding).
 
 **One script text file per Short.** Beside every rendered Short, VideoMerger automatically writes `<same name>.txt` (`001.mp4` → `001.txt`) containing exactly the script text that Short uses: its own section of a global script, or its matched/individual script. Nothing is transcribed again — the file reuses the already derived content, so it always matches the spoken/captioned words of that Short and never contains text from another Short. An explicit audio-only Short (a voiceover that speaks no part of the global script) has no text and therefore no sidecar.
 
@@ -229,17 +229,124 @@ The CLI equivalents are `--export-mode long_form|shorts|long_form_and_shorts`, `
 Every voiceover-driven Main Video now has an explicit, unambiguous structure:
 `[visual intro][voiceover + normal video][visual outro]`. Both visual sections
 play moving material from the regular timeline (never black or unintentionally
-frozen frames) and contain no voiceover audio; background music may already play
-during the intro and stops with the spoken content, exactly like the former end
-padding did.
+frozen frames) and contain no voiceover audio and no subtitles. Background music
+starts at `0.000 s` and runs through **both** visual sections to the final frame
+(see *Continuous output music*), so neither the opening nor the ending is silent
+when a track is configured.
 
-- **Long-Form Intro (visual before voiceover)** — default `2.5 s`, `0` disables it, any positive value is accepted (the GUI spin is capped at `60 s`, the model itself has no artificial limit). The voiceover starts exactly after the intro and the subtitles never start before it.
-- **Long-Form Outro (visual after voiceover)** — default `2.5 s`. This *is* the former Main Video End Padding: one control, one canonical timeline tail, so the two can never double. An old project file keeps its saved padding.
-- **Short Intro / Short Outro** — default `1.5 s` each, per Short, with the same rules; the Short outro replaces the legacy `0.7 s` ending.
+- **Long-Form Intro (visual before voiceover)** — default `1.5 s`, `0` disables it, any positive value is accepted (the GUI spin is capped at `60 s`, the model itself has no artificial limit). The voiceover starts exactly after the intro and the subtitles never start before it.
+- **Long-Form Outro (visual after voiceover)** — default `1.5 s`. This *is* the former Main Video End Padding: one control, one canonical timeline tail, so the two can never double. An old project file keeps its saved padding.
+- **Short Intro / Short Outro** — default `0.7 s` each, per Short, with the same rules; the Short outro replaces the legacy `0.7 s` ending instead of stacking a second one.
 - **Subtitles only while spoken** — the whole caption timeline is shifted by the intro in the timeline model (not by a post-render delay), starts exactly with the voiceover and ends exactly with the spoken audio. Word-level timing, global-script sections, SRT/VTT, burn-in and the strict cue validation are unchanged.
 - **Opening Effect (Main Video)** — an optional subtle entrance in group `4d`: `None` (default), `Gentle Zoom In`, `Gentle Zoom Out`. Peak magnification is 5 %, centred, covering the opening portion only (the visual intro, or `3 s` when there is none, never longer than the program), applied to the assembled timeline *before* the subtitle burn-in so captions stay crisp, continuous across chunked rendering, and identity afterwards. It adds and drops no frame, so the voiceover-driven duration, sync and captions are untouched. Shorts never use it. There is no animation editor by design.
 - **Legacy Input Root priority (Random order only)** — while **Random** is active, the first three clips of the effective sequence are always drawn from the Legacy Input Root (the configured input folder): distinct where possible, shuffled among themselves, and reserved *before* the rest of the sequence is built. Clip 4 onwards keeps the unchanged full random pool (folder-aware alternation, duplicate/exhaustion rules, seeded determinism). Fewer than three eligible clips reserve what exists and then fill normally; an empty or missing root changes nothing at all — not even the random sequence, so existing projects stay bit-identical. Natural, Alphabetical and Manual are not affected. One log line names the reserved clips.
 
-GUI: group **`4d · Timeline – Visual Intro / Outro / Opening Effect`** holds the four duration spins and the opening-effect selection; the subtitle animation combos are built per collection (Long-Form / Shorts) with their own defaults, and switching to 9:16 selects the Shorts default automatically. All new values persist in the project file, survive old project files (missing fields fall back to the documented defaults, deprecated animations migrate, unknown fields are ignored) and are part of the render-cache identity (fingerprint schema `3`), so changing any of them re-renders instead of reusing a stale cache entry.
+GUI: group **`4d · Timeline – Visual Intro / Outro / Opening Effect`** holds the four duration spins and the opening-effect selection; the subtitle animation combos are built per collection (Long-Form / Shorts) with their own defaults, and switching to 9:16 selects the Shorts default automatically. All new values persist in the project file, survive old project files (missing fields fall back to the documented defaults, deprecated animations migrate, unknown fields are ignored) and are part of the render-cache identity (fingerprint schema `4`), so changing any of them — including the per-output music volumes and transition values below — re-renders instead of reusing a stale cache entry.
 
 CLI: `--long-intro`, `--long-outro` (alias of `--pause`/`--end-padding`), `--short-intro`, `--short-outro` and `--opening-effect none|zoom_in|zoom_out`.
+
+## Continuous output music, per-output volumes and transitions
+
+The canonical timeline of every voiceover-driven output is fully explicit, and the
+audio follows it rather than the spoken program:
+
+| | Long-Form default | Shorts default |
+| --- | --- | --- |
+| Visual intro (no voiceover, no subtitles) | `1.5 s` | `0.7 s` |
+| Voiceover + subtitles | the spoken audio | the spoken audio |
+| Visual outro (no voiceover, no subtitles) | `1.5 s` | `0.7 s` |
+| Music window | `0.000 s` → video end | `0.000 s` → video end |
+| Music volume | `44 %` (`long_form_music_volume`) | `44 %` (`shorts_music_volume`) |
+| Transition | Cross Dissolve / `2.0 s` | Cross Dissolve / `2.0 s` |
+
+So a default Long-Form with a 3.0 s voiceover is exactly `6.000 s`
+(`1.5 + 3.0 + 1.5`) and a default Short is exactly `4.400 s` (`0.7 + 3.0 + 0.7`).
+
+- **Music covers the complete video.** The music duration is derived from the
+  final video length (intro + spoken + outro), never from the spoken timeline
+  alone. The existing loop/trim architecture is unchanged: the track is streamed
+  with `-stream_loop -1` and gains its volume **before** it is trimmed. The
+  looped *input* is read only for the spoken program, and the visual outro is
+  covered inside the filter graph by repeating the tail of that trimmed music
+  (`aloop`, window bounded to 15 s so a long voiceover is never buffered
+  completely). The repeated window starts exactly where the program ends, so the
+  outro continues the track seamlessly, and it is cut exactly at the video end.
+  This shape is also the only safe one: making a `-stream_loop -1` input feed a
+  branch right up to the output end deadlocks FFmpeg 6.0 at 0 % CPU (measured on
+  the same 0.6 s track — `atrim=duration=<target>` stalls, `<target − 0.1 s>`
+  finishes in 0.4 s). The voiceover is untouched: it still starts after the
+  configured intro, still ends with the spoken audio, and the outro carries no
+  speech. Without a selected track the output stays silent.
+- **Subtitles follow the voiceover, not the music.** Captions start with the
+  voiceover (at the intro length), end with the spoken content, and never appear
+  in a visual section. Word-level alignment, global-script section splitting,
+  per-voiceover scripts, SRT/VTT, burn-in and the strict overlap validation are
+  unchanged.
+- **Independent transitions.** `long_form_transition_type` /
+  `long_form_transition_duration` and `shorts_transition_type` /
+  `shorts_transition_duration` are resolved per output; every existing transition
+  type stays available, and Combined mode plus One-Click apply the Long-Form
+  values to the Long-Form render and the Shorts values to every Short.
+- **Backward compatibility.** An old project keeps its explicit values. A saved
+  shared `music_volume` is copied into **both** output volumes only when those are
+  missing, and saved shared transition values act as the migration fallback for
+  both outputs; unknown fields are ignored.
+- **Cache identity.** All four section durations, both music volumes, all four
+  transition values, the opening effect, the subtitle animation/profile values
+  and the effective media order are part of the Stage-1 fingerprint
+  (`FINGERPRINT_SCHEMA = 4`). Entries written by an older schema are never reused
+  (fail-closed), so a music-volume or transition change always re-renders.
+- **Logging, once per job:** `Timeline: Intro 1.500 s (visual only) · Voiceover
+  start 1.500 s · Spoken 3.000 s · Spoken end 4.500 s · Outro 1.500 s (visual
+  only) · Video start 0.000 s · Video end 6.000 s`, `Music: start 0.000 s · end
+  6.000 s (video end) · continuous through the visual intro, the voiceover and
+  the visual outro`, `Subtitles: start 1.500 s · end 4.500 s · no caption in the
+  visual intro or outro` and `Output settings (Long-Form): Music volume 44 % ·
+  Voiceover volume 100 % · Ducking off · Transition Cross Dissolve / 2.000 s`.
+
+GUI: the Long-Form and Shorts groups each hold their own **Timeline** (visual
+before/after voiceover, plus the opening effect for Long-Form), **Audio**
+(track + music volume slider) and **Transitions** (type + duration) rows, with a
+hint line stating that music starts immediately and runs to the end while the
+voiceover and its captions start after the intro. No control exists twice.
+
+CLI: `--long-intro`, `--long-outro`, `--short-intro`, `--short-outro`,
+`--long-music-volume`, `--short-music-volume`, `--long-transition`,
+`--short-transition`, `--long-transition-effect`, `--short-transition-effect` and
+`--opening-effect none|zoom_in|zoom_out`. The shared `--music-volume`,
+`--transition` and `--transition-effect` remain and act as the compatibility
+fallback for both outputs when the per-output flag is omitted.
+
+## Visual verification is optional evidence, never a render failure
+
+The first/middle/final verification frames are decoded from the finished,
+FFprobe-validated MP4 and are internal quality evidence only. They are now
+sampled from bounded timestamps: every request is clamped strictly inside the
+real video duration using a margin of two frame periods (at least `40 ms`) taken
+from the actual frame rate, and a failed extraction is retried at
+`duration - 2·margin`, `duration - 3·margin`, `duration - 4·margin` — never at or
+beyond EOF, never endlessly. A PNG counts as valid only when it exists, is
+non-empty and is structurally decodable (signature, `IHDR` with non-zero
+dimensions, `IEND` present); zero-byte or truncated files are removed and
+retried.
+
+Each frame logs exactly one concise line, for example
+`Visual verification final: requested=80.792000 · fallback=80.750333 · PNG=PASS
+(1920x1080)` or `Visual verification final: requested=5.990000 · 4 bounded
+attempts · PNG=FAIL (no decodable frame)`.
+
+The result is classified separately from the render:
+`MainVideoResult.verification_status` is `PASS`, `DEGRADED` (some frames),
+`FAIL` (no frame) or `SKIPPED` (no reliably matched words / no subtitles), and a
+cache-reused video reports `CACHED`. A `FAIL` logs
+`Visual verification: PNG=FAIL · 0/3 frames decoded · rendered output retained ·
+overall render status=SUCCESS` and the valid MP4, its clean master, SRT and VTT
+all stay on disk. Previously such a failure was reported as
+`SUBTITLE GENERATION FAILED [first/middle/final visual verification]` and the
+cleanup deleted the completed output — a long real render was thrown away because
+one optional PNG could not be extracted at EOF.
+
+Genuine failures still fail hard and still clean up: subtitle creation errors, an
+invalid subtitle timeline, missing or empty SRT/VTT/canonical-timeline artifacts,
+a failed burn-in pass and any FFprobe validation error keep the strict
+`SUBTITLE GENERATION FAILED […]` classification.

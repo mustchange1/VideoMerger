@@ -10,7 +10,17 @@ pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication
 
 from app.video_merger.gui.main_window import MainWindow
-from app.video_merger.models import ExportSettings
+from app.video_merger.models import (
+    LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_MUSIC_VOLUME,
+    LONG_FORM_OUTRO_SECONDS,
+    LONG_FORM_TRANSITION_DURATION,
+    SHORT_INTRO_SECONDS,
+    SHORT_OUTRO_SECONDS,
+    SHORTS_MUSIC_VOLUME,
+    SHORTS_TRANSITION_DURATION,
+    ExportSettings,
+)
 from app.video_merger.project_order import ProjectOrderStore
 from app.video_merger.settings_store import SettingsStore
 from app.video_merger.target import resolve_export
@@ -86,12 +96,51 @@ def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
         assert window.original_audio_combo.currentData() == "original"
         assert window.outro_audio_combo.currentData() == "original"
         assert window.transition_combo.currentData() == "cross_dissolve"
-        assert window.transition_spin.value() == 1.0
-        # 1.3.0: Main Video End Padding ist eine freie Zahl-Eingabe; der
-        # bestehende Standard (~1 Sekunde) bleibt exakt erhalten.
-        assert window.end_padding_spin.value() == 1.0
-        assert window._settings().final_pause == 1.0
+        # Independent per-output transitions: a new project shows Cross Dissolve
+        # / 2.00 s for BOTH outputs, and each control writes only its own value.
+        assert window.transition_spin.value() == LONG_FORM_TRANSITION_DURATION == 2.0
+        assert window.short_transition_combo.currentData() == "cross_dissolve"
+        assert window.short_transition_spin.value() == SHORTS_TRANSITION_DURATION == 2.0
+        collected = window._settings()
+        assert collected.long_form_transition_type == "cross_dissolve"
+        assert collected.long_form_transition_duration == 2.0
+        assert collected.shorts_transition_type == "cross_dissolve"
+        assert collected.shorts_transition_duration == 2.0
+        window.short_transition_spin.setValue(1.0)
+        window.short_transition_combo.setCurrentIndex(
+            max(0, window.short_transition_combo.findData("film_dissolve"))
+        )
+        assert window.transition_spin.value() == 2.0
+        assert window.transition_combo.currentData() == "cross_dissolve"
+        assert window._settings().long_form_transition_duration == 2.0
+        assert window._settings().shorts_transition_duration == 1.0
+        assert window._settings().shorts_transition_type == "film_dissolve"
+        window.short_transition_spin.setValue(2.0)
+        window.short_transition_combo.setCurrentIndex(
+            max(0, window.short_transition_combo.findData("cross_dissolve"))
+        )
+        # The Long-Form outro IS the Main Video end padding: one control, one
+        # canonical value, and a new project uses the new 1.5 s default.
+        assert window.end_padding_spin.value() == LONG_FORM_OUTRO_SECONDS == 1.5
+        assert window._settings().final_pause == 1.5
+        assert window._settings().long_form_outro_seconds == 1.5
+        assert window.long_intro_spin.value() == LONG_FORM_INTRO_SECONDS == 1.5
+        assert window.short_intro_spin.value() == SHORT_INTRO_SECONDS == 0.7
+        assert window.short_outro_spin.value() == SHORT_OUTRO_SECONDS == 0.7
+        # Independent per-output music volumes (44 % each by default).
+        assert window.music_volume_slider.value() == LONG_FORM_MUSIC_VOLUME == 44
+        assert window.short_music_volume_slider.value() == SHORTS_MUSIC_VOLUME == 44
+        assert window._settings().long_form_music_volume == 44
+        assert window._settings().shorts_music_volume == 44
+        window.short_music_volume_slider.setValue(50)
         assert window.music_volume_slider.value() == 44
+        assert window._settings().shorts_music_volume == 50
+        assert window._settings().long_form_music_volume == 44
+        window.music_volume_slider.setValue(35)
+        assert window.short_music_volume_slider.value() == 50
+        assert window._settings().music_volume == 35
+        window.music_volume_slider.setValue(44)
+        window.short_music_volume_slider.setValue(44)
         assert window.music_preset_combo.currentData() == ("balanced", 44)
         # Separate background music: one Long-Form field, one Shorts field.
         assert window.music_edit.text() == ""

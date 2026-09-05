@@ -616,7 +616,10 @@ def test_every_new_timeline_setting_changes_the_stage1_fingerprint(tmp_path, fie
     baseline, media, settings, resolved = _stage1_identity(tmp_path)
     changed = replace(settings, **{field: value})
     assert stage1_fingerprint(media, changed, resolved)[0] != baseline, field
-    assert FINGERPRINT_SCHEMA == 3
+    # 4: background music covers the complete video now and Long-Form/Shorts
+    # received independent music volume and transition settings, so a schema-3
+    # entry can never be reused silently.
+    assert FINGERPRINT_SCHEMA == 4
 
 
 @pytest.mark.parametrize(

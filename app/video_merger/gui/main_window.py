@@ -21,10 +21,14 @@ from ..font_manager import FONT_OPTIONS, register_bundled_fonts_with_qt, resolve
 from ..image_insertion import clamp_image_duration, clamp_image_zoom, normalize_image_filter, normalize_image_fit_mode, normalize_image_position
 from ..models import (
     LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_MUSIC_VOLUME,
     LONG_FORM_OUTRO_SECONDS,
+    LONG_FORM_TRANSITION_DURATION,
     MAX_VISUAL_SECTION_SECONDS,
     SHORT_INTRO_SECONDS,
     SHORT_OUTRO_SECONDS,
+    SHORTS_MUSIC_VOLUME,
+    SHORTS_TRANSITION_DURATION,
     ExportSettings,
     ProgressEvent,
 )
@@ -69,6 +73,9 @@ from ..youtube_outputs import (
     EXPORT_MODE_LONG_FORM,
     EXPORT_MODE_SHORTS,
     normalize_export_mode,
+    output_music_volume,
+    output_transition_duration,
+    output_transition_type,
 )
 from .style import APP_STYLE
 from .workers import ProcessingWorker
@@ -103,6 +110,23 @@ def _visual_section_spin(default: float, tooltip: str) -> QDoubleSpinBox:
     spin.setRange(0.0, MAX_VISUAL_SECTION_SECONDS)
     spin.setSingleStep(0.1)
     spin.setDecimals(1)
+    spin.setSuffix(" sec")
+    spin.setToolTip(tooltip)
+    spin.setValue(default)
+    return spin
+
+
+def _transition_duration_spin(default: float, tooltip: str) -> QDoubleSpinBox:
+    """One spin box for an output-specific transition duration.
+
+    The widget range matches the historical shared control (0.05-5.00 s); the
+    model itself accepts any finite value >= 0 and the timeline logic still
+    bounds the effective duration by the real clip lengths.
+    """
+    spin = QDoubleSpinBox()
+    spin.setRange(0.05, 5.0)
+    spin.setSingleStep(0.25)
+    spin.setDecimals(2)
     spin.setSuffix(" sec")
     spin.setToolTip(tooltip)
     spin.setValue(default)
@@ -406,17 +430,60 @@ class MainWindow(QMainWindow):
         ):
             self.music_preset_combo.addItem(label, (key, value))
         self.music_preset_combo.currentIndexChanged.connect(self._music_preset_changed)
+        self.music_preset_combo.setToolTip(
+            "Loudness preset of the LONG-FORM background music. The YouTube Shorts "
+            "volume below is independent and is never changed by this preset."
+        )
         self.music_volume_slider = QSlider(Qt.Horizontal)
         self.music_volume_slider.setRange(0, 100)
+        self.music_volume_slider.setValue(LONG_FORM_MUSIC_VOLUME)
         self.music_volume_value = QLabel()
         self.music_volume_slider.valueChanged.connect(self._music_volume_changed)
-        audio_layout.addWidget(QLabel("Music Preset"), 10, 0)
+        self.music_volume_slider.setToolTip(
+            "LONG-FORM background music volume in percent. The track starts at "
+            "0.000 s with the very first frame, plays under the voiceover and "
+            "continues through the visual outro until the final frame. This value "
+            "is independent from the Shorts music volume below."
+        )
+        # YouTube Shorts own their music volume completely: moving this slider
+        # never changes the Long-Form value, and vice versa.
+        self.short_music_volume_slider = QSlider(Qt.Horizontal)
+        self.short_music_volume_slider.setRange(0, 100)
+        self.short_music_volume_slider.setValue(SHORTS_MUSIC_VOLUME)
+        self.short_music_volume_value = QLabel(f"{SHORTS_MUSIC_VOLUME} %")
+        self.short_music_volume_slider.valueChanged.connect(
+            lambda value: self.short_music_volume_value.setText(f"{value} %")
+        )
+        self.short_music_volume_slider.setToolTip(
+            "SHORTS background music volume in percent, applied to the Short's own "
+            "music track only (a Short never plays the Long-Form track). The music "
+            "starts at 0.000 s, plays under the voiceover and continues through the "
+            "0.7 s visual outro until the final frame. Independent from the "
+            "Long-Form volume above."
+        )
+        audio_layout.addWidget(QLabel("Music Preset (Long-Form)"), 10, 0)
         audio_layout.addWidget(self.music_preset_combo, 10, 1)
-        audio_layout.addWidget(QLabel("Music Volume"), 11, 0)
+        audio_layout.addWidget(QLabel("Music Volume (Long-Form)"), 11, 0)
         audio_layout.addWidget(self.music_volume_slider, 11, 1)
         audio_layout.addWidget(self.music_volume_value, 11, 2)
+        audio_layout.addWidget(QLabel("Music Volume (Shorts)"), 12, 0)
+        audio_layout.addWidget(self.short_music_volume_slider, 12, 1)
+        audio_layout.addWidget(self.short_music_volume_value, 12, 2)
         self.ducking_check = QCheckBox("Voiceover Ducking – Musik weich unter Sprache absenken")
-        audio_layout.addWidget(self.ducking_check, 12, 0, 1, 3)
+        audio_layout.addWidget(self.ducking_check, 13, 0, 1, 3)
+        music_timeline_hint = QLabel(
+            "Background music always starts at 0.000 s with the first frame: it already "
+            "plays during the visual intro, continues under the voiceover and keeps "
+            "playing through the visual outro until the very end of the video - there is "
+            "no silent gap before the first spoken word and no silent ending. The "
+            "voiceover itself starts after the visual intro, and subtitles run exactly "
+            "from the voiceover start to the end of the spoken content. Without a "
+            "selected track nothing is invented: the video stays silent outside the "
+            "spoken audio."
+        )
+        music_timeline_hint.setWordWrap(True)
+        music_timeline_hint.setObjectName("subtitle")
+        audio_layout.addWidget(music_timeline_hint, 14, 0, 1, 3)
         # Explicit visual-only timeline sections. The Long-Form outro IS the
         # former "Main Video End Padding": one control, one canonical value
         # (``final_pause``), so the tail after the spoken audio can never be
@@ -517,22 +584,22 @@ class MainWindow(QMainWindow):
         self.duration_after_merge_check.toggled.connect(self._update_pool_status)
         # Row 13 moved to group "4d · Timeline" (Long-Form Outro); the rows
         # below keep their relative order without a gap.
-        audio_layout.addWidget(QLabel("If Video Is Too Short"), 13, 0)
-        audio_layout.addWidget(self.short_video_combo, 13, 1)
-        audio_layout.addWidget(QLabel("Duration Fit Mode"), 14, 0)
-        audio_layout.addWidget(self.duration_fit_combo, 14, 1)
-        audio_layout.addWidget(QLabel("Maximum Stretch"), 15, 0)
+        audio_layout.addWidget(QLabel("If Video Is Too Short"), 15, 0)
+        audio_layout.addWidget(self.short_video_combo, 15, 1)
+        audio_layout.addWidget(QLabel("Duration Fit Mode"), 16, 0)
+        audio_layout.addWidget(self.duration_fit_combo, 16, 1)
+        audio_layout.addWidget(QLabel("Maximum Stretch"), 17, 0)
         stretch_row = QHBoxLayout()
         stretch_row.addWidget(self.max_stretch_combo)
         stretch_row.addWidget(self.max_stretch_spin)
-        audio_layout.addLayout(stretch_row, 15, 1)
-        audio_layout.addWidget(QLabel("Duration Before Merge"), 16, 0)
-        audio_layout.addWidget(self.duration_before_merge_combo, 16, 1)
-        audio_layout.addWidget(QLabel("Duration After Merge"), 17, 0)
+        audio_layout.addLayout(stretch_row, 17, 1)
+        audio_layout.addWidget(QLabel("Duration Before Merge"), 18, 0)
+        audio_layout.addWidget(self.duration_before_merge_combo, 18, 1)
+        audio_layout.addWidget(QLabel("Duration After Merge"), 19, 0)
         after_row = QHBoxLayout()
         after_row.addWidget(self.duration_after_merge_check)
         after_row.addWidget(self.duration_after_merge_combo)
-        audio_layout.addLayout(after_row, 17, 1, 1, 2)
+        audio_layout.addLayout(after_row, 19, 1, 1, 2)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -668,53 +735,94 @@ class MainWindow(QMainWindow):
         format_layout.addWidget(self.export_mode_combo, 3, 1)
         outer.addWidget(format_group)
 
-        effect_group = QGroupBox("4b · Transition & Background")
+        effect_group = QGroupBox("4b · Transition (Long-Form / Shorts) & Background")
         effect_layout = QGridLayout(effect_group)
-        effect_layout.addWidget(QLabel("Transition"), 0, 0)
+        effect_layout.addWidget(QLabel("Transition (Long-Form)"), 0, 0)
         self.transition_combo = QComboBox()
         for key, label, description in TRANSITION_OPTIONS:
             self.transition_combo.addItem(label, key)
             self.transition_combo.setItemData(self.transition_combo.count() - 1, description, Qt.ToolTipRole)
         self.transition_combo.currentIndexChanged.connect(self._update_transition_description)
+        self.transition_combo.setToolTip(
+            "Transition family of the YouTube LONG-FORM video (and of the basic Main "
+            "Video merge). Every YouTube Short uses its own transition below - "
+            "changing one output never changes the other. All existing transition "
+            "types stay available."
+        )
         effect_layout.addWidget(self.transition_combo, 0, 1)
         self.transition_description = QLabel()
         self.transition_description.setWordWrap(True)
         self.transition_description.setObjectName("subtitle")
         effect_layout.addWidget(self.transition_description, 1, 1, 1, 2)
-        effect_layout.addWidget(QLabel("Duration"), 2, 0)
-        self.transition_spin = QDoubleSpinBox()
-        self.transition_spin.setRange(0.05, 5.0)
-        self.transition_spin.setSingleStep(0.25)
-        self.transition_spin.setDecimals(2)
-        self.transition_spin.setSuffix(" sec")
+        effect_layout.addWidget(QLabel("Duration (Long-Form)"), 2, 0)
+        self.transition_spin = _transition_duration_spin(
+            LONG_FORM_TRANSITION_DURATION,
+            "LONG-FORM transition duration in seconds (default 2.00 s). It applies "
+            "between the clips of the Long-Form timeline only - including the clips "
+            "shown during the visual intro and the visual outro - and is independent "
+            "from the Shorts duration below. The timeline logic still bounds the "
+            "effective value by the real clip lengths.",
+        )
         self.transition_spin.valueChanged.connect(self._update_pool_status)
         effect_layout.addWidget(self.transition_spin, 2, 1)
+        # YouTube Shorts own their transition completely: family and duration are
+        # separate controls, so a 1.0 s Short dissolve never changes the 2.0 s
+        # Long-Form dissolve (and vice versa), in Combined mode and One-Click too.
+        effect_layout.addWidget(QLabel("Transition (Shorts)"), 3, 0)
+        self.short_transition_combo = QComboBox()
+        for key, label, description in TRANSITION_OPTIONS:
+            self.short_transition_combo.addItem(label, key)
+            self.short_transition_combo.setItemData(
+                self.short_transition_combo.count() - 1, description, Qt.ToolTipRole
+            )
+        self.short_transition_combo.setToolTip(
+            "Transition family of every YouTube Short (default Cross Dissolve). "
+            "Independent from the Long-Form transition above; all existing "
+            "transition types stay available."
+        )
+        effect_layout.addWidget(self.short_transition_combo, 3, 1)
+        effect_layout.addWidget(QLabel("Duration (Shorts)"), 4, 0)
+        self.short_transition_spin = _transition_duration_spin(
+            SHORTS_TRANSITION_DURATION,
+            "SHORTS transition duration in seconds (default 2.00 s). It applies "
+            "between the clips of every Short only and is independent from the "
+            "Long-Form duration above.",
+        )
+        effect_layout.addWidget(self.short_transition_spin, 4, 1)
+        transition_hint = QLabel(
+            "Long-Form and Shorts keep independent transitions; both default to "
+            "Cross Dissolve / 2.00 s. Combined mode and One-Click use the Long-Form "
+            "pair for the Long-Form video and the Shorts pair for every Short."
+        )
+        transition_hint.setWordWrap(True)
+        transition_hint.setObjectName("subtitle")
+        effect_layout.addWidget(transition_hint, 5, 0, 1, 3)
 
         self.blur_slider = QSlider(Qt.Horizontal)
         self.blur_slider.setRange(0, 50)
         self.blur_value = QLabel()
         self.blur_slider.valueChanged.connect(lambda value: self.blur_value.setText(str(value)))
-        effect_layout.addWidget(QLabel("Background Blur"), 3, 0)
-        effect_layout.addWidget(self.blur_slider, 3, 1)
-        effect_layout.addWidget(self.blur_value, 3, 2)
+        effect_layout.addWidget(QLabel("Background Blur"), 6, 0)
+        effect_layout.addWidget(self.blur_slider, 6, 1)
+        effect_layout.addWidget(self.blur_value, 6, 2)
 
         self.dark_slider = QSlider(Qt.Horizontal)
         self.dark_slider.setRange(0, 30)
         self.dark_value = QLabel()
         self.dark_slider.valueChanged.connect(lambda value: self.dark_value.setText(f"{value} %"))
-        effect_layout.addWidget(QLabel("Background Darkness"), 4, 0)
-        effect_layout.addWidget(self.dark_slider, 4, 1)
-        effect_layout.addWidget(self.dark_value, 4, 2)
+        effect_layout.addWidget(QLabel("Background Darkness"), 7, 0)
+        effect_layout.addWidget(self.dark_slider, 7, 1)
+        effect_layout.addWidget(self.dark_value, 7, 2)
 
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setRange(100, 120)
         self.zoom_value = QLabel()
         self.zoom_slider.valueChanged.connect(lambda value: self.zoom_value.setText(f"{value} %"))
-        effect_layout.addWidget(QLabel("Background Zoom"), 5, 0)
-        effect_layout.addWidget(self.zoom_slider, 5, 1)
-        effect_layout.addWidget(self.zoom_value, 5, 2)
+        effect_layout.addWidget(QLabel("Background Zoom"), 8, 0)
+        effect_layout.addWidget(self.zoom_slider, 8, 1)
+        effect_layout.addWidget(self.zoom_value, 8, 2)
         self.normalize_check = QCheckBox("Audio sanft auf −16 LUFS normalisieren")
-        effect_layout.addWidget(self.normalize_check, 6, 0, 1, 3)
+        effect_layout.addWidget(self.normalize_check, 9, 0, 1, 3)
         outer.addWidget(effect_group)
 
         preset_group = QGroupBox("4c · Output Preset & Quality (1.2.3)")
@@ -753,10 +861,13 @@ class MainWindow(QMainWindow):
         timeline_layout.addWidget(QLabel("Main Video Opening Effect"), 4, 0)
         timeline_layout.addWidget(self.opening_effect_combo, 4, 1)
         timeline_hint = QLabel(
-            "One Main Video is always [visual intro] [voiceover + normal video] [visual outro]. "
-            "Both visual sections are real moving material from the normal video timeline — "
-            "no black or frozen frames, no voiceover audio and no subtitle: captions run "
-            "exactly from the voiceover start to the end of the spoken content."
+            "One Main Video is always [visual intro + music] [voiceover + subtitles + music] "
+            "[visual outro + music]. Both visual sections are real moving material from the "
+            "normal video timeline — no black or frozen frames, no voiceover audio and no "
+            "subtitle: captions run exactly from the voiceover start to the end of the spoken "
+            "content. Configured background music is different: it starts at 0.000 s with the "
+            "first frame, plays under the voiceover and continues through the visual outro "
+            "until the final frame, so neither visual section is silent."
         )
         timeline_hint.setWordWrap(True)
         timeline_hint.setObjectName("subtitle")
@@ -1148,12 +1259,36 @@ class MainWindow(QMainWindow):
         self.resolution_combo.setCurrentIndex(max(0, index))
         index = self.fit_combo.findData(self.saved.fit_mode)
         self.fit_combo.setCurrentIndex(max(0, index))
-        index = self.transition_combo.findData(self.saved.transition_type)
+        # Output-specific transition settings. The shared resolvers in
+        # ``youtube_outputs`` are the single source of truth for the migration
+        # fallback (an old project keeps its saved shared transition, a project
+        # without one receives Cross Dissolve / 2.00 s for both outputs), so the
+        # widgets show exactly what the Long-Form job and every Short will render.
+        long_transition = output_transition_type(
+            self.saved, getattr(self.saved, "long_form_transition_type", ""),
+            label="Long-Form Transition",
+        )
+        index = self.transition_combo.findData(long_transition)
         self.transition_combo.setCurrentIndex(max(0, index))
         self._update_transition_description()
+        short_transition = output_transition_type(
+            self.saved, getattr(self.saved, "shorts_transition_type", ""),
+            label="Shorts Transition",
+        )
+        index = self.short_transition_combo.findData(short_transition)
+        self.short_transition_combo.setCurrentIndex(max(0, index))
         index = self.ease_combo.findData(self.saved.transition_ease)
         self.ease_combo.setCurrentIndex(max(0, index))
-        self.transition_spin.setValue(self.saved.transition_duration)
+        self.transition_spin.setValue(output_transition_duration(
+            self.saved, getattr(self.saved, "long_form_transition_duration", None),
+            label="Long-Form Transition Duration",
+            default=LONG_FORM_TRANSITION_DURATION,
+        ))
+        self.short_transition_spin.setValue(output_transition_duration(
+            self.saved, getattr(self.saved, "shorts_transition_duration", None),
+            label="Shorts Transition Duration",
+            default=SHORTS_TRANSITION_DURATION,
+        ))
         self.blur_slider.setValue(self.saved.background_blur)
         self.dark_slider.setValue(self.saved.background_darkness)
         self.zoom_slider.setValue(self.saved.background_zoom)
@@ -1251,7 +1386,21 @@ class MainWindow(QMainWindow):
         self.music_preset_combo.blockSignals(True)
         self.music_preset_combo.setCurrentIndex(preset_index)
         self.music_preset_combo.blockSignals(False)
-        self.music_volume_slider.setValue(self.saved.music_volume)
+        # Independent per-output music volumes, resolved by the same helper the
+        # render planners use: an old project keeps its saved shared loudness for
+        # both outputs, a new project shows 44 % for each.
+        long_music_volume = output_music_volume(
+            self.saved, getattr(self.saved, "long_form_music_volume", None),
+            label="Long-Form Music Volume", default=LONG_FORM_MUSIC_VOLUME,
+        )
+        self.music_volume_slider.setValue(long_music_volume)
+        self.music_volume_value.setText(f"{long_music_volume} %")
+        short_music_volume = output_music_volume(
+            self.saved, getattr(self.saved, "shorts_music_volume", None),
+            label="Shorts Music Volume", default=SHORTS_MUSIC_VOLUME,
+        )
+        self.short_music_volume_slider.setValue(short_music_volume)
+        self.short_music_volume_value.setText(f"{short_music_volume} %")
         self.ducking_check.setChecked(self.saved.ducking_enabled)
         # Explicit visual-only sections. An older project has no Long-Form Outro
         # field, so its saved Main Video End Padding migrates into that control
@@ -1263,7 +1412,14 @@ class MainWindow(QMainWindow):
         self.end_padding_spin.setValue(
             float(self.saved.long_form_outro_seconds)
             if "long_form_outro_seconds" in saved_keys
-            else float(self.saved.final_pause)
+            # An old project carries only the Main Video end padding, which IS
+            # this section; a project without any saved value at all receives the
+            # new Long-Form outro default instead of the neutral model fallback.
+            else (
+                float(self.saved.final_pause)
+                if "final_pause" in saved_keys
+                else LONG_FORM_OUTRO_SECONDS
+            )
         )
         self.short_intro_spin.setValue(
             float(getattr(self.saved, "short_intro_seconds", SHORT_INTRO_SECONDS))
@@ -1380,9 +1536,16 @@ class MainWindow(QMainWindow):
             aspect="16:9" if self.radio_16.isChecked() else "9:16",
             resolution=self.resolution_combo.currentText(),
             fit_mode=str(self.fit_combo.currentData()),
+            # The Long-Form transition pair is written to the canonical fields as
+            # well (they drive the basic Main Video merge and every direct
+            # render); the Shorts pair below is completely independent.
             transition_type=str(self.transition_combo.currentData()),
             transition_ease=str(self.ease_combo.currentData()),
             transition_duration=self.transition_spin.value(),
+            long_form_transition_type=str(self.transition_combo.currentData()),
+            long_form_transition_duration=float(self.transition_spin.value()),
+            shorts_transition_type=str(self.short_transition_combo.currentData()),
+            shorts_transition_duration=float(self.short_transition_spin.value()),
             background_blur=self.blur_slider.value(),
             background_darkness=self.dark_slider.value(),
             background_zoom=self.zoom_slider.value(),
@@ -1412,6 +1575,11 @@ class MainWindow(QMainWindow):
             outro_audio_mode=str(self.outro_audio_combo.currentData()),
             voiceover_volume=self.voice_volume_slider.value(),
             music_volume=self.music_volume_slider.value(),
+            # Independent per-output music volumes. Each applies from 0.000 s to
+            # the final frame of its own output, and each output still plays only
+            # its own selected track.
+            long_form_music_volume=int(self.music_volume_slider.value()),
+            shorts_music_volume=int(self.short_music_volume_slider.value()),
             music_preset=str((self.music_preset_combo.currentData() or ("custom", 0))[0]),
             ducking_enabled=self.ducking_check.isChecked(),
             ducking_attack_ms=self.duck_attack_spin.value(),

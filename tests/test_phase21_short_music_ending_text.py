@@ -297,7 +297,7 @@ def _fake_probe(project: Project):
     return probe
 
 
-def _fake_frames(_ffmpeg, _video, _alignment, frame_paths):
+def _fake_frames(_ffmpeg, _video, _alignment, frame_paths, **_kwargs):
     created = []
     for path in frame_paths.values():
         created.append(_write(Path(path), b"\x89PNG\r\n\x1a\n" + b"0" * 32))

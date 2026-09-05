@@ -18,15 +18,23 @@ from pathlib import Path
 
 from .errors import VideoMergerError
 from .models import (
+    DEFAULT_TRANSITION_TYPE,
     LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_MUSIC_VOLUME,
     LONG_FORM_OUTRO_SECONDS,
+    LONG_FORM_TRANSITION_DURATION,
+    MAX_MUSIC_VOLUME_PERCENT,
     SHORT_INTRO_SECONDS,
+    SHORTS_MUSIC_VOLUME,
+    SHORTS_TRANSITION_DURATION,
+    TRANSITION_DURATION_LEGACY_DEFAULT,
     ExportSettings,
 )
 from .opening_effects import OPENING_EFFECT_NONE, normalize_opening_effect
 from .project_assets import read_script
 from .subtitle_presets import get_preset
 from .subtitles import normalize_subtitle_animation
+from .transition_effects import normalize_transition
 from .voiceover_order import normalize_voiceover_order_mode, voiceover_order_indices
 
 EXPORT_MODE_LONG_FORM = "long_form"
@@ -41,12 +49,14 @@ EXPORT_MODE_LABELS = {
 
 #: Historical fixed Short ending (Phase 21): every Short ended with this much
 #: video-only material after its own voiceover. It is superseded by the
-#: configurable :data:`~app.video_merger.models.SHORT_OUTRO_SECONDS` (1.5 s),
+#: configurable :data:`~app.video_merger.models.SHORT_OUTRO_SECONDS` (0.7 s),
 #: which is the Short's visual outro now — the value is *replaced*, never added,
-#: so a Short can never contain a duplicated visible ending. The constant stays
-#: as the guaranteed video-only tail for legacy settings objects that predate
-#: the new field, and it documents the timing guarantee that still holds: the
-#: spoken audio is the authoritative duration, the caption timeline ends with
+#: so a Short can never contain a duplicated visible ending. Because the new
+#: default equals this historical value, the same guaranteed video-only tail is
+#: simply reused as the semantic outro. The constant stays as the fallback for
+#: legacy settings objects that predate the new field, and it documents the
+#: timing guarantee that still holds: the spoken audio is the authoritative
+#: duration, the caption timeline ends with
 #: it, and the outro material comes from the existing video timeline logic (clip
 #: selection, transitions, Hold/Loop and chunking), not from a new renderer.
 SHORT_ENDING_SECONDS = 0.7
@@ -97,6 +107,95 @@ def effective_outro_seconds(settings: object) -> float:
     return visual_section_seconds(getattr(settings, "final_pause", 0.0), label="Visual outro")
 
 
+def output_music_volume(
+    settings: object, value: object, *, label: str, default: int,
+) -> int:
+    """Resolve one output's independent background music volume in percent.
+
+    Long-Form and Shorts each own their volume: ``value`` is the
+    output-specific setting and always wins when it is configured. ``None`` (a
+    project saved before the split, or a direct API caller) falls back to the
+    shared :attr:`~app.video_merger.models.ExportSettings.music_volume`, so an
+    existing project keeps exactly the loudness it was saved with; a project
+    without any of the two receives the 44 % default for both outputs.
+
+    The resolved gain applies to the complete video: the music starts at
+    program time 0.000 s, plays under the voiceover and continues through the
+    visual outro until the final video endpoint.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        value = getattr(settings, "music_volume", default)
+    try:
+        percent = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise VideoMergerError(
+            f"{label} must be a percentage (0-{MAX_MUSIC_VOLUME_PERCENT}), not {value!r}."
+        ) from exc
+    if not math.isfinite(percent):
+        raise VideoMergerError(f"{label} must be a finite percentage, not {value!r}.")
+    return int(max(0, min(MAX_MUSIC_VOLUME_PERCENT, round(percent))))
+
+
+def output_transition_type(settings: object, value: object, *, label: str) -> str:
+    """Resolve one output's transition family.
+
+    An explicit output-specific choice wins; an unconfigured value falls back to
+    the shared project transition and finally to the Cross Dissolve default. All
+    existing transition types stay available — nothing is removed here.
+    """
+    text = str(value or "").strip() or str(getattr(settings, "transition_type", "") or "").strip()
+    normalized = normalize_transition(text or DEFAULT_TRANSITION_TYPE)
+    if not normalized:  # pragma: no cover - normalize_transition never returns ""
+        raise VideoMergerError(f"{label} is not a supported transition.")
+    return normalized
+
+
+def output_transition_duration(
+    settings: object, value: object, *, label: str, default: float,
+) -> float:
+    """Resolve one output's transition duration in seconds.
+
+    An explicit output-specific duration always wins. Otherwise the shared
+    duration of an existing project or API caller is honored as the migration
+    fallback — except when it still carries the historical shared default of
+    :data:`~app.video_merger.models.TRANSITION_DURATION_LEGACY_DEFAULT`, which
+    is indistinguishable from "never configured" and therefore receives the new
+    per-output default (2.0 s for both Long-Form and Shorts).
+
+    ``0`` is valid (hard cut). Negative, non-numeric or infinite values are
+    rejected instead of being silently clamped, exactly like the visual
+    sections; :func:`app.video_merger.target.safe_transition_durations` still
+    bounds the effective value by the real clip durations.
+    """
+    seconds: float
+    if value is None or (isinstance(value, str) and not value.strip()):
+        shared = getattr(settings, "transition_duration", None)
+        try:
+            shared_seconds = None if shared is None else float(shared)
+        except (TypeError, ValueError):
+            shared_seconds = None
+        if shared_seconds is None:
+            seconds = default
+        elif abs(shared_seconds - TRANSITION_DURATION_LEGACY_DEFAULT) > 1e-9:
+            seconds = shared_seconds
+        else:
+            seconds = default
+    else:
+        try:
+            seconds = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise VideoMergerError(
+                f"{label} must be a number of seconds (0 = hard cut), not {value!r}."
+            ) from exc
+    if not math.isfinite(seconds):
+        raise VideoMergerError(f"{label} must be a finite number of seconds, not {value!r}.")
+    if seconds < 0.0:
+        raise VideoMergerError(
+            f"{label} cannot be negative ({seconds:.3f} s); use 0 for a hard cut."
+        )
+    return round(seconds, 3)
+
+
 @dataclass(frozen=True, slots=True)
 class MainTimeline:
     """Canonical structure of one voiceover-driven Main Video.
@@ -110,6 +209,14 @@ class MainTimeline:
     Both visual sections contain moving material from the normal video timeline
     (never black or unintentionally frozen frames) and no voiceover audio; the
     caption timeline covers the spoken part only.
+
+    The complete audio contract of one job is expressed here as well:
+    ``[video start .. video end]`` is the rendered picture, ``[voiceover start ..
+    spoken end]`` is the only part with voiceover and subtitles, and
+    ``[music start .. music end]`` is the *complete* video, so configured
+    background music plays from 0.000 s through both visual sections until the
+    final frame. Without a configured track nothing is invented: the visual
+    sections simply stay silent.
     """
 
     intro: float
@@ -136,24 +243,61 @@ class MainTimeline:
         return self.intro + self.spoken + self.outro
 
     @property
-    def audio_program(self) -> float:
-        """Window for music and clip-original audio.
+    def video_start(self) -> float:
+        """Program time of the first rendered frame (always 0.000 s)."""
+        return 0.0
 
-        Music may already play during the visual intro (it starts at program
-        time 0) and, exactly like the historical end padding, stops when the
-        spoken content ends — the visual outro stays without music.
+    @property
+    def video_end(self) -> float:
+        """Program time of the last rendered frame == the complete target."""
+        return self.target
+
+    @property
+    def music_start(self) -> float:
+        """Background music starts with the very first frame (0.000 s).
+
+        A configured track is never delayed by the visual intro: it plays from
+        the video start, continues under the voiceover and keeps playing through
+        the visual outro, so the timeline contains no silent gap in front of the
+        first spoken word and no silent ending after the last one.
+        """
+        return 0.0
+
+    @property
+    def music_end(self) -> float:
+        """Background music ends with the final frame of the video."""
+        return self.target
+
+    @property
+    def audio_program(self) -> float:
+        """Window of the *spoken* program: voiceover and clip-original audio.
+
+        Both are trimmed at the spoken end, so the visual outro never contains
+        voiceover — exactly like the historical end padding. Background music is
+        deliberately NOT bounded by this value: it covers the complete video
+        (:attr:`music_start` → :attr:`music_end`).
         """
         return self.intro + self.spoken
 
-    def log_lines(self) -> list[str]:
+    def log_lines(self, *, music_configured: bool = False) -> list[str]:
         """Concise timeline log for one job (no per-frame spam)."""
+        music_line = (
+            (
+                f"Music: start {self.music_start:.3f} s · end {self.music_end:.3f} s (video end) · "
+                "continuous through the visual intro, the voiceover and the visual outro"
+            )
+            if music_configured
+            else "Music: not configured – no background music, the visual sections stay silent"
+        )
         return [
             (
                 f"Timeline: Intro {self.intro:.3f} s (visual only) · "
                 f"Voiceover start {self.voiceover_start:.3f} s · "
                 f"Spoken {self.spoken:.3f} s · Spoken end {self.spoken_end:.3f} s · "
-                f"Outro {self.outro:.3f} s (visual only) · Target {self.target:.3f} s"
+                f"Outro {self.outro:.3f} s (visual only) · "
+                f"Video start {self.video_start:.3f} s · Video end {self.video_end:.3f} s"
             ),
+            music_line,
             (
                 f"Subtitles: start {self.subtitle_start:.3f} s · end {self.subtitle_end:.3f} s · "
                 "no caption in the visual intro or outro"
@@ -263,7 +407,9 @@ def long_form_settings(settings: ExportSettings) -> ExportSettings:
 
     ``music_path`` is deliberately left untouched: it is the Long-Form (and
     basic merge) background music, and the separate Shorts track below is
-    never mixed into a landscape render.
+    never mixed into a landscape render. The Long-Form music *volume* and the
+    Long-Form *transition* are resolved here into the canonical render fields,
+    so they are completely independent from the Shorts values.
     """
     style = str(getattr(settings, "subtitle_style", "long_1") or "long_1")
     # The generic subtitle controls are the Long-Form profile. A stale Short
@@ -289,6 +435,27 @@ def long_form_settings(settings: ExportSettings) -> ExportSettings:
         final_pause=visual_section_seconds(
             getattr(settings, "long_form_outro_seconds", LONG_FORM_OUTRO_SECONDS),
             label="Long-Form Outro",
+        ),
+        # Independent Long-Form audio and transition settings. The resolved
+        # values are written into the canonical fields the renderer, the cache
+        # fingerprint and the timeline mathematics read, so the Long-Form job can
+        # never pick up a Shorts value (and vice versa).
+        music_volume=output_music_volume(
+            settings,
+            getattr(settings, "long_form_music_volume", None),
+            label="Long-Form Music Volume",
+            default=LONG_FORM_MUSIC_VOLUME,
+        ),
+        transition_type=output_transition_type(
+            settings,
+            getattr(settings, "long_form_transition_type", ""),
+            label="Long-Form Transition",
+        ),
+        transition_duration=output_transition_duration(
+            settings,
+            getattr(settings, "long_form_transition_duration", None),
+            label="Long-Form Transition Duration",
+            default=LONG_FORM_TRANSITION_DURATION,
         ),
         # Long-Form animations stay selectable as they are, but a deprecated
         # Outline Highlight from an old project is migrated to a clean effect.
@@ -353,7 +520,9 @@ def short_settings(
     # Canonical visual-only sections of one Short. The configurable Short outro
     # REPLACES the historical fixed 0.7 s ending (never adds to it), and it keeps
     # that guaranteed video-only tail for legacy settings objects that do not
-    # carry the new field yet.
+    # carry the new field yet. The new Short default IS that same 0.7 s, so the
+    # historical mechanism is reused cleanly as the semantic outro instead of
+    # existing twice: one explicit tail, one visible ending.
     short_intro = visual_section_seconds(
         getattr(settings, "short_intro_seconds", SHORT_INTRO_SECONDS), label="Short Intro"
     )
@@ -379,6 +548,28 @@ def short_settings(
         # selected track, and an unselected Shorts track means no music at all.
         # The Long-Form track above is never mixed into a vertical render.
         music_path=str(getattr(settings, "short_music_path", "") or ""),
+        # Independent Shorts audio and transition settings, resolved into the
+        # canonical fields of THIS job only: a Short never inherits the
+        # Long-Form music volume or transition, and the Long-Form job never
+        # inherits these values. Like the Long-Form, the Shorts track starts at
+        # 0.000 s and plays through the visual outro to the final frame.
+        music_volume=output_music_volume(
+            settings,
+            getattr(settings, "shorts_music_volume", None),
+            label="Shorts Music Volume",
+            default=SHORTS_MUSIC_VOLUME,
+        ),
+        transition_type=output_transition_type(
+            settings,
+            getattr(settings, "shorts_transition_type", ""),
+            label="Shorts Transition",
+        ),
+        transition_duration=output_transition_duration(
+            settings,
+            getattr(settings, "shorts_transition_duration", None),
+            label="Shorts Transition Duration",
+            default=SHORTS_TRANSITION_DURATION,
+        ),
         # A Short is one acoustic unit. Inter-unit silence belongs only to the
         # combined Long-Form timeline, never to an individual Short.
         voiceover_pause=0.0,
