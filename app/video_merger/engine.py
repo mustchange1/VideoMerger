@@ -183,6 +183,7 @@ class VideoMergerEngine:
                 getattr(settings, "video_order_mode", "natural"),
                 rng=video_order_rng,
                 seed=video_order_seed,
+                legacy_root=getattr(settings, "legacy_input_root", ""),
             )
             if [item.path for item in media] != original_paths:
                 # Transition math depends on neighboring durations. Re-resolve

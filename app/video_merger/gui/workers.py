@@ -15,7 +15,7 @@ from ..models import ExportSettings
 from ..output_manager import make_output_path
 from ..paths import locate_ffmpeg
 from ..project_order import GeneratedOutputStore, ProjectOrderStore
-from ..video_pool import order_media_for_video_order
+from ..video_pool import legacy_priority_prefix, order_media_for_video_order
 
 
 class ProcessingWorker(QObject):
@@ -72,8 +72,19 @@ class ProcessingWorker(QObject):
             # and render another.
             media = order_media_for_video_order(
                 media, getattr(self.settings, "video_order_mode", "natural"),
+                legacy_root=getattr(self.settings, "legacy_input_root", ""),
             )
             self.log.emit("Effective preview/export order: " + " → ".join(item.path.name for item in media))
+            priority = legacy_priority_prefix(
+                media, getattr(self.settings, "legacy_input_root", "")
+            )
+            if priority:
+                self.log.emit(
+                    "Legacy Input Root priority (Random): clips 1-"
+                    + str(len(priority)) + " = "
+                    + ", ".join(item.path.name for item in priority)
+                    + f" · remaining randomized pool starts at clip {len(priority) + 1}"
+                )
             export_media = media
             # Every worker branch receives an already effective list. Main and
             # complete retain the original mode for their Stage-1 cache

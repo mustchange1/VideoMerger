@@ -533,7 +533,9 @@ def test_short_and_long_form_subtitle_profiles_stay_separate_with_sections(tmp_p
         assert long_form.settings.subtitle_style.startswith("long")
         assert job.settings.subtitle_style == "short_2"
         assert job.settings.subtitle_font == "inter"
-        assert job.settings.subtitle_animation == "word_highlight"
+        # Word Highlight is no longer a Shorts animation: the saved value from an
+        # older project migrates to the clean phrase-level Short default.
+        assert job.settings.subtitle_animation == "phrase_focus"
         assert job.settings.subtitle_position == "Top Center"
         assert job.settings.render_variant_key != long_form.settings.render_variant_key
 

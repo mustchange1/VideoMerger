@@ -11,14 +11,100 @@ from .font_manager import resolve_font
 from .models import AlignmentResult, WordTiming
 from .subtitle_presets import SubtitlePreset, get_preset
 
+#: Selectable subtitle animations. Every one of them is glyph-aligned: the
+#: renderer only emits primary-colour (``\c``) and alpha (``\1a``/``\3a``)
+#: tags, so no animation can paint a filled rectangle, an oversized border box
+#: or any other large-area cover around a phrase.
 ANIMATION_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("static_phrase", "Static White Reveal"),
+    ("phrase_focus", "Phrase Focus (soft entrance)"),
     ("type_reveal", "Type Reveal"),
     ("color_change", "Color Change"),
     ("word_highlight", "Word Highlight"),
-    ("outline_highlight", "Outline Highlight"),
-    ("static_phrase", "Static White Reveal"),
 )
-ANIMATION_KEYS = {key for key, _label in ANIMATION_OPTIONS}
+
+#: Deprecated keys stay *resolvable* so an old project, settings file or CLI
+#: value never crashes; they are never offered in a combo box and never chosen
+#: automatically. ``outline_highlight`` recoloured ``\3c`` and enlarged
+#: ``\bord`` for the active word, which under a box preset (``BorderStyle 3``)
+#: painted a large accent-coloured rectangle around the whole phrase instead of
+#: highlighting letters, and even without a box it produced thick outline blobs
+#: far outside the glyphs. It now renders as the clean colour emphasis below.
+DEPRECATED_ANIMATION_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("outline_highlight", "Outline Highlight (deprecated)"),
+)
+ANIMATION_REPLACEMENTS = {"outline_highlight": "color_change"}
+
+#: All keys that stay readable, including deprecated values from old projects.
+ANIMATION_KEYS = {key for key, _label in ANIMATION_OPTIONS + DEPRECATED_ANIMATION_OPTIONS}
+
+#: Word Highlight is not available for YouTube Shorts: its per-word event churn
+#: made the emphasis jump on short vertical phrases. Shorts keep the clean
+#: phrase-level and reveal animations; Long-Form keeps every safe animation.
+SHORT_ANIMATION_OPTIONS: tuple[tuple[str, str], ...] = tuple(
+    option for option in ANIMATION_OPTIONS if option[0] != "word_highlight"
+)
+LONG_ANIMATION_OPTIONS: tuple[tuple[str, str], ...] = ANIMATION_OPTIONS
+
+#: Explicit defaults. Shorts use the new phrase-level animation with a soft
+#: entrance (one ASS event per cue, no per-word churn, no highlight shape);
+#: Long-Form keeps the proven stable Static White Reveal.
+DEFAULT_SHORT_ANIMATION = "phrase_focus"
+DEFAULT_LONG_ANIMATION = "static_phrase"
+
+#: Phrase-level animations emit exactly one Dialogue event per cue.
+PHRASE_LEVEL_ANIMATIONS = frozenset({"static_phrase", "phrase_focus"})
+
+#: ``phrase_focus`` entrance: a short fade-in, and only after a real pause. A
+#: phrase that follows the previous one without a gap keeps its hard cut, so
+#: continuous speech never blinks and stays perfectly stable.
+PHRASE_FOCUS_FADE_MS = 110
+PHRASE_FOCUS_GAP = 0.12
+
+
+def animation_options(collection: str) -> tuple[tuple[str, str], ...]:
+    """Return the selectable animations of one subtitle profile collection."""
+    if str(collection or "").strip().casefold() == "short":
+        return SHORT_ANIMATION_OPTIONS
+    return LONG_ANIMATION_OPTIONS
+
+
+def accepted_animation_values(collection: str) -> tuple[str, ...]:
+    """Return every value a caller may pass for one collection.
+
+    The selectable animations first, then the deprecated aliases that stay
+    *accepted* (an old project file, settings JSON or CLI script must never
+    crash) and are migrated by :func:`normalize_subtitle_animation`.
+    """
+    selectable = [key for key, _label in animation_options(collection)]
+    if str(collection or "").strip().casefold() == "short":
+        # Word Highlight stays readable for old Short projects but is not
+        # selectable for Shorts any more.
+        selectable.append("word_highlight")
+    selectable += [key for key, _label in DEPRECATED_ANIMATION_OPTIONS]
+    return tuple(selectable)
+
+
+def normalize_subtitle_animation(value: object, collection: str = "long") -> str:
+    """Migrate any stored animation value to a safe, selectable animation.
+
+    This is the single migration point used by the renderer, the GUI combo
+    boxes, the CLI and the YouTube job planner, so an unsafe or removed key can
+    never reach an active render:
+
+    * ``outline_highlight`` (any collection) renders as the clean glyph-aligned
+      ``color_change`` emphasis instead of its rectangle-prone implementation.
+    * ``word_highlight`` stays valid for Long-Form but is removed from Shorts
+      and migrates to :data:`DEFAULT_SHORT_ANIMATION`.
+    * Unknown, empty or legacy values fall back to the collection default.
+    """
+    short = str(collection or "").strip().casefold() == "short"
+    key = str(value or "").strip().casefold()
+    key = ANIMATION_REPLACEMENTS.get(key, key)
+    allowed = {option[0] for option in (SHORT_ANIMATION_OPTIONS if short else LONG_ANIMATION_OPTIONS)}
+    if key in allowed:
+        return key
+    return DEFAULT_SHORT_ANIMATION if short else DEFAULT_LONG_ANIMATION
 
 # Cue timing constants. ``_CUE_GAP`` is the visible breathing room reserved
 # before the next cue, the acoustic hard boundary and the program end.
@@ -401,11 +487,35 @@ def _position(position: str, width: int, height: int, collection: str) -> tuple[
     return 2, round(height * .07)
 
 
-def _render_phrase(cue: SubtitleCue, active: int, animation: str, preset: SubtitlePreset, outline: float) -> str:
+def _phrase_focus_fade_ms(cues: list[SubtitleCue], index: int) -> int:
+    """Return the soft-entrance fade of one ``phrase_focus`` cue in milliseconds.
+
+    A cue that directly continues the previous phrase keeps its hard cut, so
+    continuous speech never blinks; only a real pause before the cue gets the
+    short fade-in. The fade never exceeds a third of the cue itself.
+    """
+    cue = cues[index]
+    length_ms = round(max(0.0, cue.end - cue.start) * 1000)
+    if length_ms <= 0:
+        return 0
+    fade = min(PHRASE_FOCUS_FADE_MS, length_ms // 3)
+    if index > 0 and (cue.start - cues[index - 1].end) < PHRASE_FOCUS_GAP:
+        return 0
+    return max(0, fade)
+
+
+def _render_phrase(cue: SubtitleCue, active: int, animation: str, preset: SubtitlePreset) -> str:
+    """Render one cue's text with glyph-aligned colour/alpha tags only.
+
+    ``active`` is the index of the emphasized word, or ``-1`` for the
+    phrase-level animations. No branch may touch ``\3c`` (the outline/box
+    colour) or ``\bord``: under a box preset (``BorderStyle 3``) those paint a
+    filled rectangle around the whole phrase instead of highlighting letters,
+    which is exactly the artifact the former Outline Highlight produced.
+    """
     pieces: list[str] = []
     accent = preset.accent + ("" if preset.accent.endswith("&") else "&")
     white = "&H00F7F7F7&"
-    dark = "&H00101010&"
     for index, word in enumerate(cue.words):
         token = _ass_escape(word.text)
         if animation == "type_reveal":
@@ -413,13 +523,12 @@ def _render_phrase(cue: SubtitleCue, active: int, animation: str, preset: Subtit
             rendered = tag + token
         elif animation == "color_change":
             rendered = (r"{\c" + accent + "}" if index <= active else r"{\c" + white + "}") + token
-        elif animation == "outline_highlight":
-            if index == active:
-                rendered = r"{\3c" + accent + rf"\bord{outline * 1.8:.1f}" + "}" + token
-            else:
-                rendered = r"{\3c" + dark + rf"\bord{outline:.1f}" + "}" + token
-        else:  # word_highlight and static phrase
-            rendered = (r"{\c" + accent + "}" if animation == "word_highlight" and index == active else r"{\c" + white + "}") + token
+        elif animation == "word_highlight":
+            rendered = (r"{\c" + accent + "}" if index == active else r"{\c" + white + "}") + token
+        else:
+            # Phrase-level animations (``static_phrase``, ``phrase_focus``) and
+            # any unexpected legacy key render as stable white text.
+            rendered = r"{\c" + white + "}" + token
         pieces.append(rendered)
     if cue.line_break_after:
         left = " ".join(pieces[:cue.line_break_after])
@@ -447,7 +556,15 @@ def write_ass(
     # default is Static White Reveal under the ``static_phrase`` key).
     resolved_font = resolve_font(font_key) if font_key else None
     family = resolved_font.family if resolved_font else "Arial"
-    animation = animation if animation in ANIMATION_KEYS else ("type_reveal" if preset.progressive else "word_highlight")
+    # A direct caller that passes nothing keeps the historical preset-based
+    # fallback; every value then goes through the single safe-animation gate, so
+    # a deprecated (Outline Highlight) or removed-for-Shorts (Word Highlight)
+    # key can never reach an active render — not from the GUI, the CLI, an old
+    # project file or a stale cache entry.
+    legacy_fallback = "type_reveal" if preset.progressive else "word_highlight"
+    animation = normalize_subtitle_animation(
+        animation if str(animation or "").strip() else legacy_fallback, preset.collection,
+    )
     basis = min(width, height)
     font_size = _font_size(width, height, preset)
     outline = max(1.0, round(basis * preset.outline_ratio, 1))
@@ -472,16 +589,20 @@ Style: Debug,{family},{max(11, round(basis * .024))},&H00FFFFFF,&H00FFFFFF,&H000
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events: list[str] = []
-    for cue in cues:
-        if animation == "static_phrase":
-            rendered = _render_phrase(cue, -1, animation, preset, outline)
-            events.append(f"Dialogue: 0,{_ass_time(cue.start)},{_ass_time(cue.end)},Caption,,0,0,0,,{rendered}")
+    for cue_index, cue in enumerate(cues):
+        if animation in PHRASE_LEVEL_ANIMATIONS:
+            # One event per cue: the phrase geometry never changes, which keeps
+            # word/sentence transitions perfectly stable on vertical Shorts.
+            fade = _phrase_focus_fade_ms(cues, cue_index) if animation == "phrase_focus" else 0
+            prefix = rf"{{\fad({fade},0)}}" if fade else ""
+            rendered = _render_phrase(cue, -1, animation, preset)
+            events.append(f"Dialogue: 0,{_ass_time(cue.start)},{_ass_time(cue.end)},Caption,,0,0,0,,{prefix}{rendered}")
         else:
             for index, word in enumerate(cue.words):
                 start = max(cue.start, word.start)
                 end = cue.words[index + 1].start if index + 1 < len(cue.words) else cue.end
                 end = max(start + .02, min(cue.end, end))
-                rendered = _render_phrase(cue, index, animation, preset, outline)
+                rendered = _render_phrase(cue, index, animation, preset)
                 events.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{rendered}")
         if debug_overlay:
             for word in cue.words:

@@ -12,12 +12,21 @@ orchestrator (see :mod:`script_sections`) and handed to :func:`short_settings`.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .models import ExportSettings
+from .errors import VideoMergerError
+from .models import (
+    LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_OUTRO_SECONDS,
+    SHORT_INTRO_SECONDS,
+    ExportSettings,
+)
+from .opening_effects import OPENING_EFFECT_NONE, normalize_opening_effect
 from .project_assets import read_script
 from .subtitle_presets import get_preset
+from .subtitles import normalize_subtitle_animation
 from .voiceover_order import normalize_voiceover_order_mode, voiceover_order_indices
 
 EXPORT_MODE_LONG_FORM = "long_form"
@@ -30,13 +39,136 @@ EXPORT_MODE_LABELS = {
     EXPORT_MODE_COMBINED: "YouTube Long-Form + YouTube Shorts",
 }
 
-#: Every YouTube Short ends with this much video-only material after its own
-#: voiceover has finished: no speech, no voiceover audio and no subtitle — the
-#: spoken audio stays the authoritative duration and the caption timeline ends
-#: with it, so the ending can never show text from this or another Short. The
-#: additional material comes from the existing video timeline logic (clip
+#: Historical fixed Short ending (Phase 21): every Short ended with this much
+#: video-only material after its own voiceover. It is superseded by the
+#: configurable :data:`~app.video_merger.models.SHORT_OUTRO_SECONDS` (1.5 s),
+#: which is the Short's visual outro now — the value is *replaced*, never added,
+#: so a Short can never contain a duplicated visible ending. The constant stays
+#: as the guaranteed video-only tail for legacy settings objects that predate
+#: the new field, and it documents the timing guarantee that still holds: the
+#: spoken audio is the authoritative duration, the caption timeline ends with
+#: it, and the outro material comes from the existing video timeline logic (clip
 #: selection, transitions, Hold/Loop and chunking), not from a new renderer.
 SHORT_ENDING_SECONDS = 0.7
+
+
+def visual_section_seconds(value: object, *, label: str) -> float:
+    """Validate one visual-only section duration.
+
+    ``0`` is a valid, explicit "no section". Negative, non-numeric or infinite
+    values are rejected instead of being silently clamped, because a wrong
+    section length would desynchronize the voiceover-driven timeline.
+    """
+    try:
+        seconds = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise VideoMergerError(
+            f"{label} must be a number of seconds (0 disables it), not {value!r}."
+        ) from exc
+    if not math.isfinite(seconds):
+        raise VideoMergerError(f"{label} must be a finite number of seconds, not {value!r}.")
+    if seconds < 0.0:
+        raise VideoMergerError(
+            f"{label} cannot be negative ({seconds:.3f} s); use 0 to disable the section."
+        )
+    return round(seconds, 3)
+
+
+def effective_intro_seconds(settings: object) -> float:
+    """Return the canonical visual-only intro of one render.
+
+    ``visual_intro_seconds`` is the single source of truth: the Long-Form and
+    Short planners below copy their own user-facing value into it, and the
+    timeline, the audio graph, the subtitle offset and the cache fingerprint all
+    read this one number.
+    """
+    return visual_section_seconds(
+        getattr(settings, "visual_intro_seconds", 0.0), label="Visual intro"
+    )
+
+
+def effective_outro_seconds(settings: object) -> float:
+    """Return the canonical visual-only outro (the single ``final_pause`` tail).
+
+    The legacy Main Video End Padding and the explicit Long-Form/Short outro
+    setting are the *same* timeline section, so there is exactly one tail and it
+    can never be applied twice.
+    """
+    return visual_section_seconds(getattr(settings, "final_pause", 0.0), label="Visual outro")
+
+
+@dataclass(frozen=True, slots=True)
+class MainTimeline:
+    """Canonical structure of one voiceover-driven Main Video.
+
+    ``[visual intro][voiceover + normal video][visual outro]``
+
+    This is the single source of truth for the voiceover start, the spoken end,
+    the subtitle window and the render target of a job — the video timeline, the
+    audio graph, the subtitle offset, the Shorts pool reservation and the log all
+    derive from these three numbers, so no pathway can disagree with another.
+    Both visual sections contain moving material from the normal video timeline
+    (never black or unintentionally frozen frames) and no voiceover audio; the
+    caption timeline covers the spoken part only.
+    """
+
+    intro: float
+    spoken: float
+    outro: float
+
+    @property
+    def voiceover_start(self) -> float:
+        """Program time at which the first voiceover sample is audible."""
+        return self.intro
+
+    @property
+    def spoken_end(self) -> float:
+        """Program time at which the last voiceover sample ends."""
+        return self.intro + self.spoken
+
+    #: Subtitles start exactly with the voiceover and end exactly with it.
+    subtitle_start = voiceover_start
+    subtitle_end = spoken_end
+
+    @property
+    def target(self) -> float:
+        """Complete video duration the clip selection must cover."""
+        return self.intro + self.spoken + self.outro
+
+    @property
+    def audio_program(self) -> float:
+        """Window for music and clip-original audio.
+
+        Music may already play during the visual intro (it starts at program
+        time 0) and, exactly like the historical end padding, stops when the
+        spoken content ends — the visual outro stays without music.
+        """
+        return self.intro + self.spoken
+
+    def log_lines(self) -> list[str]:
+        """Concise timeline log for one job (no per-frame spam)."""
+        return [
+            (
+                f"Timeline: Intro {self.intro:.3f} s (visual only) · "
+                f"Voiceover start {self.voiceover_start:.3f} s · "
+                f"Spoken {self.spoken:.3f} s · Spoken end {self.spoken_end:.3f} s · "
+                f"Outro {self.outro:.3f} s (visual only) · Target {self.target:.3f} s"
+            ),
+            (
+                f"Subtitles: start {self.subtitle_start:.3f} s · end {self.subtitle_end:.3f} s · "
+                "no caption in the visual intro or outro"
+            ),
+        ]
+
+
+def main_timeline(settings: object, voice_total: float) -> MainTimeline:
+    """Build the canonical timeline of one render from its settings."""
+    spoken = visual_section_seconds(voice_total, label="Voiceover timeline")
+    return MainTimeline(
+        intro=effective_intro_seconds(settings),
+        spoken=spoken,
+        outro=effective_outro_seconds(settings),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +278,27 @@ def long_form_settings(settings: ExportSettings) -> ExportSettings:
         aspect="16:9",
         output_preset="youtube_landscape",
         subtitle_style=style,
+        # Canonical visual-only sections of the Long-Form timeline. ``final_pause``
+        # IS the Long-Form outro: one single tail field, so the legacy Main Video
+        # End Padding and this explicit outro setting can never stack into a
+        # duplicated visible ending.
+        visual_intro_seconds=visual_section_seconds(
+            getattr(settings, "long_form_intro_seconds", LONG_FORM_INTRO_SECONDS),
+            label="Long-Form Intro",
+        ),
+        final_pause=visual_section_seconds(
+            getattr(settings, "long_form_outro_seconds", LONG_FORM_OUTRO_SECONDS),
+            label="Long-Form Outro",
+        ),
+        # Long-Form animations stay selectable as they are, but a deprecated
+        # Outline Highlight from an old project is migrated to a clean effect.
+        subtitle_animation=normalize_subtitle_animation(
+            getattr(settings, "subtitle_animation", ""), "long"
+        ),
+        # The subtle opening effect belongs to the Main Video (Long-Form).
+        opening_effect=normalize_opening_effect(
+            getattr(settings, "opening_effect", OPENING_EFFECT_NONE)
+        ),
         render_variant_key="youtube-long-form",
     )
 
@@ -197,6 +350,19 @@ def short_settings(
     style = str(getattr(settings, "short_subtitle_style", "short_1") or "short_1")
     if get_preset(style).collection != "short":
         style = "short_1"
+    # Canonical visual-only sections of one Short. The configurable Short outro
+    # REPLACES the historical fixed 0.7 s ending (never adds to it), and it keeps
+    # that guaranteed video-only tail for legacy settings objects that do not
+    # carry the new field yet.
+    short_intro = visual_section_seconds(
+        getattr(settings, "short_intro_seconds", SHORT_INTRO_SECONDS), label="Short Intro"
+    )
+    legacy_outro = getattr(settings, "short_outro_seconds", None)
+    short_outro = (
+        SHORT_ENDING_SECONDS
+        if legacy_outro is None
+        else visual_section_seconds(legacy_outro, label="Short Outro")
+    )
     return replace(
         settings,
         export_mode=EXPORT_MODE_SHORTS,
@@ -216,11 +382,20 @@ def short_settings(
         # A Short is one acoustic unit. Inter-unit silence belongs only to the
         # combined Long-Form timeline, never to an individual Short.
         voiceover_pause=0.0,
-        # The spoken audio stays the authoritative duration; the Short simply
-        # continues with video-only material for the fixed visual ending.
-        final_pause=SHORT_ENDING_SECONDS,
+        # The spoken audio stays the authoritative duration. The Short begins
+        # with its own visual-only intro and continues with video-only material
+        # for its visual outro; both come from the normal video timeline.
+        visual_intro_seconds=short_intro,
+        final_pause=short_outro,
         subtitle_style=style,
-        subtitle_animation=str(getattr(settings, "short_subtitle_animation", "word_highlight") or "word_highlight"),
+        # Word Highlight is not available for Shorts and Outline Highlight is
+        # unsafe: both migrate here, at the job boundary, so no Short can render
+        # a removed or deprecated animation even from an old project file.
+        subtitle_animation=normalize_subtitle_animation(
+            getattr(settings, "short_subtitle_animation", ""), "short"
+        ),
+        # The opening visual effect is a Main Video (Long-Form) feature.
+        opening_effect=OPENING_EFFECT_NONE,
         subtitle_font=str(getattr(settings, "short_subtitle_font", "inter") or "inter"),
         subtitle_position=str(getattr(settings, "short_subtitle_position", "Bottom Center") or "Bottom Center"),
         render_variant_key=job.cache_key,

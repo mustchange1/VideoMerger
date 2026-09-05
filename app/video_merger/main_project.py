@@ -75,7 +75,14 @@ from .timeline import (
     fit_media_to_duration,
 )
 from .validation import validate_output
-from .video_pool import ShortsVideoPool, media_source_folder, order_media_for_video_order
+from .video_pool import (
+    VIDEO_ORDER_RANDOM,
+    ShortsVideoPool,
+    legacy_priority_prefix,
+    media_source_folder,
+    normalize_video_order_mode,
+    order_media_for_video_order,
+)
 from .voiceover_order import (
     normalize_voiceover_order_mode,
     order_voiceover_paths,
@@ -86,9 +93,11 @@ from .youtube_outputs import (
     EXPORT_MODE_COMBINED,
     EXPORT_MODE_LONG_FORM,
     NO_SCRIPT_SECTION,
+    MainTimeline,
     ShortJob,
     build_short_jobs,
     long_form_settings,
+    main_timeline,
     normalize_export_mode,
     short_settings,
     write_short_script_text,
@@ -344,6 +353,52 @@ def _seconds(value) -> float:
         return 0.0
 
 
+def _offset_alignment(alignment: AlignmentResult, intro: float) -> AlignmentResult:
+    """Shift a word timeline by the visual-only intro of the program.
+
+    Alignment works on the voiceover clock (0 = first spoken sample). The final
+    program starts with the configured visual intro, so every word and every
+    hard break moves by exactly that amount: captions begin with the voiceover
+    instead of at video time 0, and the visual intro/outro stay caption-free.
+    Pure translation — no word is added, dropped, re-timed or re-aligned, so the
+    acoustic word timing and all validation stay exactly as strict as before.
+    """
+    shift = max(0.0, float(intro or 0.0))
+    if shift <= 1e-9:
+        return alignment
+    words = [
+        replace(word, start=word.start + shift, end=word.end + shift)
+        for word in alignment.words
+    ]
+    return replace(
+        alignment,
+        words=words,
+        hard_breaks=[boundary + shift for boundary in alignment.hard_breaks],
+    )
+
+
+def _log_legacy_priority(
+    media: list[MediaInfo], settings: ExportSettings, log: LogCallback,
+) -> None:
+    """Log the reserved Legacy Input Root opening clips of a Random sequence.
+
+    One line, only for Random order and only when the preference actually
+    reserved something, so the log stays readable and never claims a priority
+    that a Natural/Alphabetical/Manual sequence does not have.
+    """
+    mode = normalize_video_order_mode(getattr(settings, "video_order_mode", "natural"))
+    if mode != VIDEO_ORDER_RANDOM:
+        return
+    prefix = legacy_priority_prefix(media, getattr(settings, "legacy_input_root", ""))
+    if not prefix:
+        return
+    log(
+        "Legacy Input Root priority (Random): clips 1-"
+        + str(len(prefix)) + " = " + ", ".join(item.path.name for item in prefix)
+        + f" · remaining randomized pool starts at clip {len(prefix) + 1}"
+    )
+
+
 def _scale_alignment(alignment: AlignmentResult, speed: float) -> AlignmentResult:
     """Scale subtitle timing together with an explicit post-merge speed."""
     if abs(speed - 1.0) <= 1e-9:
@@ -503,7 +558,11 @@ class MainProjectEngine:
                 getattr(settings, "video_order_mode", "natural"),
                 rng=video_order_rng,
                 seed=video_order_seed,
+                legacy_root=getattr(settings, "legacy_input_root", ""),
             )
+            # Only the call that really ordered the sequence reports the Legacy
+            # Input Root priority; an orchestrated run logs it exactly once.
+            _log_legacy_priority(media, settings, log)
         log(
             "Effective video order: "
             + " → ".join(item.path.name for item in media)
@@ -633,8 +692,14 @@ class MainProjectEngine:
             )
         duration_fit_mode = settings.duration_fit_mode if settings.duration_fit_mode in {"cut", "stretch"} else "cut"
         max_stretch = max(1.0, min(50.0, float(getattr(settings, "max_stretch_percent", 10.0) or 10.0)))
+        timeline_plan: MainTimeline | None = None
         if voice_assets:
-            target = voice_total + max(0.0, settings.final_pause)
+            # Canonical timeline of this render: [visual intro][voiceover +
+            # normal video][visual outro]. One source of truth for the video
+            # target, the clip/pool reservation, the audio program window, the
+            # subtitle offset and the log lines below.
+            timeline_plan = main_timeline(settings, voice_total)
+            target = timeline_plan.target
             selection_media = media
             if short_video_pool is not None:
                 # The pool owns only cross-Short consumption. The established
@@ -665,7 +730,10 @@ class MainProjectEngine:
                 folder_aware=False,
             )
             warnings.extend(timing_warnings)
-            program_duration = voice_total
+            # Music and clip-original audio cover the visual intro and the
+            # spoken timeline; the visual outro stays without them, exactly like
+            # the historical end padding did.
+            program_duration = timeline_plan.audio_program if timeline_plan else voice_total
         else:
             target = 0.0
             program_duration = 0.0
@@ -800,15 +868,20 @@ class MainProjectEngine:
             if len(voice_assets) == 1:
                 log(
                     f"Voiceover: {voice_total:.3f} s, {voice.sample_rate} Hz, {voice.channels} Kanal/Kanäle; "
-                    f"Ziel Main Video: {resolved.expected_duration:.3f} s inkl. {settings.final_pause:.1f} s End-Padding"
+                    f"Ziel Main Video: {resolved.expected_duration:.3f} s"
                 )
             else:
                 log(
                     "Voiceover: " + " → ".join(asset.path.name for asset in voice_assets)
                     + f" (gesamte Sprech-Timeline {voice_total:.3f} s, "
                     f"{inter_voiceover_pause:.2f} s Pause zwischen Einheiten); "
-                    f"Ziel Main Video: {resolved.expected_duration:.3f} s inkl. {settings.final_pause:.1f} s End-Padding"
+                    f"Ziel Main Video: {resolved.expected_duration:.3f} s"
                 )
+            if timeline_plan is not None:
+                # One concise timeline block per job: visual sections, voiceover
+                # start, spoken end and the resulting caption window.
+                for timeline_line in timeline_plan.log_lines():
+                    log(timeline_line)
             log(
                 f"Script Mode: {'Multiple Matched Scripts' if script_mode == 'matched' else 'Single Global Script'}"
             )
@@ -996,8 +1069,14 @@ class MainProjectEngine:
                 # word timeline before writing SRT/VTT/ASS so sidecars and the
                 # final video remain synchronized.
                 subtitle_speed = duration_after_merge_value(settings) if after_merge_enabled(settings) else 1.0
-                alignment = _scale_alignment(alignment, subtitle_speed)
-                subtitle_program_end = voice_total / subtitle_speed
+                # Offset first (program clock), then scale: an explicit After
+                # Merge speed applies to the complete finished program including
+                # the visual intro, so captions keep their exact spoken interval.
+                subtitle_intro = timeline_plan.intro if timeline_plan else 0.0
+                alignment = _scale_alignment(
+                    _offset_alignment(alignment, subtitle_intro), subtitle_speed
+                )
+                subtitle_program_end = (voice_total + subtitle_intro) / subtitle_speed
                 subtitle_creation_started = time.perf_counter()
                 try:
                     cues = build_cues(
@@ -1039,7 +1118,11 @@ class MainProjectEngine:
                     f"Kompatibilität {alignment.compatibility:.1%}, Confidence {alignment.average_confidence:.1%}"
                 )
                 subtitle_end = cues[-1].end if cues else 0.0
-                log(f"SRT/VTT validiert; Untertitel enden bei {subtitle_end:.3f} s vor der Quiet Pause.")
+                log(
+                    f"SRT/VTT validiert; Untertitel von {subtitle_intro:.3f} s (Voiceover-Start) "
+                    f"bis {subtitle_end:.3f} s (Ende des gesprochenen Inhalts) – "
+                    "kein Untertitel im Visual Intro oder Visual Outro."
+                )
 
             for warning in warnings:
                 log("WARNUNG: " + warning)
@@ -1428,7 +1511,9 @@ class MainProjectEngine:
                 getattr(settings, "video_order_mode", "natural"),
                 rng=video_order_rng,
                 seed=video_order_seed,
+                legacy_root=getattr(settings, "legacy_input_root", ""),
             )
+        _log_legacy_priority(effective_media, settings, log)
         short_video_pool = (
             ShortsVideoPool(effective_media) if mode != EXPORT_MODE_LONG_FORM else None
         )
@@ -1484,7 +1569,10 @@ class MainProjectEngine:
                     voice_path = Path(short_job_settings.voiceover_path).expanduser().resolve()
                     voice_asset = probe_audio(self.engine.ffprobe_path, voice_path)
                     planned_short_media[short_stem] = planning_pool.take_for_duration(
-                        voice_asset.duration + max(0.0, short_job_settings.final_pause),
+                        # Reserve intro + spoken timeline + outro for this Short,
+                        # so the without-replacement pool never hands the next
+                        # Short material that this one still needs.
+                        main_timeline(short_job_settings, voice_asset.duration).target,
                         short_job_settings.transition_duration,
                         planning_fps,
                         short_job_settings.short_video_mode,

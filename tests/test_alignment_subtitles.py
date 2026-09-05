@@ -118,7 +118,17 @@ def test_all_ten_presets_generate_resolution_relative_valid_ass(tmp_path, preset
     size_1080 = int(re.search(r"Style: Caption,Arial,(\d+)", text_1080).group(1))
     size_4k = int(re.search(r"Style: Caption,Arial,(\d+)", text_4k).group(1))
     assert size_4k == pytest.approx(size_1080 * 2, abs=1)
-    assert text_1080.count("Dialogue:") >= len(alignment.words)
+    assert text_1080.count("Dialogue:") >= len(cues)
+    # Word-level timing survives every animation. Word/phrase effects repeat a
+    # complete cue per timed event, so the distinct dialogue texts, in order,
+    # still carry the whole spoken script exactly once.
+    dialogue_texts = [
+        re.sub(r"\{[^}]*\}", "", line.split(",", 9)[9]).replace("\\N", " ")
+        for line in text_1080.splitlines()
+        if line.startswith("Dialogue:")
+    ]
+    spoken = " ".join(dict.fromkeys(" ".join(text.split()) for text in dialogue_texts))
+    assert spoken == " ".join(script.split())
     assert "PlayResX: 1920" in text_1080 and "PlayResY: 1080" in text_1080
 
 

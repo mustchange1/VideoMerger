@@ -25,7 +25,12 @@ from dataclasses import dataclass
 from .font_manager import resolve_font
 from .models import WordTiming
 from .subtitle_presets import get_preset
-from .subtitles import _font_size, _layout_words, _position
+from .subtitles import (
+    _font_size,
+    _layout_words,
+    _position,
+    normalize_subtitle_animation,
+)
 
 
 def _ass_color(value: str) -> tuple[int, int, int]:
@@ -125,7 +130,11 @@ def preview_cue(
         lines=lines, preset_key=preset_key, preset_label=preset.label,
         collection=preset.collection, bold=bool(preset.bold), box=bool(preset.box),
         accent=(r, g, b), outline=outline, truncated=truncated,
-        animation=animation, active_word=active_word,
+        # The preview stages exactly what the ASS renderer will draw, so a
+        # deprecated (Outline Highlight) or Shorts-removed (Word Highlight) key
+        # is migrated here as well and can never be previewed.
+        animation=normalize_subtitle_animation(animation, preset.collection),
+        active_word=active_word,
     )
 
 
@@ -151,7 +160,9 @@ def _demo_progress_index(animation: str, total: int) -> int:
     """Fester Demo-Fortschritt, damit die Vorschau die Animation erkennbar zeigt."""
     if total <= 0:
         return 0
-    if animation in {"word_highlight", "outline_highlight"}:
+    # Only a single-word emphasis needs an index inside the phrase; the
+    # phrase-level animations address the whole cue.
+    if animation == "word_highlight":
         return max(0, min(total - 1, round(total * 0.4)))
     return max(0, min(total, round(total * 0.6)))
 
@@ -166,23 +177,31 @@ def word_style_for(
     semantics to the ASS renderer's per-word tags for the given animation and
     the active word (the canonical acoustic timeline drives it at render
     time; the preview stages a representative frame).
+
+    The third element is kept for API compatibility and is always ``False``: no
+    animation may request an accent-outline emphasis any more. That flag used to
+    draw a 1.8x accent stroke around the active word, which under a box preset
+    covered a large rectangular area around the phrase instead of its glyphs —
+    exactly the artifact the former Outline Highlight produced in the render.
     """
     white = (247, 247, 247)
     accent = layout.accent
+    # Same single migration gate as the renderer: the preview can never show an
+    # animation that the final video would not draw.
+    animation = normalize_subtitle_animation(animation, getattr(layout, "collection", "long"))
     active = (
         active_word if active_word >= 0
         else _demo_progress_index(animation, total)
     )
-    active = max(0, min(total - 1 if animation in {"word_highlight", "outline_highlight"} else total, active))
+    active = max(0, min(total - 1 if animation == "word_highlight" else total, active))
     if animation == "word_highlight":
         return (accent, False, False) if index == active else (white, False, False)
     if animation == "color_change":
         return (accent, False, False) if index <= active else (white, False, False)
-    if animation == "outline_highlight":
-        return (white, False, index == active)
     if animation == "type_reveal":
         return (white, False, False) if index <= active else (white, True, False)
-    return (white, False, False)  # static_phrase
+    # static_phrase and phrase_focus: stable white phrase.
+    return (white, False, False)
 
 
 def _word_style(
@@ -268,7 +287,6 @@ if _QIMPORTS_OK:
         font_metrics = resolve_font(layout.font_key)
         space_w = font_metrics.text_width(" ", layout.font_size)
         white = QColor(247, 247, 247)
-        accent = QColor(*layout.accent)
         outline_color = QColor(16, 16, 16)
         total_words = sum(len(line) for line in layout.lines)
         flat_index = 0
@@ -290,40 +308,36 @@ if _QIMPORTS_OK:
                 painter.setBrush(QBrush(QColor(0, 0, 0, 120)))
                 painter.drawRoundedRect(box, 6 * scale, 6 * scale)
             for index, word in enumerate(line):
-                color, transparent, emphasis = word_style_for(
+                color, transparent, _emphasis = word_style_for(
                     layout, animation, flat_index, total_words, active_word,
                 )
                 x0 = x + sum(widths[:index]) * scale + index * space_w * scale
                 w = widths[index] * scale
                 word_rect = QRectF(x0, cursor_top, max(1.0, w), line_height)
                 baseline_y = word_rect.top() + (line_height + metrics.ascent() - metrics.descent()) / 2
-                if animation == "outline_highlight" and emphasis:
-                    path = QPainterPath()
-                    path.addText(word_rect.left(), baseline_y, font, word)
-                    painter.setPen(QPen(accent, max(1.0, layout.outline * scale * 1.8)))
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawPath(path)
+                # Every animation is drawn glyph-aligned: the preset's own dark
+                # outline plus the word colour. No branch may paint an accent
+                # stroke or a filled box around a word (see ``word_style_for``).
+                fill = QColor(*color)
+                if transparent:
+                    fill.setAlpha(96)
+                if layout.box:
+                    # Im Box-Preset zeichnet libass ohne starken
+                    # Outline-Stroke; die Vorschau entspricht dem.
+                    painter.setPen(QPen(fill))
                 else:
-                    fill = QColor(*color)
-                    if transparent:
-                        fill.setAlpha(96)
-                    if layout.box:
-                        # Im Box-Preset zeichnet libass ohne starken
-                        # Outline-Stroke; die Vorschau entspricht dem.
-                        painter.setPen(QPen(fill))
-                    else:
-                        if layout.outline > 0:
-                            path = QPainterPath()
-                            path.addText(word_rect.left(), baseline_y, font, word)
-                            painter.setPen(QPen(outline_color, max(0.8, layout.outline * 1.9 * scale)))
-                            painter.setBrush(Qt.BrushStyle.NoBrush)
-                            painter.drawPath(path)
-                        painter.setPen(QPen(fill))
-                    painter.drawText(
-                        word_rect,
-                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                        word,
-                    )
+                    if layout.outline > 0:
+                        path = QPainterPath()
+                        path.addText(word_rect.left(), baseline_y, font, word)
+                        painter.setPen(QPen(outline_color, max(0.8, layout.outline * 1.9 * scale)))
+                        painter.setBrush(Qt.BrushStyle.NoBrush)
+                        painter.drawPath(path)
+                    painter.setPen(QPen(fill))
+                painter.drawText(
+                    word_rect,
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    word,
+                )
                 flat_index += 1
             cursor_top += line_height
 

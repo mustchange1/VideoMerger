@@ -94,8 +94,10 @@ def test_shorts_jobs_share_pool_and_use_separate_mobile_subtitle_profile(tmp_pat
     )
     long_settings = long_form_settings(settings)
     short_profile = short_settings(settings, jobs[0])
+    # A saved Outline Highlight migrates to the clean Colour Change variant: the
+    # removed animation painted filled rectangular areas outside the glyphs.
     assert (long_settings.aspect, long_settings.subtitle_style, long_settings.subtitle_animation) == (
-        "16:9", "long_3", "outline_highlight",
+        "16:9", "long_3", "color_change",
     )
     assert (short_profile.aspect, short_profile.subtitle_style, short_profile.subtitle_animation) == (
         "9:16", "short_4", "color_change",
@@ -107,7 +109,9 @@ def test_create_youtube_exports_assigns_distinct_prefixes_before_pool_reuse(tmp_
         ffprobe_path = tmp_path / "ffprobe"
 
     project = MainProjectEngine(ProbeEngine())
-    media = [_media(f"/pool/clip_{index}.mp4") for index in range(3)]
+    # 6.0 s clips: one clip covers a whole Short (visual intro + spoken audio +
+    # visual outro), so every Short still receives exactly its own distinct clip.
+    media = [_media(f"/pool/clip_{index}.mp4", duration=6.0) for index in range(3)]
     voices = []
     for index in range(3):
         path = tmp_path / f"voice_{index}.wav"
@@ -131,6 +135,7 @@ def test_create_youtube_exports_assigns_distinct_prefixes_before_pool_reuse(tmp_
         return MainVideoResult(path, None, None, report)
 
     project.create_main = fake_create_main  # type: ignore[method-assign]
+
     with patch(
         "app.video_merger.main_project.probe_audio",
         side_effect=lambda _ffprobe, path: SimpleNamespace(duration=1.0),

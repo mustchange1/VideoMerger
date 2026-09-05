@@ -8,6 +8,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import VideoMergerError
 from .hardware import available_encoders
 from .paths import ensure_project_directories, locate_ffmpeg, project_root
 from .platform_utils import hidden_process_flags, safe_subprocess_env
@@ -182,14 +183,41 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
     items.append(DiagnosticItem("Subtitle Alignment", True, alignment_detail))
     try:
         from .font_manager import font_status
+        from .subtitles import normalize_subtitle_animation
         items.append(DiagnosticItem(
             "Subtitle Presentation", True,
-            f"style={settings.subtitle_style} · animation={settings.subtitle_animation} · "
+            # The effective (migrated) animations are reported, so a deprecated
+            # Outline Highlight or a Shorts Word Highlight from an old project is
+            # visible as the clean animation that will actually render.
+            f"style={settings.subtitle_style} · "
+            f"animation={normalize_subtitle_animation(settings.subtitle_animation, 'long')} · "
             f"font={font_status(settings.subtitle_font)} · position={settings.subtitle_position} · "
-            f"debug={'ON' if settings.subtitle_debug_overlay else 'OFF'}"
+            f"debug={'ON' if settings.subtitle_debug_overlay else 'OFF'} · "
+            f"Shorts animation="
+            f"{normalize_subtitle_animation(getattr(settings, 'short_subtitle_animation', ''), 'short')}"
         ))
     except Exception as exc:
         items.append(DiagnosticItem("Subtitle Presentation", False, str(exc)))
+    try:
+        from .opening_effects import OPENING_EFFECT_LABELS, normalize_opening_effect
+        from .youtube_outputs import visual_section_seconds
+        items.append(DiagnosticItem(
+            "Visual Timeline Sections", True,
+            f"Long-Form intro "
+            f"{visual_section_seconds(getattr(settings, 'long_form_intro_seconds', 0.0), label='Long-Form Intro'):.3f} s · "
+            f"Long-Form outro "
+            f"{visual_section_seconds(getattr(settings, 'long_form_outro_seconds', 0.0), label='Long-Form Outro'):.3f} s · "
+            f"Short intro "
+            f"{visual_section_seconds(getattr(settings, 'short_intro_seconds', 0.0), label='Short Intro'):.3f} s · "
+            f"Short outro "
+            f"{visual_section_seconds(getattr(settings, 'short_outro_seconds', 0.0), label='Short Outro'):.3f} s · "
+            f"opening effect "
+            f"{OPENING_EFFECT_LABELS[normalize_opening_effect(getattr(settings, 'opening_effect', ''))]}"
+        ))
+    except VideoMergerError as exc:
+        # An invalid saved section length is reported, never raised: the
+        # diagnostics view must stay readable for a broken project.
+        items.append(DiagnosticItem("Visual Timeline Sections", False, str(exc)))
     if media:
         visual = sum(item.source_duration or item.duration for item in media)
         items.append(DiagnosticItem(

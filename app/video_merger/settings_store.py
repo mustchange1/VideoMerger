@@ -24,6 +24,12 @@ class SettingsStore:
             # an explicitly saved value remains an explicit override.
             if "duration_before_merge" not in data and "video_speed" in data:
                 data["duration_before_merge"] = data["video_speed"]
+            # A project saved before the explicit visual sections carries only
+            # the Main Video end padding (``final_pause``). That padding IS the
+            # Long-Form outro, so migrate the saved value instead of replacing
+            # the visible tail of an old project with the new default.
+            if "long_form_outro_seconds" not in data and "final_pause" in data:
+                data["long_form_outro_seconds"] = data["final_pause"]
             # Accept the natural alternate spelling from early multi-folder
             # project files without exposing two GUI settings.
             if "source_folders" not in data and "input_folders" in data:

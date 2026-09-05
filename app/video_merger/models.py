@@ -7,6 +7,26 @@ from typing import Callable, Sequence
 
 _SUBTITLE_DEFAULT = object()
 
+#: Explicit visual-only timeline sections. Every voiceover-driven Main Video is
+#: built as ``[visual intro][voiceover + normal video][visual outro]``. Both
+#: sections show moving material from the normal video timeline (never black or
+#: unintentionally frozen frames), carry no voiceover audio and show no
+#: subtitle: the spoken audio stays the timing authority, so captions run from
+#: the voiceover start to the spoken end only.
+#:
+#: Long-Form and Shorts have independent defaults; the values below are the
+#: user-facing settings. :mod:`youtube_outputs` copies the collection-appropriate
+#: pair into the canonical render-time fields (``visual_intro_seconds`` and
+#: ``final_pause``) for every Long-Form/Short job, so the timeline mathematics,
+#: the subtitle offset and the cache fingerprint each read exactly one value.
+LONG_FORM_INTRO_SECONDS = 2.5
+LONG_FORM_OUTRO_SECONDS = 2.5
+SHORT_INTRO_SECONDS = 1.5
+SHORT_OUTRO_SECONDS = 1.5
+#: Upper bound used by the GUI spin boxes. The model itself accepts any finite
+#: value >= 0; 0.0 disables a section completely.
+MAX_VISUAL_SECTION_SECONDS = 60.0
+
 
 @dataclass(slots=True)
 class AudioInfo:
@@ -125,7 +145,7 @@ class ExportSettings:
     # Phase 4: the global script is stored once, independently of the ordered
     # voiceover list. ``script_paths[0]`` remains the migration fallback for
     # older projects. The pause is inserted between units, never after the
-    # final unit; ``final_pause`` below remains Main Video end padding.
+    # final unit; ``final_pause`` below remains the visual outro after it.
     global_script_path: str = ""
     voiceover_pause: float = 0.7
     voiceover_order_mode: str = "natural"  # natural | mtime_oldest | mtime_newest | manual
@@ -142,7 +162,28 @@ class ExportSettings:
     ducking_enabled: bool = True
     ducking_attack_ms: int = 25
     ducking_release_ms: int = 450
+    # Main Video end padding == the Long-Form visual outro. One single tail
+    # field on purpose: the legacy "Main Video End Padding" control and the new
+    # explicit outro setting are the same timeline section, so they can never
+    # stack into a duplicated visible ending. ``youtube_outputs`` writes the
+    # collection-appropriate value here (Long-Form outro for landscape jobs,
+    # Short outro for vertical jobs).
     final_pause: float = 1.0
+    # User-facing visual-only section settings (see the module constants above).
+    long_form_intro_seconds: float = LONG_FORM_INTRO_SECONDS
+    long_form_outro_seconds: float = LONG_FORM_OUTRO_SECONDS
+    short_intro_seconds: float = SHORT_INTRO_SECONDS
+    short_outro_seconds: float = SHORT_OUTRO_SECONDS
+    # Canonical render-time intro. Filled by ``long_form_settings()`` /
+    # ``short_settings()`` for every YouTube job (and by the GUI for direct
+    # renders); a raw ``ExportSettings()`` built by a legacy API caller keeps
+    # the neutral 0.0 == "no visual-only intro", which preserves the historical
+    # timeline of direct ``create_main`` callers.
+    visual_intro_seconds: float = 0.0
+    # Optional subtle Main Video opening effect: none | zoom_in | zoom_out.
+    # It touches the opening visual portion only, always returns to a neutral
+    # 1.0x frame, and never changes timeline, audio or subtitle timing.
+    opening_effect: str = "none"
     short_video_mode: str = "hold"  # hold | loop
     # 1.3.0 smart duration fit: how the last selected clip reaches an exact
     # voiceover-derived target. ``cut`` keeps the proven 1.2.4 trimming
@@ -217,8 +258,12 @@ class ExportSettings:
 
     # Shorts have their own safe mobile subtitle profile. The long-form
     # controls above remain untouched when a project also creates Shorts.
+    # ``short_subtitle_animation`` defaults to the clean phrase-level Short
+    # animation (``subtitles.DEFAULT_SHORT_ANIMATION``); the former Word
+    # Highlight default is no longer selectable for Shorts and saved values are
+    # migrated (see ``subtitles.normalize_subtitle_animation``).
     short_subtitle_style: str = "short_1"
-    short_subtitle_animation: str = "word_highlight"
+    short_subtitle_animation: str = "phrase_focus"
     short_subtitle_font: str = "inter"
     short_subtitle_position: str = "Bottom Center"
 
@@ -232,6 +277,11 @@ class ExportSettings:
     # populated list is the complete configured source set.
     source_folders: list[str] = field(default_factory=list)
     video_order_mode: str = "natural"  # natural | alphabetical | random | manual; legacy folder_alternating accepted
+    # Legacy Input Root ("1 · Ordner" → Legacy Input Root). When Random order is
+    # active, the first three selected clips are reserved from this folder
+    # (themselves randomized), and clip 4+ returns to the normal full random
+    # pool. An empty value keeps the historical unbiased shuffle untouched.
+    legacy_input_root: str = ""
 
 
     # Render-time values filled by MainProjectEngine; they are harmless if

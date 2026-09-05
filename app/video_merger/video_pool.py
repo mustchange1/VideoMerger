@@ -53,6 +53,10 @@ VIDEO_ORDER_MODES = (
     VIDEO_ORDER_MANUAL,
 )
 
+#: Random order reserves this many leading clips from the Legacy Input Root.
+#: From clip 4 on, the unchanged full random pool decides.
+LEGACY_PRIORITY_CLIPS = 3
+
 
 def normalize_video_order_mode(value: object, default: str = VIDEO_ORDER_NATURAL) -> str:
     """Normalize persisted/API video-order values without losing legacy data."""
@@ -179,12 +183,78 @@ def folder_aware_order(
     return result
 
 
+def normalize_legacy_root(value: object) -> str:
+    """Return the comparison key of the Legacy Input Root (``""`` when unset)."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return os.path.normcase(str(Path(text).expanduser().resolve()))
+    except OSError:
+        return os.path.normcase(text)
+
+
+def reserve_legacy_priority(
+    media: list[MediaInfo],
+    legacy_root: object,
+    rng: random.Random,
+    count: int = LEGACY_PRIORITY_CLIPS,
+) -> tuple[list[MediaInfo], list[MediaInfo]]:
+    """Reserve the leading clips of a Random sequence from the Legacy Input Root.
+
+    Only Random order calls this; Natural, Alphabetical and Manual keep their
+    existing semantics untouched. The reserved clips are
+
+    * distinct eligible clips of the Legacy Input Root (no duplicates beyond
+      what the existing pool rules already allow),
+    * drawn uniformly from that folder and shuffled among themselves, so the
+      opening is randomized as well and never a fixed first-three order,
+    * removed from the pool *before* the remaining sequence is randomized, so
+      later selection cannot accidentally consume them first.
+
+    Fewer than ``count`` eligible clips, an unset root, or a root that
+    contributes nothing to the current pool reserves what exists (possibly
+    nothing at all) and consumes no randomness, which keeps the historical
+    unbiased full-pool shuffle bit-for-bit identical for every project that does
+    not use the Legacy Input Root preference.
+    """
+    root = normalize_legacy_root(legacy_root)
+    if not root or count <= 0 or len(media) < 2:
+        return [], list(media)
+    eligible = [item for item in media if media_source_folder(item) == root]
+    if not eligible:
+        return [], list(media)
+    reserved = rng.sample(eligible, min(count, len(eligible)))
+    reserved_ids = {id(item) for item in reserved}
+    return reserved, [item for item in media if id(item) not in reserved_ids]
+
+
+def legacy_priority_prefix(
+    media: list[MediaInfo], legacy_root: object, count: int = LEGACY_PRIORITY_CLIPS,
+) -> list[MediaInfo]:
+    """Return the leading Legacy Input Root clips of an effective sequence.
+
+    Used for the single log line that makes the reservation visible; it never
+    changes an order.
+    """
+    root = normalize_legacy_root(legacy_root)
+    if not root:
+        return []
+    prefix: list[MediaInfo] = []
+    for item in list(media)[:max(0, count)]:
+        if media_source_folder(item) != root:
+            break
+        prefix.append(item)
+    return prefix
+
+
 def order_media_for_video_order(
     media: list[MediaInfo],
     mode: str = VIDEO_ORDER_NATURAL,
     *,
     rng: random.Random | None = None,
     seed: int | None = None,
+    legacy_root: object = None,
 ) -> list[MediaInfo]:
     """Return one effective project sequence before duration selection.
 
@@ -196,9 +266,13 @@ def order_media_for_video_order(
       key, then applies the established no-adjacent-folder rule.
     * Alphabetical sorts by filename (case-insensitive); folder alternation is
       still applied when multiple source folders are configured.
-    * Random first makes a genuine Fisher-Yates permutation of the current
-      pool, then applies folder alternation. The injected RNG/seed is useful
-      for tests and reproducible callers; normal exports use a fresh RNG.
+    * Random reserves up to :data:`LEGACY_PRIORITY_CLIPS` randomized clips from
+      ``legacy_root`` (the Legacy Input Root) first, then makes a genuine
+      Fisher-Yates permutation of the remaining pool and applies folder
+      alternation, so clip 4 onwards is the unchanged full random pool. The
+      injected RNG/seed is useful for tests and reproducible callers; normal
+      exports use a fresh RNG. Without ``legacy_root`` nothing is reserved and
+      the sequence is exactly the historical unbiased shuffle.
     * Manual never changes the supplied sequence.
 
     The legacy ``folder_alternating`` value deliberately preserves the old
@@ -216,12 +290,14 @@ def order_media_for_video_order(
     if normalized == VIDEO_ORDER_RANDOM:
         if rng is None:
             rng = random.Random(seed) if seed is not None else random.Random()
-        # First create a genuine Fisher-Yates permutation. The second step only
-        # enforces the existing source-folder adjacency rule; it chooses from
-        # all eligible clips uniformly, so that constraint cannot make early
-        # clips repeat or bias positions toward one folder.
-        shuffled = randomize_order(values, rng)
-        return folder_aware_order(shuffled, rng=rng, unbiased_items=True)
+        # Clip 1–3: randomized Legacy Input Root clips, reserved up front.
+        reserved, pool = reserve_legacy_priority(values, legacy_root, rng)
+        # Clip 4+: first create a genuine Fisher-Yates permutation. The second
+        # step only enforces the existing source-folder adjacency rule; it
+        # chooses from all eligible clips uniformly, so that constraint cannot
+        # make early clips repeat or bias positions toward one folder.
+        shuffled = randomize_order(pool, rng)
+        return reserved + folder_aware_order(shuffled, rng=rng, unbiased_items=True)
 
     if normalized == VIDEO_ORDER_ALPHABETICAL:
         ordered = sorted(

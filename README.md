@@ -36,7 +36,7 @@ New **Duration Fit Mode**: `Cut Last Clip` (default, exactly the proven behavior
 
 ### Main Video End Padding (manual)
 
-The short visual gap after the voiceover is now a free manual setting (0.0–5.0 s). The existing default of ~1 second is preserved exactly.
+The short visual gap after the voiceover is now a free manual setting (0.0–5.0 s). This control is today the **Long-Form Outro (visual after voiceover)** in group `4d · Timeline – Visual Intro / Outro / Opening Effect`; its user-facing default is `2.5 s`, and it remains the *single* visual tail after the spoken audio, so it can never be applied twice. See *Visual intro/outro sections* below.
 
 ### Add Image (optional, silent Stage 2)
 
@@ -125,13 +125,15 @@ The 16:9 defaults are **Clean Editorial + Type Reveal + Bottom**. The subtitle e
 
 Every visual event retains the complete final phrase and canonical line break. Reveal/highlight changes therefore do not resize, recenter or reflow the caption region.
 
-Animations:
+Animations (Long-Form):
 
 - Type Reveal
 - Color Change
 - Word Highlight
-- Outline Highlight
+- Phrase Focus
 - Static White Reveal
+
+Shorts offer the same list without **Word Highlight** and default to **Phrase Focus** — a calm, conservative phrase-level entrance that stays readable on a 9:16 mobile frame. **Outline Highlight is removed**: it drew a heavy per-word outline colour and produced filled rectangular areas outside the glyphs. Saved projects migrate automatically and deterministically (Outline Highlight → Color Change, a Shorts Word Highlight → Phrase Focus, unknown values → the collection default), and no selectable animation emits outline, shadow, clip or vector-drawing overrides any more — every effect stays glyph-aligned.
 
 For synchronized animations, event boundaries come only from the canonical acoustic voiceover word timeline. The authoritative script still controls visible spelling, punctuation and umlauts. There is no character-count or equal-duration timing.
 
@@ -212,7 +214,7 @@ Outputs are separated into `Output/LongForm/` and `Output/Shorts/` (`YouTube_Lon
 
 **Separate background music.** Long-Form and Shorts use two independent music selections: **Background Music (Long-Form)** and **Background Music (Shorts)**. The two tracks are strictly separate — the Long-Form track is never mixed into a Short, and a Short whose own track is empty simply has no background music. Volume, preset, ducking, looping and trimming behave exactly as before for whichever track is active, and in the combined mode each output type uses only its own track.
 
-**Fixed 0.7 second video-only ending.** Every Short is exactly its own voiceover duration plus `0.7 s` of additional visual material. The spoken audio stays the authoritative duration and is never extended; the ending contains no speech, no voiceover audio and no subtitles — the caption timeline ends with the voiceover, so no cue from this or any other Short can appear in it. The extra material comes from the regular timeline logic (clip selection, transitions, Hold/Loop, chunking and the without-replacement Shorts pool, which reserves the ending up front). The Long-Form keeps the freely configurable **Main Video End Padding**.
+**Video-only Short intro and outro.** Every Short is `[1.5 s visual intro][its own voiceover][1.5 s visual outro]`. The spoken audio stays the authoritative duration and is never extended; intro and outro contain no speech, no voiceover audio and no subtitles — the caption timeline is shifted by the intro inside the timeline model and ends with the voiceover, so no cue from this or any other Short can appear in either section. The material comes from the regular timeline logic (clip selection, transitions, Hold/Loop, chunking and the without-replacement Shorts pool, which reserves intro, spoken part and outro up front). The former fixed `0.7 s` ending is *replaced* by the configurable Short outro, never stacked behind it; `0.7 s` survives only as the guaranteed floor for settings objects that carry no explicit Short outro. The Long-Form keeps its freely configurable **Long-Form Outro** (the former Main Video End Padding).
 
 **One script text file per Short.** Beside every rendered Short, VideoMerger automatically writes `<same name>.txt` (`001.mp4` → `001.txt`) containing exactly the script text that Short uses: its own section of a global script, or its matched/individual script. Nothing is transcribed again — the file reuses the already derived content, so it always matches the spoken/captioned words of that Short and never contains text from another Short. An explicit audio-only Short (a voiceover that speaks no part of the global script) has no text and therefore no sidecar.
 
@@ -221,3 +223,23 @@ Subtitle output is **With Subtitles** by default. It burns the selected profile 
 With one global script and several voiceovers, the Long-Form still uses the complete script over the complete timeline while each Short receives only the section its own voiceover speaks — derived acoustically from one shared global mapping, never by aligning the complete script against every Short.
 
 The CLI equivalents are `--export-mode long_form|shorts|long_form_and_shorts`, `--music` (Long-Form), `--short-music` (Shorts), `--subtitle-output-mode with_subtitles|without_subtitles|with_and_without_subtitles`, and `--short-subtitle-style`, `--short-subtitle-animation`, `--short-subtitle-font`, `--short-subtitle-position`.
+
+## Visual intro/outro sections, opening effect and Legacy Input Root priority
+
+Every voiceover-driven Main Video now has an explicit, unambiguous structure:
+`[visual intro][voiceover + normal video][visual outro]`. Both visual sections
+play moving material from the regular timeline (never black or unintentionally
+frozen frames) and contain no voiceover audio; background music may already play
+during the intro and stops with the spoken content, exactly like the former end
+padding did.
+
+- **Long-Form Intro (visual before voiceover)** — default `2.5 s`, `0` disables it, any positive value is accepted (the GUI spin is capped at `60 s`, the model itself has no artificial limit). The voiceover starts exactly after the intro and the subtitles never start before it.
+- **Long-Form Outro (visual after voiceover)** — default `2.5 s`. This *is* the former Main Video End Padding: one control, one canonical timeline tail, so the two can never double. An old project file keeps its saved padding.
+- **Short Intro / Short Outro** — default `1.5 s` each, per Short, with the same rules; the Short outro replaces the legacy `0.7 s` ending.
+- **Subtitles only while spoken** — the whole caption timeline is shifted by the intro in the timeline model (not by a post-render delay), starts exactly with the voiceover and ends exactly with the spoken audio. Word-level timing, global-script sections, SRT/VTT, burn-in and the strict cue validation are unchanged.
+- **Opening Effect (Main Video)** — an optional subtle entrance in group `4d`: `None` (default), `Gentle Zoom In`, `Gentle Zoom Out`. Peak magnification is 5 %, centred, covering the opening portion only (the visual intro, or `3 s` when there is none, never longer than the program), applied to the assembled timeline *before* the subtitle burn-in so captions stay crisp, continuous across chunked rendering, and identity afterwards. It adds and drops no frame, so the voiceover-driven duration, sync and captions are untouched. Shorts never use it. There is no animation editor by design.
+- **Legacy Input Root priority (Random order only)** — while **Random** is active, the first three clips of the effective sequence are always drawn from the Legacy Input Root (the configured input folder): distinct where possible, shuffled among themselves, and reserved *before* the rest of the sequence is built. Clip 4 onwards keeps the unchanged full random pool (folder-aware alternation, duplicate/exhaustion rules, seeded determinism). Fewer than three eligible clips reserve what exists and then fill normally; an empty or missing root changes nothing at all — not even the random sequence, so existing projects stay bit-identical. Natural, Alphabetical and Manual are not affected. One log line names the reserved clips.
+
+GUI: group **`4d · Timeline – Visual Intro / Outro / Opening Effect`** holds the four duration spins and the opening-effect selection; the subtitle animation combos are built per collection (Long-Form / Shorts) with their own defaults, and switching to 9:16 selects the Shorts default automatically. All new values persist in the project file, survive old project files (missing fields fall back to the documented defaults, deprecated animations migrate, unknown fields are ignored) and are part of the render-cache identity (fingerprint schema `3`), so changing any of them re-renders instead of reusing a stale cache entry.
+
+CLI: `--long-intro`, `--long-outro` (alias of `--pause`/`--end-padding`), `--short-intro`, `--short-outro` and `--opening-effect none|zoom_in|zoom_out`.

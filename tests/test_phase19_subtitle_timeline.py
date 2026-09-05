@@ -515,7 +515,9 @@ def test_unreserved_short_never_receives_the_complete_pool_without_a_shared_curs
         ffprobe_path = tmp_path / "ffprobe"
 
     project = MainProjectEngine(ProbeEngine())
-    media = [_media(f"/pool/clip_{index}.mp4") for index in range(3)]
+    # 6.0 s clips: one clip covers a whole Short (visual intro + spoken audio +
+    # visual outro), so the reserved prefixes stay one distinct clip per Short.
+    media = [_media(f"/pool/clip_{index}.mp4", duration=6.0) for index in range(3)]
     voices = []
     for index in range(3):
         path = tmp_path / f"voice_{index}.wav"

@@ -10,11 +10,15 @@ Four contracts are pinned here.
    and trimming stay shared behavior for whichever track is active, and each
    track keeps its own render-cache identity.
 
-2. **0.7 s video-only ending** — every Short is exactly its own voiceover
-   duration plus :data:`SHORT_ENDING_SECONDS` of additional *visual* material.
-   The spoken audio stays the authoritative duration, the caption timeline ends
-   with the voiceover, and no cue of this or another Short can appear in the
-   ending. The Long-Form keeps the freely configurable end padding.
+2. **Video-only Short ending** — every Short is a visual intro, exactly its own
+   voiceover duration, and a visual outro of additional *visual* material. The
+   spoken audio stays the authoritative duration, the caption timeline is shifted
+   by the intro and ends with the voiceover, and no cue of this or another Short
+   can appear in the intro or the ending. :data:`SHORT_ENDING_SECONDS` (0.7 s)
+   survives as the guaranteed floor for a project that carries no explicit Short
+   outro; an explicit outro *replaces* that floor instead of stacking a second
+   visible ending. The Long-Form keeps its freely configurable end padding, which
+   is exactly its visual outro.
 
 3. **One ``.txt`` per Short** — beside every rendered Short, one text file with
    the identical final name contains exactly the script text that Short uses
@@ -52,6 +56,9 @@ from app.video_merger.alignment import (
 from app.video_merger.command_builder import FFmpegCommandBuilder
 from app.video_merger.main_project import MainProjectEngine, global_script_path
 from app.video_merger.models import (
+    LONG_FORM_INTRO_SECONDS,
+    SHORT_INTRO_SECONDS,
+    SHORT_OUTRO_SECONDS,
     AudioAssetInfo,
     AudioInfo,
     ExportSettings,
@@ -561,35 +568,45 @@ def test_short_ending_constant_is_seven_tenths_of_a_second():
 
 
 def test_every_short_renders_exactly_its_voiceover_plus_the_fixed_ending(tmp_path):
-    """The rendered duration is voiceover + 0.7 s, whatever the user padding is."""
+    """A Short is intro + its own voiceover + outro, whatever the padding is."""
     project = Project(tmp_path)
     for user_padding in (0.0, 1.0, 2.5, 5.0):
         settings = project.settings(EXPORT_MODE_SHORTS, final_pause=user_padding)
         run = _run(tmp_path / f"pad_{user_padding}", project, settings)
 
         jobs = build_short_jobs(settings)
-        for job, duration in zip(jobs, project.durations):
-            assert short_settings(settings, job).final_pause == SHORT_ENDING_SECONDS
+        for job in jobs:
+            # The explicit Short outro REPLACES the legacy 0.7 s floor instead of
+            # stacking a second visible ending behind the spoken audio.
+            assert short_settings(settings, job).final_pause == SHORT_OUTRO_SECONDS
         shorts = run.result.shorts
         assert len(shorts) == len(project.durations)
         for short, duration in zip(shorts, project.durations):
-            assert short.report.duration == pytest.approx(duration + SHORT_ENDING_SECONDS, abs=1e-6)
+            assert short.report.duration == pytest.approx(
+                SHORT_INTRO_SECONDS + duration + SHORT_OUTRO_SECONDS, abs=1e-6
+            )
         # The timeline target handed to the real duration fitter matches.
         assert run.record["targets"] == [
-            pytest.approx(duration + SHORT_ENDING_SECONDS, abs=1e-6) for duration in project.durations
+            pytest.approx(SHORT_INTRO_SECONDS + duration + SHORT_OUTRO_SECONDS, abs=1e-6)
+            for duration in project.durations
         ]
 
 
 def test_long_form_keeps_the_configurable_end_padding(tmp_path):
     project = Project(tmp_path)
-    settings = project.settings(EXPORT_MODE_LONG_FORM, final_pause=2.5)
+    # The Long-Form outro IS the canonical end padding: one configurable visual
+    # tail after the spoken audio, never a second padding stacked behind it.
+    settings = project.settings(
+        EXPORT_MODE_LONG_FORM, final_pause=2.5, long_form_outro_seconds=1.75
+    )
 
     run = _run(tmp_path, project, settings, portrait=False)
 
     voice_total = sum(project.durations) + PAUSE * (len(project.durations) - 1)
-    assert long_form_settings(settings).final_pause == 2.5
-    assert run.result.long_form.report.duration == pytest.approx(voice_total + 2.5, abs=1e-6)
-    assert run.record["targets"] == [pytest.approx(voice_total + 2.5, abs=1e-6)]
+    assert long_form_settings(settings).final_pause == 1.75
+    total = LONG_FORM_INTRO_SECONDS + voice_total + 1.75
+    assert run.result.long_form.report.duration == pytest.approx(total, abs=1e-6)
+    assert run.record["targets"] == [pytest.approx(total, abs=1e-6)]
 
 
 def test_short_ending_contains_no_subtitle_cue(tmp_path):
@@ -606,11 +623,13 @@ def test_short_ending_contains_no_subtitle_cue(tmp_path):
         assert sidecar.is_file()
         ends = _srt_cue_ends(sidecar)
         assert ends, "a Short with a spoken section must produce cues"
-        # No cue reaches into the visual ending ...
-        assert max(ends) <= duration + 0.001
-        assert max(ends) < duration + SHORT_ENDING_SECONDS
-        # ... while the video itself is exactly the ending longer than speech.
-        assert short.report.duration == pytest.approx(duration + SHORT_ENDING_SECONDS, abs=1e-6)
+        # No cue reaches into the visual intro or the visual ending ...
+        assert max(ends) <= SHORT_INTRO_SECONDS + duration + 0.001
+        assert max(ends) < SHORT_INTRO_SECONDS + duration + SHORT_OUTRO_SECONDS
+        # ... while the video itself is intro + speech + outro.
+        assert short.report.duration == pytest.approx(
+            SHORT_INTRO_SECONDS + duration + SHORT_OUTRO_SECONDS, abs=1e-6
+        )
 
 
 def test_no_short_shows_words_of_another_short_in_its_ending(tmp_path):
@@ -630,13 +649,15 @@ def test_no_short_shows_words_of_another_short_in_its_ending(tmp_path):
         # visual beginning of the fixed ending.
         assert captioned == own
         assert not set(captioned) & foreign
-        assert max(_srt_cue_ends(video.with_suffix(".srt"))) <= duration + 0.001
+        assert max(
+            _srt_cue_ends(video.with_suffix(".srt"))
+        ) <= SHORT_INTRO_SECONDS + duration + 0.001
 
 
 def test_shorts_pool_reserves_additional_material_for_the_ending(tmp_path):
-    """The without-replacement pool plans voiceover + 0.7 s of raw material."""
+    """The without-replacement pool plans intro + voiceover + outro of material."""
     # 3.0 s voiceovers + 3.0 s clips in Full-Timeline Loop: reaching the spoken
-    # duration needs one clip, reaching the ending needs the second one.
+    # duration needs one clip, reaching intro and outro needs the second one.
     project = Project(tmp_path, durations=[3.0, 3.0, 3.0],
                       sections=[_sentence(index) for index in range(3)])
     settings = project.settings(EXPORT_MODE_SHORTS, short_video_mode="loop")
@@ -649,14 +670,17 @@ def test_shorts_pool_reserves_additional_material_for_the_ending(tmp_path):
             playback_rate=1.0,
         )
 
+    short_total = SHORT_INTRO_SECONDS + 3.0 + SHORT_OUTRO_SECONDS
     assert len(reserve(3.0)) == 1
-    assert len(reserve(3.0 + SHORT_ENDING_SECONDS)) == 2
+    # Intro and outro need raw material beyond the single spoken clip; how many
+    # of the 3.0 s clips are reserved depends on the looped transition overlap.
+    assert len(reserve(short_total)) > 1
 
     run = _run(tmp_path, project, settings)
     assert any("without-replacement pool planned before rendering" in message
                for message in run.logs)
     for short in run.result.shorts:
-        assert short.report.duration == pytest.approx(3.0 + SHORT_ENDING_SECONDS, abs=1e-6)
+        assert short.report.duration == pytest.approx(short_total, abs=1e-6)
 
 
 def test_shorts_never_share_clips_while_the_pool_lasts(tmp_path):
@@ -682,7 +706,9 @@ def test_ending_is_produced_with_hold_and_loop_when_material_is_short(tmp_path):
         run = _run(tmp_path / mode, project, settings, media=single_clip)
 
         for short, duration in zip(run.result.shorts, project.durations):
-            assert short.report.duration == pytest.approx(duration + SHORT_ENDING_SECONDS, abs=1e-6)
+            assert short.report.duration == pytest.approx(
+                SHORT_INTRO_SECONDS + duration + SHORT_OUTRO_SECONDS, abs=1e-6
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -950,7 +976,9 @@ def test_stage2_fingerprint_tracks_add_image_and_has_no_quote_fields(tmp_path):
 
 def test_combined_mode_renders_the_long_form_and_every_short_exactly_once(tmp_path):
     project = Project(tmp_path)
-    settings = project.settings(EXPORT_MODE_COMBINED, final_pause=1.5)
+    settings = project.settings(
+        EXPORT_MODE_COMBINED, final_pause=1.5, long_form_outro_seconds=1.5
+    )
 
     run = _run(tmp_path, project, settings)
 
@@ -959,10 +987,15 @@ def test_combined_mode_renders_the_long_form_and_every_short_exactly_once(tmp_pa
     assert len(_short_videos(run.output_dir)) == len(project.durations)
     assert (run.output_dir / "LongForm" / "YouTube_LongForm.mp4").is_file()
     voice_total = sum(project.durations) + PAUSE * (len(project.durations) - 1)
-    # Long-Form: user padding. Shorts: the fixed visual ending.
-    assert run.result.long_form.report.duration == pytest.approx(voice_total + 1.5, abs=1e-6)
+    # Long-Form: visual intro + spoken audio + the configured outro.
+    # Shorts: visual intro + spoken audio + the Short outro.
+    assert run.result.long_form.report.duration == pytest.approx(
+        LONG_FORM_INTRO_SECONDS + voice_total + 1.5, abs=1e-6
+    )
     for short, duration in zip(run.result.shorts, project.durations):
-        assert short.report.duration == pytest.approx(duration + SHORT_ENDING_SECONDS, abs=1e-6)
+        assert short.report.duration == pytest.approx(
+            SHORT_INTRO_SECONDS + duration + SHORT_OUTRO_SECONDS, abs=1e-6
+        )
 
 
 def test_global_script_stays_complete_for_the_long_form(tmp_path):

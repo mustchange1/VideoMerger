@@ -12,12 +12,18 @@ from .image_insertion import (
     normalize_image_fit_mode,
 )
 from .models import ExportSettings, MediaSequence, ResolvedExport
+from .opening_effects import (
+    normalize_opening_effect,
+    opening_effect_filter,
+    opening_effect_window,
+)
 from .paths import project_root
 from .subtitle_modes import (
     SUBTITLE_OUTPUT_WITHOUT,
     normalize_subtitle_output_mode,
 )
 from .transition_effects import normalize_transition, transition_blur_sigma, xfade_expression
+from .youtube_outputs import effective_intro_seconds
 
 
 def _number(value: float) -> str:
@@ -432,6 +438,26 @@ class FFmpegCommandBuilder:
             f"tpad=stop_mode=clone:stop_duration={_number(final_pad_duration)},"
             f"{trim_expression},setpts=PTS-STARTPTS,format=yuv420p,setsar=1[{visual_label}]"
         )
+        if settings.workflow_stage == "main":
+            # Optional subtle opening effect for the Main Video. It is applied to
+            # the assembled visual timeline BEFORE the subtitle burn-in, so
+            # captions are never scaled, and it only covers the opening portion:
+            # after its window the chain is a lossless same-size pass-through.
+            opening_chain = opening_effect_filter(
+                normalize_opening_effect(getattr(settings, "opening_effect", "")),
+                width,
+                height,
+                opening_effect_window(
+                    effective_intro_seconds(settings), resolved.expected_duration
+                ),
+                # Segmented/chunked rendering: keep one continuous ramp over the
+                # complete program instead of restarting it in every segment.
+                time_offset=video_window_start,
+            )
+            if opening_chain:
+                output = "vopening"
+                lines.append(f"[{visual_label}]{opening_chain}[{output}]")
+                visual_label = output
         if (
             settings.workflow_stage == "main"
             and settings.subtitle_enabled
@@ -520,30 +546,32 @@ class FFmpegCommandBuilder:
                     )
                 except (TypeError, ValueError):
                     inter_voiceover_pause = 0.7
-                if len(prepared_labels) == 1 or inter_voiceover_pause <= 1e-9:
-                    if len(prepared_labels) == 1:
-                        voice_chain = prepared_labels[0]
-                    else:
-                        joined_in = "".join(prepared_labels)
+                # Silence is an actual audio segment in the same concat timeline
+                # as the voiceovers — both the configured visual intro in front
+                # of the first unit and the inter-unit pauses. This keeps music,
+                # subtitle offsets, visual target duration and rendered audio
+                # boundaries in agreement; it is not an end pad and not a
+                # post-render subtitle delay.
+                intro_seconds = effective_intro_seconds(settings)
+                timeline_labels: list[str] = []
+                if intro_seconds > 1e-9:
+                    lines.append(
+                        f"anullsrc=r=48000:cl=stereo:d={_number(intro_seconds)},"
+                        f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[vintro]"
+                    )
+                    timeline_labels.append("[vintro]")
+                for unit_index, voice_label in enumerate(prepared_labels):
+                    timeline_labels.append(voice_label)
+                    if unit_index < len(prepared_labels) - 1 and inter_voiceover_pause > 1e-9:
+                        pause_label = f"vpause{voice_indices[unit_index]}"
                         lines.append(
-                            f"{joined_in}concat=n={len(prepared_labels)}:v=0:a=1[vvoice_all]"
+                            f"anullsrc=r=48000:cl=stereo:d={_number(inter_voiceover_pause)},"
+                            f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[{pause_label}]"
                         )
-                        voice_chain = "[vvoice_all]"
+                        timeline_labels.append(f"[{pause_label}]")
+                if len(timeline_labels) == 1:
+                    voice_chain = timeline_labels[0]
                 else:
-                    # The silence is an actual audio segment in the same
-                    # concat timeline as the voiceovers. This keeps music,
-                    # subtitle offsets, visual target duration and rendered
-                    # audio boundaries in agreement; it is not an end pad.
-                    timeline_labels: list[str] = []
-                    for unit_index, voice_label in enumerate(prepared_labels):
-                        timeline_labels.append(voice_label)
-                        if unit_index < len(prepared_labels) - 1:
-                            pause_label = f"vpause{voice_indices[unit_index]}"
-                            lines.append(
-                                f"anullsrc=r=48000:cl=stereo:d={_number(inter_voiceover_pause)},"
-                                f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[{pause_label}]"
-                            )
-                            timeline_labels.append(f"[{pause_label}]")
                     joined_in = "".join(timeline_labels)
                     lines.append(
                         f"{joined_in}concat=n={len(timeline_labels)}:v=0:a=1[vvoice_all]"

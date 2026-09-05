@@ -66,7 +66,12 @@ def test_audio_modes_remain_independently_settable():
 def test_default_animation_is_static_phrase_and_all_five_remain():
     assert ExportSettings().subtitle_animation == "static_phrase"
     keys = {key for key, _label in subtitles.ANIMATION_OPTIONS}
-    assert keys == {"static_phrase", "word_highlight", "color_change", "outline_highlight", "type_reveal"}
+    # Outline Highlight left the selectable set (it painted filled rectangular
+    # areas outside the glyphs); Phrase Focus joined it and a saved Outline
+    # Highlight migrates deterministically to the clean Colour Change variant.
+    assert keys == {"static_phrase", "word_highlight", "color_change", "phrase_focus", "type_reveal"}
+    assert "outline_highlight" not in keys
+    assert subtitles.normalize_subtitle_animation("outline_highlight", "long") == "color_change"
     # Komplettes Style-System intakt: exakt zehn Presets wie in 1.2.3.
     assert len(SUBTITLE_PRESETS) == 10
 
@@ -293,8 +298,8 @@ def test_gui_defaults_and_live_preview_updates_without_export(qapp, monkeypatch)
         joined = " ".join(" ".join(line) for line in layout.lines)
         assert sample.split()[0] in joined
 
-        # --- Animationswechsel: alle fünf, ohne Export ---
-        for key in ("word_highlight", "color_change", "outline_highlight", "type_reveal", "static_phrase"):
+        # --- Animationswechsel: alle Long-Form-Varianten, ohne Export ---
+        for key, _label in subtitles.LONG_ANIMATION_OPTIONS:
             window.subtitle_animation_combo.setCurrentIndex(window.subtitle_animation_combo.findData(key))
             layout = window.subtitle_live_preview.current_layout()
             assert layout is not None and len(layout.lines) <= 2

@@ -25,7 +25,11 @@ from .subtitle_modes import normalize_subtitle_output_mode
 CACHE_SCHEMA = 1
 # 2: the Quote/Flyer artwork section was removed, which changed both payload
 # shapes. Entries written by schema 1 must never be reused silently.
-FINGERPRINT_SCHEMA = 2
+# 3: the explicit visual-only intro/outro sections and the Main Video opening
+# effect were added to the Stage-1 payload. A cached render from schema 2 has a
+# different timeline (no visual intro, a different tail) and must never be
+# reused silently for the new settings.
+FINGERPRINT_SCHEMA = 3
 STAGE2_FINGERPRINT_SCHEMA = 2
 
 # These are the settings that can change the bytes or duration of the Stage-1
@@ -56,7 +60,21 @@ _STAGE1_SETTING_FIELDS = (
     "ducking_enabled",
     "ducking_attack_ms",
     "ducking_release_ms",
+    # ``final_pause`` is the canonical visual outro (Main Video end padding):
+    # the tail after the spoken audio, filled with video-only material.
     "final_pause",
+    # Explicit visual-only timeline sections. ``visual_intro_seconds`` is the
+    # canonical intro the renderer uses; the four collection-specific values are
+    # included as well so a changed Long-Form or Short section can never reuse
+    # an incompatible cached render, even before the planner copied it over.
+    "visual_intro_seconds",
+    "long_form_intro_seconds",
+    "long_form_outro_seconds",
+    "short_intro_seconds",
+    "short_outro_seconds",
+    # Subtle Main Video opening effect (none | zoom_in | zoom_out). It changes
+    # rendered pixels, so it is part of the Stage-1 identity.
+    "opening_effect",
     # Phase 4: inter-unit silence and ordering/global-script semantics are
     # render inputs; final_pause above remains the independent end padding.
     "voiceover_pause",

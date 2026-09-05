@@ -19,11 +19,26 @@ from ..errors import VideoMergerError
 from ..logging_utils import configure_file_logger
 from ..font_manager import FONT_OPTIONS, register_bundled_fonts_with_qt, resolve_font
 from ..image_insertion import clamp_image_duration, clamp_image_zoom, normalize_image_filter, normalize_image_fit_mode, normalize_image_position
-from ..models import ExportSettings, ProgressEvent
+from ..models import (
+    LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_OUTRO_SECONDS,
+    MAX_VISUAL_SECTION_SECONDS,
+    SHORT_INTRO_SECONDS,
+    SHORT_OUTRO_SECONDS,
+    ExportSettings,
+    ProgressEvent,
+)
+from ..opening_effects import OPENING_EFFECTS, normalize_opening_effect
 from ..project_order import natural_order, natural_sort_key, randomize_order
 from ..project_assets import probe_audio
 from ..quality import QUALITY_KEYS, QUALITY_PRESETS, quality_label
-from ..subtitles import ANIMATION_OPTIONS
+from ..subtitles import (
+    DEFAULT_LONG_ANIMATION,
+    DEFAULT_SHORT_ANIMATION,
+    LONG_ANIMATION_OPTIONS,
+    SHORT_ANIMATION_OPTIONS,
+    normalize_subtitle_animation,
+)
 from ..paths import ensure_project_directories, locate_ffmpeg, project_root
 from ..project_order import ProjectOrderStore
 from ..settings_store import SettingsStore
@@ -64,6 +79,34 @@ def _format_time(seconds: float | None) -> str:
         return "--:--:--"
     value = int(round(seconds))
     return f"{value // 3600:02d}:{(value % 3600) // 60:02d}:{value % 60:02d}"
+
+
+def _spin_seconds(spin, default: float = 0.0) -> float:
+    """Return a non-negative spin-box value in seconds.
+
+    Tolerates an unreadable widget so the pool status can never raise while the
+    user is editing several duration controls at once.
+    """
+    try:
+        return max(0.0, float(spin.value()))
+    except Exception:
+        return default
+
+
+def _visual_section_spin(default: float, tooltip: str) -> QDoubleSpinBox:
+    """One spin box for a visual-only intro/outro section.
+
+    0.0 s is a valid explicit "no section"; negative values cannot be entered.
+    The upper bound is only the widget range, never an artificial model limit.
+    """
+    spin = QDoubleSpinBox()
+    spin.setRange(0.0, MAX_VISUAL_SECTION_SECONDS)
+    spin.setSingleStep(0.1)
+    spin.setDecimals(1)
+    spin.setSuffix(" sec")
+    spin.setToolTip(tooltip)
+    spin.setValue(default)
+    return spin
 
 
 class ReorderTableWidget(QTableWidget):
@@ -374,19 +417,48 @@ class MainWindow(QMainWindow):
         audio_layout.addWidget(self.music_volume_value, 11, 2)
         self.ducking_check = QCheckBox("Voiceover Ducking – Musik weich unter Sprache absenken")
         audio_layout.addWidget(self.ducking_check, 12, 0, 1, 3)
-        # 1.3.0 Main Video End Padding: manual, free setting (0.0–5.0 s);
-        # the existing ~1 second default is preserved exactly.
-        self.end_padding_spin = QDoubleSpinBox()
-        self.end_padding_spin.setRange(0.0, 5.0)
-        self.end_padding_spin.setSingleStep(0.1)
-        self.end_padding_spin.setDecimals(1)
-        self.end_padding_spin.setSuffix(" sec")
-        self.end_padding_spin.setToolTip(
-            "Video-only padding after the voiceover for the Long-Form / basic Main Video. "
-            "YouTube Shorts always end with their own fixed 0.7 s video-only ending "
-            "(no speech, no subtitles), independent of this value."
+        # Explicit visual-only timeline sections. The Long-Form outro IS the
+        # former "Main Video End Padding": one control, one canonical value
+        # (``final_pause``), so the tail after the spoken audio can never be
+        # applied twice. All four controls live in group "4d · Timeline".
+        self.end_padding_spin = _visual_section_spin(
+            LONG_FORM_OUTRO_SECONDS,
+            "Long-Form Outro (visual after voiceover): the picture keeps moving "
+            "after the last spoken word, with no voiceover audio and no subtitle. "
+            "This is the former Main Video End Padding - the same single timeline "
+            "section, so it is never added twice. 0.0 disables it.",
         )
-        self.end_padding_spin.setValue(1.0)
+        self.long_intro_spin = _visual_section_spin(
+            LONG_FORM_INTRO_SECONDS,
+            "Long-Form Intro (visual before voiceover): the video already shows "
+            "moving material before the first spoken word. Background music may "
+            "already play, subtitles start exactly with the voiceover. "
+            "0.0 disables it.",
+        )
+        self.short_intro_spin = _visual_section_spin(
+            SHORT_INTRO_SECONDS,
+            "Short Intro (visual before voiceover): every YouTube Short starts "
+            "with this much moving picture before its own voiceover begins. No "
+            "subtitle is visible inside it. 0.0 disables it.",
+        )
+        self.short_outro_spin = _visual_section_spin(
+            SHORT_OUTRO_SECONDS,
+            "Short Outro (visual after voiceover): every YouTube Short keeps "
+            "showing moving picture after its spoken content ends, without audio "
+            "or subtitles. It replaces the historical fixed 0.7 s Short ending and "
+            "is never added on top of it. 0.0 disables it.",
+        )
+        self.opening_effect_combo = QComboBox()
+        for effect_key, effect_label in OPENING_EFFECTS:
+            self.opening_effect_combo.addItem(effect_label, effect_key)
+        self.opening_effect_combo.setToolTip(
+            "Optional subtle Main Video opening effect (gentle zoom). It covers the "
+            "opening visual portion only - the visual intro, or 3 s when no intro "
+            "is set - and always returns to a neutral 1.00x frame, so the rest of "
+            "the video is untouched. It never changes the timeline, the voiceover "
+            "synchronization or the subtitle timing, and captions are burned in "
+            "afterwards, so they stay unscaled. Long-Form only."
+        )
         self.short_video_combo = QComboBox()
         self.short_video_combo.addItem("Hold Last Frame – finalen Frame halten", "hold")
         self.short_video_combo.addItem("Full-Timeline Loop – komplette manuelle Reihenfolge wiederholen", "loop")
@@ -431,6 +503,11 @@ class MainWindow(QMainWindow):
         )
         # 1.2.4/1.3.0: Zieldauer-Einflüsse sofort im Video-Pool-Status zeigen.
         self.end_padding_spin.valueChanged.connect(self._update_pool_status)
+        # A visual intro needs real video material too, so the pool status has
+        # to react to it exactly like the outro does.
+        self.long_intro_spin.valueChanged.connect(self._update_pool_status)
+        self.short_intro_spin.valueChanged.connect(self._update_pool_status)
+        self.short_outro_spin.valueChanged.connect(self._update_pool_status)
         self.short_video_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_fit_combo.currentIndexChanged.connect(self._update_pool_status)
         self.max_stretch_combo.currentIndexChanged.connect(self._update_pool_status)
@@ -438,24 +515,24 @@ class MainWindow(QMainWindow):
         self.duration_before_merge_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_check.toggled.connect(self._update_pool_status)
-        audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 13, 0)
-        audio_layout.addWidget(self.end_padding_spin, 13, 1)
-        audio_layout.addWidget(QLabel("If Video Is Too Short"), 14, 0)
-        audio_layout.addWidget(self.short_video_combo, 14, 1)
-        audio_layout.addWidget(QLabel("Duration Fit Mode"), 15, 0)
-        audio_layout.addWidget(self.duration_fit_combo, 15, 1)
-        audio_layout.addWidget(QLabel("Maximum Stretch"), 16, 0)
+        # Row 13 moved to group "4d · Timeline" (Long-Form Outro); the rows
+        # below keep their relative order without a gap.
+        audio_layout.addWidget(QLabel("If Video Is Too Short"), 13, 0)
+        audio_layout.addWidget(self.short_video_combo, 13, 1)
+        audio_layout.addWidget(QLabel("Duration Fit Mode"), 14, 0)
+        audio_layout.addWidget(self.duration_fit_combo, 14, 1)
+        audio_layout.addWidget(QLabel("Maximum Stretch"), 15, 0)
         stretch_row = QHBoxLayout()
         stretch_row.addWidget(self.max_stretch_combo)
         stretch_row.addWidget(self.max_stretch_spin)
-        audio_layout.addLayout(stretch_row, 16, 1)
-        audio_layout.addWidget(QLabel("Duration Before Merge"), 17, 0)
-        audio_layout.addWidget(self.duration_before_merge_combo, 17, 1)
-        audio_layout.addWidget(QLabel("Duration After Merge"), 18, 0)
+        audio_layout.addLayout(stretch_row, 15, 1)
+        audio_layout.addWidget(QLabel("Duration Before Merge"), 16, 0)
+        audio_layout.addWidget(self.duration_before_merge_combo, 16, 1)
+        audio_layout.addWidget(QLabel("Duration After Merge"), 17, 0)
         after_row = QHBoxLayout()
         after_row.addWidget(self.duration_after_merge_check)
         after_row.addWidget(self.duration_after_merge_combo)
-        audio_layout.addLayout(after_row, 18, 1, 1, 2)
+        audio_layout.addLayout(after_row, 17, 1, 1, 2)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -484,8 +561,13 @@ class MainWindow(QMainWindow):
                 self.subtitle_style_combo.count() - 1, preset.description, Qt.ToolTipRole
             )
         self.subtitle_animation_combo = QComboBox()
-        for key, label in ANIMATION_OPTIONS:
+        # Long-Form keeps every safe animation; the deprecated Outline Highlight
+        # is not selectable any more and saved values are migrated on load.
+        for key, label in LONG_ANIMATION_OPTIONS:
             self.subtitle_animation_combo.addItem(label, key)
+        self.subtitle_animation_combo.setCurrentIndex(
+            max(0, self.subtitle_animation_combo.findData(DEFAULT_LONG_ANIMATION))
+        )
         self.subtitle_font_combo = QComboBox()
         for key, label in FONT_OPTIONS:
             self.subtitle_font_combo.addItem(label, key)
@@ -499,8 +581,13 @@ class MainWindow(QMainWindow):
             if preset.collection == "short":
                 self.short_subtitle_style_combo.addItem(preset.label, preset.key)
         self.short_subtitle_animation_combo = QComboBox()
-        for key, label in ANIMATION_OPTIONS:
+        # Shorts: Word Highlight is removed and Outline Highlight is deprecated,
+        # so neither can be selected; the clean phrase-level default is first.
+        for key, label in SHORT_ANIMATION_OPTIONS:
             self.short_subtitle_animation_combo.addItem(label, key)
+        self.short_subtitle_animation_combo.setCurrentIndex(
+            max(0, self.short_subtitle_animation_combo.findData(DEFAULT_SHORT_ANIMATION))
+        )
         self.short_subtitle_font_combo = QComboBox()
         for key, label in FONT_OPTIONS:
             self.short_subtitle_font_combo.addItem(label, key)
@@ -652,6 +739,29 @@ class MainWindow(QMainWindow):
         preset_layout.addWidget(self.quality_combo, 1, 1)
         preset_layout.addWidget(self.quality_description, 2, 0, 1, 2)
         outer.addWidget(preset_group)
+
+        timeline_group = QGroupBox("4d · Timeline – Visual Intro / Outro / Opening Effect")
+        timeline_layout = QGridLayout(timeline_group)
+        timeline_layout.addWidget(QLabel("Long-Form Intro (visual before voiceover)"), 0, 0)
+        timeline_layout.addWidget(self.long_intro_spin, 0, 1)
+        timeline_layout.addWidget(QLabel("Long-Form Outro (visual after voiceover)"), 1, 0)
+        timeline_layout.addWidget(self.end_padding_spin, 1, 1)
+        timeline_layout.addWidget(QLabel("Short Intro (visual before voiceover)"), 2, 0)
+        timeline_layout.addWidget(self.short_intro_spin, 2, 1)
+        timeline_layout.addWidget(QLabel("Short Outro (visual after voiceover)"), 3, 0)
+        timeline_layout.addWidget(self.short_outro_spin, 3, 1)
+        timeline_layout.addWidget(QLabel("Main Video Opening Effect"), 4, 0)
+        timeline_layout.addWidget(self.opening_effect_combo, 4, 1)
+        timeline_hint = QLabel(
+            "One Main Video is always [visual intro] [voiceover + normal video] [visual outro]. "
+            "Both visual sections are real moving material from the normal video timeline — "
+            "no black or frozen frames, no voiceover audio and no subtitle: captions run "
+            "exactly from the voiceover start to the end of the spoken content."
+        )
+        timeline_hint.setWordWrap(True)
+        timeline_hint.setObjectName("subtitle")
+        timeline_layout.addWidget(timeline_hint, 5, 0, 1, 2)
+        outer.addWidget(timeline_group)
 
         self.advanced_toggle = QPushButton("▸ Advanced Settings")
         self.advanced_toggle.setCheckable(True)
@@ -1105,7 +1215,10 @@ class MainWindow(QMainWindow):
             (self.outro_audio_combo, self.saved.outro_audio_mode),
             (self.short_video_combo, self.saved.short_video_mode),
             (self.subtitle_style_combo, self.saved.subtitle_style),
-            (self.subtitle_animation_combo, self.saved.subtitle_animation),
+            # A deprecated Outline Highlight from an old project migrates to a
+            # clean animation instead of falling back to the first combo entry.
+            (self.subtitle_animation_combo,
+             normalize_subtitle_animation(self.saved.subtitle_animation, "long")),
             (self.subtitle_font_combo, self.saved.subtitle_font),
             (self.watermark_position_combo, self.saved.watermark_position),
             (self.watermark_scope_combo, self.saved.watermark_scope),
@@ -1114,7 +1227,13 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(index if index >= 0 else 0)
         for combo, value in (
             (self.short_subtitle_style_combo, getattr(self.saved, "short_subtitle_style", "short_1")),
-            (self.short_subtitle_animation_combo, getattr(self.saved, "short_subtitle_animation", "word_highlight")),
+            # Word Highlight is not available for Shorts any more: a saved value
+            # migrates to the clean Short default instead of crashing or silently
+            # selecting an unavailable entry.
+            (self.short_subtitle_animation_combo,
+             normalize_subtitle_animation(
+                 getattr(self.saved, "short_subtitle_animation", ""), "short"
+             )),
             (self.short_subtitle_font_combo, getattr(self.saved, "short_subtitle_font", "inter")),
         ):
             index = combo.findData(value)
@@ -1134,8 +1253,27 @@ class MainWindow(QMainWindow):
         self.music_preset_combo.blockSignals(False)
         self.music_volume_slider.setValue(self.saved.music_volume)
         self.ducking_check.setChecked(self.saved.ducking_enabled)
-        # 1.3.0 Main Video End Padding (freie Eingabe, Standard bleibt 1.0 s).
-        self.end_padding_spin.setValue(float(self.saved.final_pause))
+        # Explicit visual-only sections. An older project has no Long-Form Outro
+        # field, so its saved Main Video End Padding migrates into that control
+        # (both are the same single timeline section) instead of being replaced
+        # by the new default; every other new field simply uses its default.
+        self.long_intro_spin.setValue(
+            float(getattr(self.saved, "long_form_intro_seconds", LONG_FORM_INTRO_SECONDS))
+        )
+        self.end_padding_spin.setValue(
+            float(self.saved.long_form_outro_seconds)
+            if "long_form_outro_seconds" in saved_keys
+            else float(self.saved.final_pause)
+        )
+        self.short_intro_spin.setValue(
+            float(getattr(self.saved, "short_intro_seconds", SHORT_INTRO_SECONDS))
+        )
+        self.short_outro_spin.setValue(
+            float(getattr(self.saved, "short_outro_seconds", SHORT_OUTRO_SECONDS))
+        )
+        self.opening_effect_combo.setCurrentIndex(max(0, self.opening_effect_combo.findData(
+            normalize_opening_effect(getattr(self.saved, "opening_effect", ""))
+        )))
         # Duration Fit / Smart Stretch / independent merge durations.
         fit_index = self.duration_fit_combo.findData(
             self.saved.duration_fit_mode if self.saved.duration_fit_mode in {"cut", "stretch"} else "cut"
@@ -1278,7 +1416,19 @@ class MainWindow(QMainWindow):
             ducking_enabled=self.ducking_check.isChecked(),
             ducking_attack_ms=self.duck_attack_spin.value(),
             ducking_release_ms=self.duck_release_spin.value(),
+            # ``final_pause`` IS the Long-Form visual outro: one control writes
+            # both names, so the tail after the spoken audio exists exactly once.
             final_pause=float(self.end_padding_spin.value()),
+            long_form_outro_seconds=float(self.end_padding_spin.value()),
+            long_form_intro_seconds=float(self.long_intro_spin.value()),
+            short_intro_seconds=float(self.short_intro_spin.value()),
+            short_outro_seconds=float(self.short_outro_spin.value()),
+            # Canonical render-time intro for direct (non-orchestrated) renders;
+            # the Shorts planner replaces it with the Short intro per job.
+            visual_intro_seconds=float(self.long_intro_spin.value()),
+            opening_effect=str(self.opening_effect_combo.currentData()),
+            # Random order reserves its first three clips from this root.
+            legacy_input_root=self.input_edit.text().strip(),
             short_video_mode=str(self.short_video_combo.currentData()),
             duration_fit_mode=str(self.duration_fit_combo.currentData()),
             max_stretch_percent=self._max_stretch_value(),
@@ -1511,9 +1661,13 @@ class MainWindow(QMainWindow):
                 self.subtitle_position_combo.setCurrentText(
                     "Center" if self.radio_16.isChecked() else "Bottom Center"
                 )
-            # Long-form uses a stable phrase; Shorts retain word highlight.
+            # Long-Form keeps the stable Static White Reveal; Shorts switch to
+            # their own clean phrase-level default (Word Highlight is removed).
             if not self._subtitle_animation_overridden:
-                animation_key = "static_phrase" if self.radio_16.isChecked() else "word_highlight"
+                animation_key = (
+                    DEFAULT_LONG_ANIMATION if self.radio_16.isChecked()
+                    else DEFAULT_SHORT_ANIMATION
+                )
                 animation_index = self.subtitle_animation_combo.findData(animation_key)
                 if animation_index >= 0:
                     self.subtitle_animation_combo.setCurrentIndex(animation_index)
@@ -2146,13 +2300,15 @@ class MainWindow(QMainWindow):
             pause = max(0.0, min(10.0, float(self.voiceover_pause_spin.value())))
         except Exception:
             pause = 0.7
-        try:
-            end_padding = max(0.0, float(self.end_padding_spin.value()))
-        except Exception:
-            end_padding = 0.0
+        end_padding = _spin_seconds(self.end_padding_spin)
+        visual_intro = _spin_seconds(self.long_intro_spin)
         # Only actual, probeable files are timeline units. The pause is added
-        # exactly between those units, never after the final one.
-        return sum(durations) + pause * max(0, len(durations) - 1) + end_padding
+        # exactly between those units, never after the final one. The visual
+        # intro and outro need real video material as well, so the pool status
+        # reserves exactly what the render target requires.
+        return (
+            visual_intro + sum(durations) + pause * max(0, len(durations) - 1) + end_padding
+        )
 
     def _update_pool_status(self, *_args) -> None:
         """Video-Pool-Status: Videos / Required / Selected / Not Used / Ziel.

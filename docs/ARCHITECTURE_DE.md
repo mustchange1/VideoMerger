@@ -63,9 +63,19 @@ Jedes ASS-Event enthält die vollständigen Wörter des finalen Cue-Blocks sowie
 
 - **Type Reveal:** zukünftige Wörter haben Alpha FF, bleiben aber im Shaping/Layout;
 - **Color Change:** nur die aktuelle Wortfarbe ändert sich;
-- **Word Highlight:** aktuelles Wort erhält ruhige Farbe/Outline;
-- **Outline Highlight:** aktuelles Wort erhält eine stärkere Outline;
+- **Word Highlight:** aktuelles Wort erhält ruhige Farbe (nur Long-Form);
+- **Phrase Focus:** ruhiger, weicher Eintritt auf Cue-Ebene (Standard der Shorts);
 - **Static Phrase:** ein vollständiges Event über die Cue-Dauer.
+
+**Outline Highlight ist entfernt**: die Variante zeichnete pro Wort eine kräftige
+Outline-Farbe und erzeugte damit gefüllte rechteckige Flächen außerhalb der
+Glyphen. `subtitles.normalize_subtitle_animation(value, collection)` ist der
+einzige Migrationspunkt (Outline Highlight → Color Change, Word Highlight →
+Phrase Focus für Shorts, Unbekanntes → Collection-Standard); `animation_options()`
+und `accepted_animation_values()` liefern die auswählbaren bzw. noch akzeptierten
+Werte, sodass alte Projektdateien nie abstürzen. Alle verbleibenden Animationen
+emittieren ausschließlich glyphenausgerichtete Overrides (`\c`, `\1a`, `\3a`,
+`\fad`) – kein `\3c`, `\bord`, `\shad`, `\clip` oder Vektor-`\p` mehr.
 
 Bei den synchronisierten Varianten beginnen Events exakt an kanonischen Wortstarts. Das optionale Debug-Layer erzeugt pro Wort ein eigenes Event mit Wort, Start und Ende. Es ist standardmäßig deaktiviert.
 
@@ -118,7 +128,10 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 
 ### Dauer-Fit, Speed, End-Padding
 
-`timeline.fit_media_to_duration(..., duration_fit_mode, max_stretch_percent, playback_rate)` bleibt die eine Auswahl-Mathematik. `cut` = exaktes 1.2.4-Verhalten; `stretch` zieht das Präfix bevorzugt einen Clip kürzer und dehnt nur den letzten (relativ zur geschwindigkeitsskalierten Timeline-Dauer, begrenzt). `video_pool` spiegelt dieselbe Entscheidung in O(n) (eine Präfix-Berechnung pro Status). `MediaInfo.playback_rate` wird im Graph via `setpts=PTS/rate` + `atempo` umgesetzt (nur Clip-Audio; Voiceover/Musik/Untertitel unberührt). `final_pause` bleibt die autoritative End-Padding-Größe (GUI: freier Spin, Standard 1,0 s).
+`timeline.fit_media_to_duration(..., duration_fit_mode, max_stretch_percent, playback_rate)` bleibt die eine Auswahl-Mathematik. `cut` = exaktes 1.2.4-Verhalten; `stretch` zieht das Präfix bevorzugt einen Clip kürzer und dehnt nur den letzten (relativ zur geschwindigkeitsskalierten Timeline-Dauer, begrenzt). `video_pool` spiegelt dieselbe Entscheidung in O(n) (eine Präfix-Berechnung pro Status). `MediaInfo.playback_rate` wird im Graph via `setpts=PTS/rate` + `atempo` umgesetzt (nur Clip-Audio; Voiceover/Musik/Untertitel unberührt). `final_pause` bleibt das kanonische End-Padding-Feld (Standard 1,0 s für direkte
+API-Aufrufe); die GUI schreibt es zusammen mit `long_form_outro_seconds`
+(Nutzerstandard 2,5 s) aus einem einzigen Regler, sodass das frühere Main Video
+End Padding und das neue Long-Form-Outro derselbe Abschnitt sind.
 
 ### Flexible Subtitle-Ausgaben + sauberer Output
 
@@ -144,7 +157,12 @@ Die Subtitle-Modi sind `with_subtitles`, `without_subtitles` und `with_and_witho
 
 ### Festes 0,7-Sekunden-Ende jedes Shorts
 
-`youtube_outputs.SHORT_ENDING_SECONDS = 0.7` ist die einzige Quelle dieses Werts; `short_settings()` setzt damit `final_pause` jedes Short-Auftrags, während das Long-Form das frei wählbare `Main Video End Padding` behält. Die vorhandene Timeline-Logik setzt das Ziel deterministisch um: `create_main` berechnet `voice_total + final_pause` als Video-Zieldauer, `fit_media_to_duration` liefert dafür zusätzliches Bildmaterial (Clip-Auswahl, Übergänge, Hold/Loop, Chunked Rendering bleiben unverändert), und `subtitle_program_end = voice_total` begrenzt die Untertitel-Zeitleiste auf das gesprochene Audio. Das bestehende Guard-Raise verhindert zusätzlich, dass ein Cue in das Ende reicht; Voiceover-Audio endet ohnehin mit der Datei. Der Shorts-Pool ohne Ersatz reserviert pro Short `voice_total + final_pause` und stellt damit vorab genug Material für das Ende bereit.
+`youtube_outputs.SHORT_ENDING_SECONDS = 0.7` ist die einzige Quelle dieses Werts
+und dient nur noch als garantierte Untergrenze für Settings-Objekte ohne das Feld
+`short_outro_seconds`; `short_settings()` setzt `final_pause` jedes Short-Auftrags
+auf das explizite Short-Outro (Nutzerstandard 1,5 s), das diesen Wert **ersetzt**
+statt ihn zu einem zweiten sichtbaren Ende aufzustocken, während das Long-Form das
+frei wählbare Long-Form-Outro behält. Die vorhandene Timeline-Logik setzt das Ziel deterministisch um: `create_main` berechnet `voice_total + final_pause` als Video-Zieldauer, `fit_media_to_duration` liefert dafür zusätzliches Bildmaterial (Clip-Auswahl, Übergänge, Hold/Loop, Chunked Rendering bleiben unverändert), und `subtitle_program_end = voice_total` begrenzt die Untertitel-Zeitleiste auf das gesprochene Audio. Das bestehende Guard-Raise verhindert zusätzlich, dass ein Cue in das Ende reicht; Voiceover-Audio endet ohnehin mit der Datei. Der Shorts-Pool ohne Ersatz reserviert pro Short `voice_total + final_pause` und stellt damit vorab genug Material für das Ende bereit.
 
 ### Eine Skript-Textdatei pro Short
 
@@ -153,3 +171,88 @@ Die Subtitle-Modi sind `with_subtitles`, `without_subtitles` und `with_and_witho
 ### Entferntes Quote-/Flyer-Artwork
 
 `quote_artwork.py`, die GUI-Sektion inklusive PDF-Seite/Artwork Fit/Vorschau, `MediaInfo.is_quote_artwork`/`quote_fit_mode`, `ExportSettings.quote_*`, die CLI-Schalter `--quote*`, der Stage-2-Einbau in `add_outro`, die Quote-Zweige im `command_builder` und `QuotePreviewCanvas` sind entfernt; PyMuPDF ist keine Abhängigkeit mehr. Add Image (`is_image_insertion`, `image_*`), Intro/Outro und alle übrigen Timeline-Funktionen bleiben unverändert, und `_stage2_image_target()` (vormals `_quote_artwork_target`) bestimmt weiterhin die Auto-Auflösung für Standbilder. Alte Projektdateien bleiben ladbar, weil `SettingsStore.load()` unbekannte Schlüssel verwirft; `render_cache` hebt wegen der geänderten Payload-Form beide Fingerprint-Schemata auf `2`, damit keine Einträge aus der Zeit vor der Entfernung wiederverwendet werden.
+
+## Visuelle Intro-/Outro-Abschnitte, Opening Effect, Legacy-Priorität
+
+### Kanonische Timeline `[Intro][Voiceover][Outro]`
+
+`youtube_outputs.MainTimeline` (eingefroren: `intro`, `spoken`, `outro`) ist die
+eine Quelle der Wahrheit für einen Voiceover-getriebenen Auftrag: `voiceover_start`,
+`spoken_end`, `subtitle_start`/`subtitle_end`, `target`, `audio_program` und
+`log_lines()` leiten sich aus diesen drei Zahlen ab, und Video-Timeline,
+Audio-Graph, Untertitel-Offset, Shorts-Pool-Reservierung und Log lesen dieselben
+Werte (`main_timeline(settings, voice_total)`). `visual_section_seconds()`
+validiert jeden Abschnitt (Zahl, endlich, ≥ 0, auf Millisekunden gerundet; 0
+deaktiviert ihn, negativ wird abgelehnt, kein künstliches Limit – die
+GUI-Obergrenze `MAX_VISUAL_SECTION_SECONDS = 60` ist reine Widget-Range).
+
+`ExportSettings` trennt weiterhin kanonische und nutzerseitige Felder: kanonisch
+bleiben `visual_intro_seconds = 0.0` und `final_pause = 1.0`, sodass ein direkter
+`create_main(ExportSettings())`-Render exakt das frühere Verhalten zeigt;
+nutzerseitig kommen `long_form_intro_seconds`/`long_form_outro_seconds` (je 2,5 s),
+`short_intro_seconds`/`short_outro_seconds` (je 1,5 s), `opening_effect` (`"none"`)
+und `legacy_input_root` (`""`) hinzu. `long_form_settings()` und `short_settings()`
+kopieren die nutzerseitigen Werte in die kanonischen Felder – das Long-Form-Outro
+**ist** damit das frühere Main Video End Padding: ein einziger Tail, der sich nie
+verdoppeln kann. `SettingsStore.load()` migriert ein gespeichertes `final_pause`
+nach `long_form_outro_seconds`, wenn das neue Feld fehlt; `app/cli.py` schreibt aus
+`--pause`/`--end-padding` beide Namen; die GUI besitzt einen Regler in der Gruppe
+„4d · Timeline – Visual Intro / Outro / Opening Effect“.
+
+Audio: `command_builder` stellt dem Voiceover-Concat bei `intro > 0` ein
+`anullsrc`-Segment `[vintro]` voran
+(`[vintro][vu1]concat=n=2:v=0:a=1[vvoice_all]`); bei `intro == 0` bleibt der
+historische Graph byte-identisch. Musik und Clip-Originalton laufen über
+`audio_program = intro + spoken`, dürfen also während des Intros spielen und enden
+mit der Sprache. Das Render-Ziel ist `intro + voice_total + outro`, wodurch
+`fit_media_to_duration` und der Shorts-Pool ohne Ersatz echtes Bildmaterial für
+alle drei Abschnitte reservieren – kein Schwarzbild, kein Standbild, kein
+doppeltes Audio.
+
+Untertitel: `main_project._offset_alignment(alignment, intro)` verschiebt die
+kanonische Wort-Zeitleiste **vor** `_scale_alignment`, und
+`subtitle_program_end = (intro + voice_total) / speed` begrenzt sie auf den
+gesprochenen Teil. Die Verschiebung lebt damit im Timeline-Modell, nicht in einem
+nachgelagerten Delay; Wort-Timing, globale Skript-Sektionen, SRT/VTT, Burn-in und
+die strikte Cue-Validierung bleiben unverändert, und kein Cue reicht in Intro oder
+Outro. `render_cache.FINGERPRINT_SCHEMA = 3` nimmt alle neuen Felder
+(`long_form_intro_seconds`, `long_form_outro_seconds`, `short_intro_seconds`,
+`short_outro_seconds`, `visual_intro_seconds`, `final_pause`, `opening_effect`) in
+die Stage-1-Identität auf; Stage 2 bleibt bei Schema 2.
+
+### Opening Effect des Main Videos
+
+`opening_effects.py` ist ein bewusst kleines Register ohne Animations-Editor:
+`none` (Standard), `zoom_in`, `zoom_out`. `normalize_opening_effect()` akzeptiert
+Alias-/Groß-Kleinschreibvarianten und bildet Unbekanntes auf `none` ab.
+`opening_effect_window(intro, program)` nutzt das visuelle Intro als
+Öffnungsabschnitt (ohne Intro die festen `OPENING_EFFECT_SECONDS = 3.0`), begrenzt
+ihn durch die Programmlänge und liefert unter
+`MIN_OPENING_EFFECT_SECONDS = 0.5` gar keinen Effekt. `opening_effect_filter()`
+erzeugt `scale=…:eval=frame:flags=lanczos` (5 % Spitze, gerade Größen via
+`trunc(…/2)*2`) gefolgt von einem zentrierten `crop` fester Größe und `setsar=1`
+**nach** dem Crop: zwischen dem pro Frame variierenden `scale` und dem festen
+`crop` darf kein Filter stehen, weil FFmpeg 6.0 sonst bei einer Zoom-Out-Rampe
+reproduzierbar abstürzt. `time_offset` hält die Rampe über Chunk-Grenzen
+kontinuierlich. Eingebaut wird der Effekt in Stage 1 (`workflow_stage == "main"`)
+als `[vprogram]…[vopening]` **vor** dem ASS-Burn-in, sodass Untertitel nie
+skaliert werden; Shorts erhalten grundsätzlich `none`. Außerhalb des Fensters ist
+die Kette ein verlustfreier Same-Size-Durchlauf, es wird kein Frame ergänzt oder
+entfernt – Ziel-Dauer, Voiceover-Sync und Untertitel bleiben unberührt.
+
+### Legacy Input Root Priorität (nur Random)
+
+`video_pool.reserve_legacy_priority(media, legacy_root, rng, count=LEGACY_PRIORITY_CLIPS=3)`
+zieht per `rng.sample` bis zu drei verschiedene Clips des Legacy Input Root,
+mischt sie untereinander und entfernt sie **vor** der weiteren Sequenz aus dem
+Pool; `order_media_for_video_order(..., legacy_root=)` ruft sie ausschließlich im
+Random-Zweig auf und hängt `randomize_order` + `folder_aware_order` für Clip 4+
+unverändert an. Gibt es keine eligible Wurzel (leer, fehlend, weniger als drei
+Clips, Nicht-Random-Modus), wird nichts reserviert **und keine Zufälligkeit
+verbraucht**, womit der historische unverfälschte Shuffle bit-identisch bleibt.
+Manual, Alphabetical und Natural bleiben unberührt. `legacy_input_root` wird von
+der GUI (`_settings()`) und der CLI (aufgelöstes `--input`) gesetzt und über
+`main_project`, `engine`, `timeline` und `gui/workers` durchgereicht;
+`_log_legacy_priority()` protokolliert genau eine Zeile mit den reservierten
+Clipnamen – nur im Random-Modus, nur wenn wirklich reserviert wurde und nur dort,
+wo die Reihenfolge erzeugt wurde.

@@ -6,10 +6,25 @@ from pathlib import Path
 from .video_merger.discovery import discover_videos
 from .video_merger.engine import VideoMergerEngine
 from .video_merger.main_project import MainProjectEngine
-from .video_merger.models import ExportSettings
+from .video_merger.models import (
+    LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_OUTRO_SECONDS,
+    SHORT_INTRO_SECONDS,
+    SHORT_OUTRO_SECONDS,
+    ExportSettings,
+)
+from .video_merger.opening_effects import (
+    OPENING_EFFECT_NONE,
+    OPENING_EFFECTS,
+)
 from .video_merger.output_manager import make_output_path
 from .video_merger.paths import locate_ffmpeg
 from .video_merger.project_order import GeneratedOutputStore, ProjectOrderStore
+from .video_merger.subtitles import (
+    DEFAULT_LONG_ANIMATION,
+    DEFAULT_SHORT_ANIMATION,
+    accepted_animation_values,
+)
 from .video_merger.video_pool import order_media_for_video_order
 from .video_merger.youtube_outputs import (
     EXPORT_MODE_COMBINED,
@@ -84,7 +99,14 @@ def main() -> int:
     )
     parser.add_argument("--original-audio", choices=["mute", "low", "original"], default="mute")
     parser.add_argument("--music-volume", type=int, default=44)
-    parser.add_argument("--pause", type=float, default=1.0)
+    parser.add_argument(
+        "--pause", "--end-padding", dest="pause", type=float, default=None,
+        help=(
+            "legacy Main Video end padding. It is the same timeline section as "
+            "--long-outro, so the visual outro is never applied twice; when "
+            "omitted, --long-outro (default 2.5 s) is used"
+        ),
+    )
     parser.add_argument(
         "--short-video", choices=["hold", "loop"], default="hold",
         help="hold final rendered frame or loop the complete active ordered timeline",
@@ -168,7 +190,14 @@ def main() -> int:
     )
     parser.add_argument("--language", choices=["German", "English", "Auto"], default="German")
     parser.add_argument("--subtitle-style", default="long_1")
-    parser.add_argument("--subtitle-animation", choices=["type_reveal", "color_change", "word_highlight", "outline_highlight", "static_phrase"], default="static_phrase")
+    parser.add_argument(
+        "--subtitle-animation", choices=list(accepted_animation_values("long")),
+        default=DEFAULT_LONG_ANIMATION,
+        help=(
+            "Long-Form caption animation; deprecated values (outline_highlight) "
+            "are accepted and migrated to a clean glyph-aligned animation"
+        ),
+    )
     parser.add_argument("--subtitle-font", choices=["eveleth_clean", "modern_sans_bold", "clean_sans"], default="modern_sans_bold")
     parser.add_argument(
         "--subtitle-position", choices=["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"],
@@ -176,11 +205,46 @@ def main() -> int:
     )
     parser.add_argument("--subtitle-debug-overlay", action="store_true")
     parser.add_argument("--short-subtitle-style", default="short_1")
-    parser.add_argument("--short-subtitle-animation", choices=["type_reveal", "color_change", "word_highlight", "outline_highlight", "static_phrase"], default="word_highlight")
+    parser.add_argument(
+        "--short-subtitle-animation", choices=list(accepted_animation_values("short")),
+        default=DEFAULT_SHORT_ANIMATION,
+        help=(
+            "Shorts caption animation. Word Highlight is no longer available for "
+            "Shorts and Outline Highlight is deprecated; both are accepted here "
+            "and migrated to a safe animation instead of failing the run"
+        ),
+    )
     parser.add_argument("--short-subtitle-font", choices=["eveleth_clean", "modern_sans_bold", "clean_sans"], default="modern_sans_bold")
     parser.add_argument(
         "--short-subtitle-position", choices=["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"],
         default="Bottom Center",
+    )
+    parser.add_argument(
+        "--long-intro", type=float, default=LONG_FORM_INTRO_SECONDS,
+        help=f"Long-Form visual-only intro before the voiceover in seconds (default {LONG_FORM_INTRO_SECONDS}; 0 disables it)",
+    )
+    parser.add_argument(
+        "--long-outro", type=float, default=LONG_FORM_OUTRO_SECONDS,
+        help=(
+            f"Long-Form visual-only outro after the voiceover in seconds (default {LONG_FORM_OUTRO_SECONDS}; "
+            "0 disables it). This is the Main Video end padding - it is never added twice"
+        ),
+    )
+    parser.add_argument(
+        "--short-intro", type=float, default=SHORT_INTRO_SECONDS,
+        help=f"Short visual-only intro before the voiceover in seconds (default {SHORT_INTRO_SECONDS}; 0 disables it)",
+    )
+    parser.add_argument(
+        "--short-outro", type=float, default=SHORT_OUTRO_SECONDS,
+        help=(
+            f"Short visual-only outro after the voiceover in seconds (default {SHORT_OUTRO_SECONDS}; 0 disables it). "
+            "It replaces the historical fixed 0.7 s Short ending"
+        ),
+    )
+    parser.add_argument(
+        "--opening-effect", choices=[key for key, _label in OPENING_EFFECTS],
+        default=OPENING_EFFECT_NONE,
+        help="subtle Main Video opening effect; it never changes timeline, audio or subtitle timing",
     )
     parser.add_argument("--allow-alignment-warning", action="store_true")
     parser.add_argument("--watermark", default="")
@@ -217,8 +281,26 @@ def main() -> int:
         voiceover_pause=max(0.0, min(10.0, args.voiceover_pause)),
         voiceover_order_mode=args.voiceover_order,
         music_path=args.music, short_music_path=args.short_music,
+        # Explicit visual-only sections. The Long-Form outro is the canonical
+        # Main Video end padding (final_pause), so the tail exists exactly once.
+        long_form_intro_seconds=args.long_intro,
+        # ``--pause``/``--end-padding`` is the legacy alias of the Long-Form
+        # outro, so an explicit value drives BOTH names; otherwise the orchestrated
+        # Long-Form job would derive its tail from the outro default alone.
+        long_form_outro_seconds=(
+            args.pause if args.pause is not None else args.long_outro
+        ),
+        short_intro_seconds=args.short_intro,
+        short_outro_seconds=args.short_outro,
+        visual_intro_seconds=args.long_intro,
+        final_pause=args.pause if args.pause is not None else args.long_outro,
+        opening_effect=args.opening_effect,
+        # Random order reserves its first three clips from this root.
+        legacy_input_root=(
+            str(Path(args.input).expanduser().resolve()) if args.input else ""
+        ),
         original_audio_mode=args.original_audio,
-        music_volume=args.music_volume, final_pause=args.pause,
+        music_volume=args.music_volume,
         short_video_mode=args.short_video,
         duration_fit_mode=args.duration_fit,
         max_stretch_percent=max(1.0, min(50.0, args.max_stretch)),
@@ -263,7 +345,9 @@ def main() -> int:
             order_store=ProjectOrderStore(), excluded_paths=output_store.paths()
         )
         media = engine.analyze(inputs, print)
-        media = order_media_for_video_order(media, settings.video_order_mode)
+        media = order_media_for_video_order(
+            media, settings.video_order_mode, legacy_root=settings.legacy_input_root,
+        )
         if args.stage == "main":
             result = MainProjectEngine(engine).create_youtube_exports(
                 media, settings, args.output, log=print, order_already_applied=True,

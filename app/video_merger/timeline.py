@@ -139,6 +139,7 @@ def fit_media_to_duration(
     video_order_mode: str | None = None,
     video_order_rng=None,
     video_order_seed: int | None = None,
+    legacy_root: object = None,
 ) -> tuple[list[MediaInfo], list[str]]:
     """Build an exact voiceover-driven visual sequence without changing order.
 
@@ -179,6 +180,7 @@ def fit_media_to_duration(
         from .video_pool import order_media_for_video_order
         active_media = order_media_for_video_order(
             media, video_order_mode, rng=video_order_rng, seed=video_order_seed,
+            legacy_root=legacy_root,
         )
     elif folder_aware:
         # Import lazily: video_pool delegates selection to this module.
