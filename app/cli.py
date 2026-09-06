@@ -17,6 +17,9 @@ from .video_merger.models import (
     SHORT_OUTRO_SECONDS,
     SHORTS_MUSIC_VOLUME,
     SHORTS_TRANSITION_DURATION,
+    TIMELINE_AREA_END_SECONDS,
+    TIMELINE_AREA_MIDPOINT_PERCENT,
+    TIMELINE_AREA_START_SECONDS,
     TRANSITION_DURATION_LEGACY_DEFAULT,
     ExportSettings,
 )
@@ -32,6 +35,7 @@ from .video_merger.subtitles import (
     DEFAULT_SHORT_ANIMATION,
     accepted_animation_values,
 )
+from .video_merger.timeline_areas import TIMELINE_AREA_LABELS, normalize_timeline_area
 from .video_merger.video_pool import order_media_for_video_order
 from .video_merger.youtube_outputs import (
     EXPORT_MODE_COMBINED,
@@ -48,6 +52,37 @@ def main() -> int:
     parser.add_argument(
         "--source-folder", action="append", default=[], type=Path,
         help="configured video source folder; repeat for multiple folders (overrides --input)",
+    )
+    parser.add_argument(
+        "--folder-area", action="append", default=[], metavar="FOLDER=AREA",
+        help=(
+            "soft timeline area role of one configured folder, e.g. "
+            "'/clips/best=1'. 1 = Start & End, 2 = Start to Middle, "
+            "3 = Middle to End. Repeat for several folders; a folder without a "
+            "role keeps the historical order. Roles never cut a clip."
+        ),
+    )
+    parser.add_argument(
+        "--area-start", type=float, default=TIMELINE_AREA_START_SECONDS,
+        help="soft target in seconds for the leading '1. Start & End' zone (default 20)",
+    )
+    parser.add_argument(
+        "--area-end", type=float, default=TIMELINE_AREA_END_SECONDS,
+        help="soft target in seconds for the trailing '1. Start & End' zone (default 20)",
+    )
+    parser.add_argument(
+        "--area-midpoint", type=float, default=TIMELINE_AREA_MIDPOINT_PERCENT,
+        help=(
+            "soft midpoint in percent of the output duration where '2. Start to "
+            "Middle' hands over to '3. Middle to End' (default 50)"
+        ),
+    )
+    parser.add_argument(
+        "--shorts-allow-area3", action="store_true",
+        help=(
+            "let YouTube Shorts also use '3. Middle to End' material; by default "
+            "Shorts draw from Area 1 + Area 2 only"
+        ),
     )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument(
@@ -357,10 +392,27 @@ def main() -> int:
         args.short_music_volume if args.short_music_volume is not None else args.music_volume
     )
     configured_sources = [str(Path(value).expanduser().resolve()) for value in args.source_folder]
+    folder_areas: dict[str, str] = {}
+    for entry in args.folder_area:
+        folder, separator, role = str(entry).partition("=")
+        area = normalize_timeline_area(role)
+        if not separator or not folder.strip() or not area:
+            parser.error(
+                "--folder-area expects FOLDER=AREA with AREA one of: "
+                + ", ".join(f"{key} = {label}" for key, label in TIMELINE_AREA_LABELS.items())
+            )
+        folder_areas[str(Path(folder).expanduser().resolve())] = area
     settings = ExportSettings(
         export_mode=normalize_export_mode(args.export_mode),
         aspect=args.aspect, resolution=args.resolution,
         source_folders=configured_sources,
+        # Soft timeline-area source ordering. Empty means no role is configured
+        # and the historical project order stays byte-identical.
+        source_folder_areas=folder_areas,
+        timeline_area_start_seconds=args.area_start,
+        timeline_area_end_seconds=args.area_end,
+        timeline_area_midpoint_percent=args.area_midpoint,
+        shorts_allow_area_middle_end=args.shorts_allow_area3,
         video_order_mode=args.video_order,
         transition_type=args.transition_effect, transition_ease=args.transition_ease,
         transition_duration=shared_transition_duration, encoding=args.encoding,

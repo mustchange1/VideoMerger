@@ -74,6 +74,7 @@ from .timeline import (
     duration_before_merge_value,
     fit_media_to_duration,
 )
+from .timeline_areas import order_media_by_timeline_areas, shorts_area_pool
 from .transition_effects import transition_label
 from .validation import validate_output
 from .video_pool import (
@@ -564,6 +565,7 @@ class MainProjectEngine:
         order_already_applied: bool = False,
         output_stem: str | None = None,
         short_video_pool: ShortsVideoPool | None = None,
+        apply_timeline_areas: bool = True,
     ) -> MainVideoResult:
         total_started = time.perf_counter()
         timings: dict[str, float | str | bool] = {}
@@ -735,6 +737,18 @@ class MainProjectEngine:
                 log(
                     f"Shorts without-replacement pool: assigned {len(selection_media)} clip(s); "
                     f"{short_video_pool.remaining_count} clip(s) remain before the next Short."
+                )
+            if apply_timeline_areas:
+                # Soft timeline areas (Long-Form only): whole clips of the
+                # already ordered sequence are re-grouped into 1. Start & End /
+                # 2. Start to Middle / 3. Middle to End / 1. Start & End. No clip
+                # is cut and nothing is dropped; with no configured role this
+                # returns the incoming sequence unchanged. A YouTube Short keeps
+                # its historical order and pool cursor and only receives its
+                # restricted source pool (Area 1 + Area 2, see
+                # create_youtube_exports).
+                selection_media = order_media_by_timeline_areas(
+                    selection_media, target, settings, log=log
                 )
             render_media, timing_warnings = fit_media_to_duration(
                 selection_media, target, settings.transition_duration, fps, settings.short_video_mode,
@@ -1574,8 +1588,18 @@ class MainProjectEngine:
                 legacy_root=getattr(settings, "legacy_input_root", ""),
             )
         _log_legacy_priority(effective_media, settings, log)
+        # Shorts source policy: Area 1 + Area 2 only, so the later/main pool
+        # never reaches a vertical output unless the user explicitly allows it.
+        # This restricts the pool only - every other Shorts behavior (job
+        # planning, without-replacement consumption, timeline, subtitles, audio
+        # and rendering) is untouched.
+        shorts_pool_media = (
+            shorts_area_pool(effective_media, settings, log=log)
+            if mode != EXPORT_MODE_LONG_FORM
+            else effective_media
+        )
         short_video_pool = (
-            ShortsVideoPool(effective_media) if mode != EXPORT_MODE_LONG_FORM else None
+            ShortsVideoPool(shorts_pool_media) if mode != EXPORT_MODE_LONG_FORM else None
         )
         if mode == EXPORT_MODE_LONG_FORM:
             jobs = [("long", long_form_settings(settings), output_dir / "LongForm", "YouTube_LongForm")]
@@ -1610,7 +1634,7 @@ class MainProjectEngine:
         runtime_short_pool = short_video_pool
         short_entries = [entry for entry in jobs if entry[0] == "short"]
         if short_entries and effective_media and hasattr(self.engine, "ffprobe_path"):
-            planning_pool = ShortsVideoPool(effective_media)
+            planning_pool = ShortsVideoPool(shorts_pool_media)
             try:
                 planning_fps, _planning_fps_expr = choose_fps(
                     effective_media, short_entries[0][1].fps_choice
@@ -1696,6 +1720,9 @@ class MainProjectEngine:
                     order_already_applied=True,
                     output_stem=stem,
                     short_video_pool=job_pool,
+                    # The soft timeline areas describe one long video; a Short
+                    # keeps its historical order and only its restricted pool.
+                    apply_timeline_areas=kind == "long",
                 )
             else:
                 result = self.create_main(
@@ -1705,6 +1732,7 @@ class MainProjectEngine:
                     video_order_rng=video_order_rng, video_order_seed=video_order_seed,
                     order_already_applied=True, output_stem=stem,
                     short_video_pool=job_pool,
+                    apply_timeline_areas=kind == "long",
                 )
             if complete:
                 final_stem = result.final_video.stem if isinstance(result, CompleteWorkflowResult) else stem
@@ -1734,6 +1762,7 @@ class MainProjectEngine:
         order_already_applied: bool = False,
         output_stem: str | None = None,
         short_video_pool: ShortsVideoPool | None = None,
+        apply_timeline_areas: bool = True,
     ) -> CompleteWorkflowResult:
         """Execute actual Stage 1, then hand its exact MP4 to existing Stage 2.
 
@@ -1806,6 +1835,7 @@ class MainProjectEngine:
             order_already_applied=order_already_applied,
             output_stem=output_stem,
             short_video_pool=short_video_pool,
+            apply_timeline_areas=apply_timeline_areas,
         )
         if not main.video.is_file() or not main.report.ok:
             raise VideoMergerError("One-Click Stage 1 lieferte keine validierte MainVideo-Datei.")

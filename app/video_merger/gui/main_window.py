@@ -27,8 +27,13 @@ from ..models import (
     MAX_VISUAL_SECTION_SECONDS,
     SHORT_INTRO_SECONDS,
     SHORT_OUTRO_SECONDS,
+    SHORTS_ALLOW_AREA_MIDDLE_END,
     SHORTS_MUSIC_VOLUME,
     SHORTS_TRANSITION_DURATION,
+    MAX_TIMELINE_AREA_SECONDS,
+    TIMELINE_AREA_END_SECONDS,
+    TIMELINE_AREA_MIDPOINT_PERCENT,
+    TIMELINE_AREA_START_SECONDS,
     ExportSettings,
     ProgressEvent,
 )
@@ -43,6 +48,7 @@ from ..subtitles import (
     SHORT_ANIMATION_OPTIONS,
     normalize_subtitle_animation,
 )
+from ..timeline_areas import TIMELINE_AREA_LABELS, normalize_timeline_area, timeline_area_label
 from ..paths import ensure_project_directories, locate_ffmpeg, project_root
 from ..project_order import ProjectOrderStore
 from ..settings_store import SettingsStore
@@ -111,6 +117,26 @@ def _visual_section_spin(default: float, tooltip: str) -> QDoubleSpinBox:
     spin.setSingleStep(0.1)
     spin.setDecimals(1)
     spin.setSuffix(" sec")
+    spin.setToolTip(tooltip)
+    spin.setValue(default)
+    return spin
+
+
+#: Authoritative folder path and its soft timeline area role travel in item
+#: data; the visible text additionally shows the role so it stays understandable.
+#: Plain integers (32 == ``Qt.UserRole``, 33 == ``Qt.UserRole + 1``) instead of
+#: enum arithmetic, so the roles work with every PySide6 enum flavor.
+FOLDER_PATH_ROLE = 32
+FOLDER_AREA_ROLE = 33
+
+
+def _timeline_area_spin(default: float, tooltip: str, suffix: str, maximum: float) -> QDoubleSpinBox:
+    """One spin box for a soft timeline-area target (seconds or percent)."""
+    spin = QDoubleSpinBox()
+    spin.setRange(0.0, maximum)
+    spin.setSingleStep(1.0 if suffix == " %" else 0.5)
+    spin.setDecimals(0 if suffix == " %" else 1)
+    spin.setSuffix(suffix)
     spin.setToolTip(tooltip)
     spin.setValue(default)
     return spin
@@ -268,10 +294,33 @@ class MainWindow(QMainWindow):
         self.add_folder_button.clicked.connect(self._add_source_folder)
         self.remove_folder_button.clicked.connect(self._remove_source_folder)
         self.clear_folders_button.clicked.connect(self._clear_source_folders)
+        # Soft timeline area role of the selected folder. The role only decides
+        # which approximate part of the timeline a folder is used for; the order
+        # inside the role stays exactly the configured project order.
+        self.folder_area_combo = QComboBox()
+        self.folder_area_combo.addItem("No area role", "")
+        for area_key, area_label in TIMELINE_AREA_LABELS.items():
+            self.folder_area_combo.addItem(area_label, area_key)
+        self.folder_area_combo.setToolTip(
+            "Timeline area role of the selected configured folder.\n"
+            "1. Start & End: beginning and ending of the Long-Form video.\n"
+            "2. Start to Middle: earlier/main portion up to the midpoint target.\n"
+            "3. Middle to End: later/main portion up to the end reserve.\n"
+            "All boundaries are soft targets - a clip always completes first and "
+            "is never cut. YouTube Shorts use Area 1 + Area 2 only."
+        )
+        self.set_folder_area_button = QPushButton("Set Role")
+        self.set_folder_area_button.setToolTip(
+            "Assign the selected role to the folder highlighted in the list above."
+        )
+        self.set_folder_area_button.clicked.connect(self._apply_folder_area)
         folder_buttons = QHBoxLayout()
         folder_buttons.addWidget(self.add_folder_button)
         folder_buttons.addWidget(self.remove_folder_button)
         folder_buttons.addWidget(self.clear_folders_button)
+        folder_buttons.addWidget(QLabel("Role:"))
+        folder_buttons.addWidget(self.folder_area_combo)
+        folder_buttons.addWidget(self.set_folder_area_button)
         io_layout.addWidget(QLabel("Configured Video Folders"), 1, 0, Qt.AlignTop)
         io_layout.addWidget(self.source_folders_list, 1, 1, 1, 2)
         io_layout.addLayout(folder_buttons, 2, 1, 1, 2)
@@ -290,9 +339,48 @@ class MainWindow(QMainWindow):
         io_layout.addWidget(QLabel("Output Folder"), 4, 0)
         io_layout.addWidget(self.output_edit, 4, 1)
         io_layout.addWidget(browse_output, 4, 2)
+        # Soft timeline-area targets for the configured folder roles.
+        self.area_start_spin = _timeline_area_spin(
+            TIMELINE_AREA_START_SECONDS,
+            "Start Zone Target: approximate length of the leading "
+            "'1. Start & End' zone. Soft target - the current clip always "
+            "completes first, so the zone may end later and no clip is cut.",
+            " sec", MAX_TIMELINE_AREA_SECONDS,
+        )
+        self.area_midpoint_spin = _timeline_area_spin(
+            TIMELINE_AREA_MIDPOINT_PERCENT,
+            "Midpoint Target: approximate position (percent of the output "
+            "duration) where '2. Start to Middle' hands over to "
+            "'3. Middle to End'. Soft target only.",
+            " %", 100.0,
+        )
+        self.area_end_spin = _timeline_area_spin(
+            TIMELINE_AREA_END_SECONDS,
+            "End Zone Target: approximate length of the trailing "
+            "'1. Start & End' zone. Soft target - clips are never cut to fit it.",
+            " sec", MAX_TIMELINE_AREA_SECONDS,
+        )
+        self.shorts_allow_area3_check = QCheckBox("Allow '3. Middle to End' material in Shorts")
+        self.shorts_allow_area3_check.setChecked(SHORTS_ALLOW_AREA_MIDDLE_END)
+        self.shorts_allow_area3_check.setToolTip(
+            "By default every YouTube Short draws only from '1. Start & End' and "
+            "'2. Start to Middle'. Enable this to let Shorts also use the later "
+            "main pool. Long-Form ordering is never affected by this checkbox."
+        )
+        area_row = QHBoxLayout()
+        area_row.addWidget(QLabel("Start Zone"))
+        area_row.addWidget(self.area_start_spin)
+        area_row.addWidget(QLabel("Midpoint"))
+        area_row.addWidget(self.area_midpoint_spin)
+        area_row.addWidget(QLabel("End Zone"))
+        area_row.addWidget(self.area_end_spin)
+        area_row.addStretch(1)
+        io_layout.addWidget(QLabel("Timeline Areas"), 5, 0, Qt.AlignTop)
+        io_layout.addLayout(area_row, 5, 1, 1, 2)
+        io_layout.addWidget(self.shorts_allow_area3_check, 6, 1, 1, 2)
         drop_hint = QLabel("Add one or more configured folders; the legacy root scans its immediate files only. MP4, MOV, MKV, AVI, WebM, M4V …")
         drop_hint.setObjectName("dropHint")
-        io_layout.addWidget(drop_hint, 5, 0, 1, 3)
+        io_layout.addWidget(drop_hint, 7, 0, 1, 3)
         outer.addWidget(io_group)
 
         audio_group = QGroupBox("2 · Audio & Script")
@@ -1214,9 +1302,19 @@ class MainWindow(QMainWindow):
     def _load_settings_inner(self) -> None:
         self.input_edit.setText(str(self.root / "input"))
         self.source_folders_list.clear()
+        saved_areas = dict(getattr(self.saved, "source_folder_areas", {}) or {})
         for value in list(getattr(self.saved, "source_folders", []) or []):
             path = Path(value).expanduser().resolve()
-            self.source_folders_list.addItem(QListWidgetItem(str(path)))
+            area = saved_areas.get(str(path), saved_areas.get(str(value), ""))
+            self.source_folders_list.addItem(self._folder_item(str(path), area))
+        self.area_start_spin.setValue(float(getattr(
+            self.saved, "timeline_area_start_seconds", TIMELINE_AREA_START_SECONDS)))
+        self.area_midpoint_spin.setValue(float(getattr(
+            self.saved, "timeline_area_midpoint_percent", TIMELINE_AREA_MIDPOINT_PERCENT)))
+        self.area_end_spin.setValue(float(getattr(
+            self.saved, "timeline_area_end_seconds", TIMELINE_AREA_END_SECONDS)))
+        self.shorts_allow_area3_check.setChecked(bool(getattr(
+            self.saved, "shorts_allow_area_middle_end", SHORTS_ALLOW_AREA_MIDDLE_END)))
         saved_mode = normalize_video_order_mode(
             getattr(self.saved, "video_order_mode", VIDEO_ORDER_NATURAL)
         )
@@ -1528,6 +1626,13 @@ class MainWindow(QMainWindow):
         return ExportSettings(
             export_mode=export_mode,
             source_folders=self._configured_source_folders(),
+            # Soft timeline-area source ordering. An empty mapping keeps the
+            # historical project order byte-identical.
+            source_folder_areas=self._configured_folder_areas(),
+            timeline_area_start_seconds=float(self.area_start_spin.value()),
+            timeline_area_end_seconds=float(self.area_end_spin.value()),
+            timeline_area_midpoint_percent=float(self.area_midpoint_spin.value()),
+            shorts_allow_area_middle_end=bool(self.shorts_allow_area3_check.isChecked()),
             video_order_mode=normalize_video_order_mode(
                 getattr(self, "video_order_mode", self.video_order_combo.currentData())
             ),
@@ -2064,16 +2169,67 @@ class MainWindow(QMainWindow):
         layout.addWidget(close, alignment=Qt.AlignRight)
         dialog.exec()
 
+    @staticmethod
+    def _folder_display_text(folder: str, area: str) -> str:
+        return f"{folder}   ·   {timeline_area_label(area)}"
+
+    def _folder_item(self, folder: str, area: object = "") -> QListWidgetItem:
+        """One configured folder row; path and role travel in item data.
+
+        The item is fully populated *before* it is added to the list, so no
+        ``itemChanged`` signal fires while settings are being loaded.
+        """
+        role = normalize_timeline_area(area)
+        item = QListWidgetItem(self._folder_display_text(folder, role))
+        item.setData(FOLDER_PATH_ROLE, str(folder))
+        item.setData(FOLDER_AREA_ROLE, role)
+        item.setToolTip(f"{folder}\nRole: {timeline_area_label(role)}")
+        return item
+
     def _configured_source_folders(self) -> list[str]:
         """Return the persisted GUI folder list in visible order."""
         if not hasattr(self, "source_folders_list"):
             return []
         values: list[str] = []
         for row in range(self.source_folders_list.count()):
-            value = self.source_folders_list.item(row).text().strip()
+            item = self.source_folders_list.item(row)
+            # The authoritative path lives in the item data; the visible text
+            # additionally carries the role label.
+            value = str(item.data(FOLDER_PATH_ROLE) or item.text()).strip()
             if value:
                 values.append(str(Path(value).expanduser().resolve()))
         return values
+
+    def _configured_folder_areas(self) -> dict[str, str]:
+        """Folder → soft timeline area role, exactly as shown in the list."""
+        if not hasattr(self, "source_folders_list"):
+            return {}
+        areas: dict[str, str] = {}
+        for row in range(self.source_folders_list.count()):
+            item = self.source_folders_list.item(row)
+            folder = str(item.data(FOLDER_PATH_ROLE) or "").strip()
+            area = normalize_timeline_area(item.data(FOLDER_AREA_ROLE))
+            if folder and area:
+                areas[str(Path(folder).expanduser().resolve())] = area
+        return areas
+
+    def _apply_folder_area(self) -> None:
+        """Assign the selected role to the folder highlighted in the list."""
+        if self.busy:
+            return
+        row = self.source_folders_list.currentRow()
+        if row < 0:
+            return
+        item = self.source_folders_list.item(row)
+        folder = str(item.data(FOLDER_PATH_ROLE) or "").strip()
+        if not folder:
+            return
+        area = normalize_timeline_area(self.folder_area_combo.currentData())
+        item.setData(FOLDER_AREA_ROLE, area)
+        item.setText(self._folder_display_text(folder, area))
+        item.setToolTip(f"{folder}\nRole: {timeline_area_label(area)}")
+        self._save_project()
+        self._update_pool_status()
 
     def _add_source_folder(self) -> None:
         if self.busy:
@@ -2083,7 +2239,11 @@ class MainWindow(QMainWindow):
             return
         value = str(Path(selected).expanduser().resolve())
         if value not in self._configured_source_folders():
-            self.source_folders_list.addItem(QListWidgetItem(value))
+            # A newly added folder receives the role currently selected in the
+            # combo, so "pick role → Add Folder" needs no second click.
+            self.source_folders_list.addItem(
+                self._folder_item(value, self.folder_area_combo.currentData())
+            )
             self._save_project()
             self._clear_stale_analysis(self.input_edit.text())
 
@@ -2509,6 +2669,9 @@ class MainWindow(QMainWindow):
             # the folder alternator again would make pool status disagree with
             # the sequence that Stage 1 receives.
             folder_aware=False,
+            # The same soft timeline-area ordering the render applies, so the
+            # status line and the Stage-1 sequence never disagree.
+            timeline_area_settings=settings,
         )
         self.pool_status_label.setText(status.summary_line)
 

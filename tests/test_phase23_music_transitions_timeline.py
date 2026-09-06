@@ -746,17 +746,21 @@ def test_music_volumes_only_matter_while_a_track_is_really_mixed(tmp_path):
 
 
 def test_the_schema_bump_makes_old_entries_unreachable(tmp_path):
-    assert FINGERPRINT_SCHEMA == 4
+    # 5: configured folders can carry a soft timeline-area role plus zone
+    # targets, which change WHICH clips a render selects, so a schema-4 entry
+    # (built without that source ordering) can never be reused silently.
+    assert FINGERPRINT_SCHEMA == 5
     media = [fake_media(str(tmp_path / "clip.mp4"), duration=4.0)]
     settings = ExportSettings(resolution="320x180", workflow_stage="main")
     resolved = resolve_export(media, settings)
     digest, payload = stage1_fingerprint(media, settings, resolved)
-    assert payload["schema"] == 4
+    assert payload["schema"] == 5
     # Fail closed: a payload from the previous schema (music stopped at the
-    # spoken end) can never produce the current digest, so it cannot be reused.
+    # spoken end, no timeline-area source ordering) can never produce the
+    # current digest, so it cannot be reused.
     stale = dict(payload)
-    stale["schema"] = 3
-    assert build_stage1_payload(media, settings, resolved)["schema"] == 4
+    stale["schema"] = 4
+    assert build_stage1_payload(media, settings, resolved)["schema"] == 5
     assert json.dumps(stale, sort_keys=True) != json.dumps(payload, sort_keys=True)
     assert digest and isinstance(digest, str)
 

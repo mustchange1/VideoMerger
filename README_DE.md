@@ -459,7 +459,7 @@ Ein Standard-Long-Form mit 3,0 s Voiceover ist damit exakt `6,000 s`
 - **Cache-Identität.** Alle vier Abschnittsdauern, beide Musik-Lautstärken, alle
   vier Übergangswerte, der Opening Effect, die Untertitel-Animations-/Profilwerte
   und die effektive Medienreihenfolge sind Teil des Stage-1-Fingerprints
-  (`FINGERPRINT_SCHEMA = 4`). Einträge älterer Schemata werden nie
+  (`FINGERPRINT_SCHEMA = 5`). Einträge älterer Schemata werden nie
   wiederverwendet (Fail-closed), sodass eine Änderung von Musik-Lautstärke oder
   Übergang immer neu rendert.
 - **Logging, einmal pro Auftrag:** `Timeline: Intro 1.500 s (visual only) ·
@@ -521,3 +521,95 @@ Untertitel-Erzeugung, eine ungültige Untertitel-Zeitachse, fehlende oder leere
 SRT/VTT/kanonische Timeline, ein fehlgeschlagener Burn-in-Durchlauf und jeder
 FFprobe-Validierungsfehler behalten die strikte Klassifizierung
 `SUBTITLE GENERATION FAILED […]`.
+
+## Weiche Timeline-Areas – welcher Quellenordner wo läuft
+
+Qualität bleibt eine **Ordner**-Entscheidung. Dieses Feature ändert ausschließlich,
+*welcher konfigurierte Ordner an welcher ungefähren Stelle der Timeline verwendet
+wird*. Es analysiert nichts: kein Scoring, keine Bewegungs- oder Qualitätsmessung,
+keine semantische Klassifikation, kein Ranking einzelner Clips, keine KI/CV.
+Projektreihenfolge (Natural / Alphabetical / Random / Manual, inklusive
+Legacy-Input-Root-Priorität und Ordner-Alternierung) und jede Randomisierung
+innerhalb einer Quelle bleiben exakt unverändert – der Scheduler gruppiert nur
+**ganze** Clips in einem O(n)-Durchlauf um.
+
+Pro konfiguriertem Video-Ordner ist eine von drei Rollen möglich (Gruppe
+`1 · Ordner`: **Role**-Combo plus **Set Role** für die markierte Zeile; ein neu
+hinzugefügter Ordner übernimmt die gerade gewählte Rolle):
+
+| Rolle | Vorgesehen für |
+| --- | --- |
+| `1. Start & End` | Anfang **und** Ende des Long-Form-Videos |
+| `2. Start to Middle` | den früheren/Hauptteil bis zum Midpoint-Ziel |
+| `3. Middle to End` | den späteren/Hauptteil bis zur End-Reserve |
+
+Mehrere Ordner dürfen sich eine Rolle teilen; sie behalten ihre konfigurierte
+Reihenfolge und werden nie gegeneinander gewichtet.
+
+- **Jede Grenze ist ein weiches Ziel.** Der aktuelle Clip läuft immer zuerst zu
+  Ende, die nächste Rolle beginnt an dieser natürlichen Clip-Grenze – ein
+  `23,7 s`-Clip erfüllt ein `20 s`-Startziel. Kein Clip wird je geschnitten,
+  gekürzt oder geteilt, um eine Zone zu treffen; die Toleranz ist der Clip
+  selbst, kein versteckter zweiter Parameter.
+- **Konfigurierbar und persistent** (mit abwärtskompatiblen Defaults):
+  Start-Zonen-Ziel `20 s`, End-Zonen-Ziel `20 s` (beide als ≈10–30 s gedacht),
+  Midpoint-Ziel `50 %` – der Midpoint ist eine Einstellung, nie hart kodiert.
+- **Sehr kurze Ausgaben** verkleinern beide Reserven anteilig, statt sich zu
+  überlappen oder zu fehlschlagen; der Midpoint bleibt stets dazwischen,
+  komplette Clips und Übergänge bleiben erhalten.
+- **Knappes `1. Start & End`-Material wird auf beide Enden verteilt**: Reicht
+  die Rolle nicht für beide Reserven, werden ihre Clips entsprechend den
+  konfigurierten Zielen aufgeteilt, statt dass die führende Zone alles verbraucht
+  und das Ende seine Rolle verliert.
+- **Eine Zone wird nie mit Clips einer anderen Rolle aufgefüllt.** Ist eine Rolle
+  leer, endet ihre Zone an der natürlichen Clip-Grenze und die folgende Rolle
+  beginnt dort; was die Zonen nicht verbraucht haben, behält seine
+  Eingangsreihenfolge am Ende der Sequenz. Ordner ohne Rolle bleiben damit die
+  allgemeine Reserve, die sie immer waren, und nichts geht verloren.
+- **Zonenziele sind Positionen auf der gerenderten Timeline**, daher werden Clips
+  mit dem kanonischen `Duration Before Merge`-Multiplikator (`0,70x`-Default)
+  gemessen. Clip-Dauern selbst werden nie verändert.
+- **Legacy Input Root** bleibt die optionale Legacy-Quelle und wird nie in das
+  Drei-Rollen-System gezwungen.
+- **YouTube Shorts** nutzen nur `1. Start & End` + `2. Start to Middle`;
+  `3. Middle to End` ist ausgeschlossen. Die Checkbox *Allow '3. Middle to End'
+  material in Shorts* schaltet ihn frei und wird separat gespeichert, die
+  Shorts-Politik ist also unabhängig vom Long-Form. Ein Short behält seine
+  historische Reihenfolge und seinen Without-Replacement-Pool-Cursor – nur sein
+  Quellen-**Pool** wird eingeschränkt, die Shorts-Pipeline selbst ist unverändert.
+  Würde der Ausschluss den Pool leeren, wird stattdessen der volle Pool genutzt.
+- **Keine Rolle konfiguriert = byte-identisches Verhalten.** Ohne Rolle (oder ohne
+  voiceover-getriebenes Ziel) ist der Scheduler ein No-op und die historische
+  Sequenz wird unverändert gerendert.
+
+Rendering, FFmpeg-Befehlsaufbau, Encoding/CRF/Bitrate/Codec, Übergänge, Blur,
+Untertitel (ASR/Transkription, Alignment, Timing, Styling, Animation, Burn-in),
+Voiceover- und Musik-Timing/-Lautstärke/-Looping/-Ducking/-Stream-Mapping,
+Originalaudio sowie Intro-/Outro-Rendering bleiben unberührt: Das Feature lebt
+ausschließlich auf der Clip-/Quellenauswahl-Ebene.
+
+GUI: Gruppe `1 · Ordner` – Zeilen zeigen `Pfad · Rolle`, **Role**-Combo und
+**Set Role** weisen zu, die Zeile `Timeline Areas` enthält Start Zone / Midpoint /
+End Zone plus die Shorts-Checkbox. Die Video-Pool-Statuszeile rechnet mit
+derselben Reihenfolge wie der Render, Status und Stage 1 widersprechen sich also
+nie. Die Diagnostics nennen die aufgelösten Rollen, die weichen Ziele, die
+Shorts-Politik und wie viele analysierte Clips in welche Area fallen.
+
+CLI: `--folder-area ORDNER=AREA` (wiederholbar; `AREA` akzeptiert `1|2|3`,
+`Start & End`, `2) Start to Middle`, `area_3`, die kanonischen Schlüssel, …),
+`--area-start`, `--area-end`, `--area-midpoint` und `--shorts-allow-area3`.
+
+Alle fünf Einstellungen werden in der Projektdatei gespeichert, überstehen ältere
+Projektdateien (fehlende Felder fallen auf die dokumentierten Defaults zurück,
+unbrauchbare oder widersprüchliche Werte werden zu „keine Rolle" statt zu einem
+Absturz) und sind Teil der Render-Cache-Identität (`FINGERPRINT_SCHEMA = 5`),
+eine andere Quellenreihenfolge rendert also immer neu. Eine Log-Zeile pro Auftrag
+zeigt, was wirklich passiert ist, z. B. `Timeline areas (soft targets): 0.0-2.0 s
+= 1. Start & End · … · 5 clip(s) re-grouped, none cut`, für den Shorts-Pool
+`Timeline areas (Shorts): 3. Middle to End excluded → 4 of 6 clip(s) eligible
+(1. Start & End + 2. Start to Middle).`
+
+Eine qualitätsneutrale Render-Optimierung war weder nötig noch hinreichend
+sicher und wurde daher nicht ergänzt: Der Scheduler ist ein einziger
+Permutationsdurchlauf über bereits analysierte Metadaten und ändert keinen
+Render-Graphen, keinen Filter und keinen Encoding-Parameter.

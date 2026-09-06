@@ -241,7 +241,7 @@ when a track is configured.
 - **Opening Effect (Main Video)** — an optional subtle entrance in group `4d`: `None` (default), `Gentle Zoom In`, `Gentle Zoom Out`. Peak magnification is 5 %, centred, covering the opening portion only (the visual intro, or `3 s` when there is none, never longer than the program), applied to the assembled timeline *before* the subtitle burn-in so captions stay crisp, continuous across chunked rendering, and identity afterwards. It adds and drops no frame, so the voiceover-driven duration, sync and captions are untouched. Shorts never use it. There is no animation editor by design.
 - **Legacy Input Root priority (Random order only)** — while **Random** is active, the first three clips of the effective sequence are always drawn from the Legacy Input Root (the configured input folder): distinct where possible, shuffled among themselves, and reserved *before* the rest of the sequence is built. Clip 4 onwards keeps the unchanged full random pool (folder-aware alternation, duplicate/exhaustion rules, seeded determinism). Fewer than three eligible clips reserve what exists and then fill normally; an empty or missing root changes nothing at all — not even the random sequence, so existing projects stay bit-identical. Natural, Alphabetical and Manual are not affected. One log line names the reserved clips.
 
-GUI: group **`4d · Timeline – Visual Intro / Outro / Opening Effect`** holds the four duration spins and the opening-effect selection; the subtitle animation combos are built per collection (Long-Form / Shorts) with their own defaults, and switching to 9:16 selects the Shorts default automatically. All new values persist in the project file, survive old project files (missing fields fall back to the documented defaults, deprecated animations migrate, unknown fields are ignored) and are part of the render-cache identity (fingerprint schema `4`), so changing any of them — including the per-output music volumes and transition values below — re-renders instead of reusing a stale cache entry.
+GUI: group **`4d · Timeline – Visual Intro / Outro / Opening Effect`** holds the four duration spins and the opening-effect selection; the subtitle animation combos are built per collection (Long-Form / Shorts) with their own defaults, and switching to 9:16 selects the Shorts default automatically. All new values persist in the project file, survive old project files (missing fields fall back to the documented defaults, deprecated animations migrate, unknown fields are ignored) and are part of the render-cache identity (fingerprint schema `5`), so changing any of them — including the per-output music volumes and transition values below — re-renders instead of reusing a stale cache entry.
 
 CLI: `--long-intro`, `--long-outro` (alias of `--pause`/`--end-padding`), `--short-intro`, `--short-outro` and `--opening-effect none|zoom_in|zoom_out`.
 
@@ -294,7 +294,7 @@ So a default Long-Form with a 3.0 s voiceover is exactly `6.000 s`
 - **Cache identity.** All four section durations, both music volumes, all four
   transition values, the opening effect, the subtitle animation/profile values
   and the effective media order are part of the Stage-1 fingerprint
-  (`FINGERPRINT_SCHEMA = 4`). Entries written by an older schema are never reused
+  (`FINGERPRINT_SCHEMA = 5`). Entries written by an older schema are never reused
   (fail-closed), so a music-volume or transition change always re-renders.
 - **Logging, once per job:** `Timeline: Intro 1.500 s (visual only) · Voiceover
   start 1.500 s · Spoken 3.000 s · Spoken end 4.500 s · Outro 1.500 s (visual
@@ -350,3 +350,95 @@ Genuine failures still fail hard and still clean up: subtitle creation errors, a
 invalid subtitle timeline, missing or empty SRT/VTT/canonical-timeline artifacts,
 a failed burn-in pass and any FFprobe validation error keep the strict
 `SUBTITLE GENERATION FAILED […]` classification.
+
+## Soft timeline areas — which source folder plays where
+
+Quality stays a **folder** decision. This feature changes only *which configured
+folder is used at which approximate part of the timeline*. It performs no
+analysis of any kind: no scoring, no motion or quality measurement, no semantic
+classification, no ranking of single clips, no AI/CV. The project order
+(Natural / Alphabetical / Random / Manual, including the Legacy Input Root
+priority and folder alternation) and any randomization inside a source stay
+exactly as they are — the scheduler only re-groups **whole** clips in one O(n)
+pass.
+
+Three roles can be assigned per configured video folder (group `1 · Folders`:
+the **Role** combo plus **Set Role** for the highlighted row; a newly added
+folder receives the role currently selected in the combo):
+
+| Role | Intended for |
+| --- | --- |
+| `1. Start & End` | the beginning **and** the ending of the Long-Form video |
+| `2. Start to Middle` | the earlier/main portion, up to the midpoint target |
+| `3. Middle to End` | the later/main portion, up to the end reserve |
+
+Several folders may share one role; they simply keep their configured order and
+are never weighted against each other.
+
+- **Every boundary is a soft target.** The current clip always completes first
+  and the next role starts at that natural clip boundary, so a `23.7 s` clip
+  satisfies a `20 s` start target. No clip is ever cut, trimmed or split to hit
+  a zone — the tolerance is the clip itself, not a hidden second parameter.
+- **Configurable and persisted** (with backward-compatible defaults): Start Zone
+  Target `20 s`, End Zone Target `20 s` (both meant as ≈10–30 s), Midpoint
+  Target `50 %` — the midpoint is a setting, never hard-coded.
+- **Very short outputs** shrink both reserves proportionally instead of
+  overlapping or failing; the midpoint always stays between them, complete clips
+  and transitions are preserved.
+- **Scarce `1. Start & End` material is shared between both ends**: when the
+  role cannot fill its two reserves, its clips are split according to the
+  configured targets instead of the leading zone consuming everything and the
+  ending losing its role.
+- **A zone is never padded with another role's clips.** When a role runs out,
+  its zone ends at the natural clip boundary and the following role starts
+  there; whatever the zones did not consume keeps its incoming order at the end
+  of the sequence, so folders without a role remain the general reserve they
+  always were and nothing is ever dropped.
+- **Zone targets are positions on the rendered timeline**, therefore clips are
+  measured with the project's canonical `Duration Before Merge` multiplier
+  (`0.70x` default). Clip durations themselves are never modified.
+- **Legacy Input Root** keeps working as the optional legacy source it is and is
+  never forced into the three roles.
+- **YouTube Shorts** draw from `1. Start & End` + `2. Start to Middle` only;
+  `3. Middle to End` is excluded. The checkbox *Allow '3. Middle to End'
+  material in Shorts* opts in and is persisted separately, so the Shorts policy
+  is independent of Long-Form. A Short keeps its historical order and its
+  without-replacement pool cursor — only its source **pool** is restricted, the
+  Shorts pipeline itself is unchanged. If excluding Area 3 would empty the pool,
+  the full pool is used instead.
+- **No role configured = byte-identical behavior.** Without any role (or without
+  a voiceover-driven target) the scheduler is a no-op and the historical
+  sequence is rendered unchanged.
+
+Rendering, FFmpeg command building, encoding/CRF/bitrate/codec, transitions,
+blur, subtitles (ASR/transcription, alignment, timing, styling, animation,
+burn-in), voiceover and music timing/volume/looping/ducking/stream mapping,
+original audio, and intro/outro rendering are untouched: the feature lives
+purely at the clip/source-selection layer.
+
+GUI: group `1 · Folders` — folder rows show `path · role`, the **Role** combo
+and **Set Role** assign it, and the `Timeline Areas` row holds Start Zone /
+Midpoint / End Zone plus the Shorts checkbox. The video-pool status line uses the
+same ordering as the render, so status and Stage 1 never disagree. Diagnostics
+reports the resolved roles, the soft targets, the Shorts policy and how many
+analyzed clips fall into each area.
+
+CLI: `--folder-area FOLDER=AREA` (repeatable; `AREA` accepts `1|2|3`,
+`Start & End`, `2) Start to Middle`, `area_3`, the canonical keys, …),
+`--area-start`, `--area-end`, `--area-midpoint` and `--shorts-allow-area3`.
+
+All five settings persist in the project file, survive older project files
+(missing fields fall back to the documented defaults, unusable or contradictory
+values degrade to "no role" instead of crashing) and are part of the
+render-cache identity (`FINGERPRINT_SCHEMA = 5`), so a different source ordering
+always re-renders instead of reusing a stale entry. One log line per job states
+what really happened, e.g. `Timeline areas (soft targets): 0.0-2.0 s =
+1. Start & End · 2.0-6.8 s = 2. Start to Middle · 6.8-11.5 s = 3. Middle to End
+· 11.5-13.5 s = 1. Start & End · clips per area: 2/2/2 + 0 unassigned ·
+5 clip(s) re-grouped, none cut`, and for the Shorts pool `Timeline areas
+(Shorts): 3. Middle to End excluded → 4 of 6 clip(s) eligible (1. Start & End +
+2. Start to Middle).`
+
+No quality-neutral render optimization was necessary or sufficiently safe, so
+none was added: the scheduler is a single permutation pass over already analyzed
+metadata and changes no render graph, no filter and no encoding parameter.

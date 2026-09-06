@@ -617,9 +617,11 @@ def test_every_new_timeline_setting_changes_the_stage1_fingerprint(tmp_path, fie
     changed = replace(settings, **{field: value})
     assert stage1_fingerprint(media, changed, resolved)[0] != baseline, field
     # 4: background music covers the complete video now and Long-Form/Shorts
-    # received independent music volume and transition settings, so a schema-3
-    # entry can never be reused silently.
-    assert FINGERPRINT_SCHEMA == 4
+    # received independent music volume and transition settings. 5: configured
+    # folders can carry a soft timeline-area role plus zone targets, which
+    # change WHICH clips a render selects. A schema-4 entry was built without
+    # that source ordering and can never be reused silently.
+    assert FINGERPRINT_SCHEMA == 5
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import platform
 import subprocess
@@ -268,6 +269,87 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
         ))
     except VideoMergerError as exc:
         items.append(DiagnosticItem("Output Music & Transitions", False, str(exc)))
+    # Soft timeline-area source ordering. Reporting the resolved roles and zone
+    # targets makes a wrong folder assignment visible before the export starts;
+    # it never changes an order and performs no analysis of any clip.
+    try:
+        from .models import (
+            MAX_TIMELINE_AREA_SECONDS,
+            SHORTS_ALLOW_AREA_MIDDLE_END,
+            TIMELINE_AREA_END_SECONDS,
+            TIMELINE_AREA_MIDPOINT_PERCENT,
+            TIMELINE_AREA_START_SECONDS,
+        )
+        from .timeline_areas import (
+            AREA_MIDDLE_END,
+            AREA_START_END,
+            AREA_START_MIDDLE,
+            TIMELINE_AREA_LABELS,
+            area_of,
+            folder_area_map,
+        )
+
+        area_map = folder_area_map(settings)
+        if not area_map:
+            items.append(DiagnosticItem(
+                "Timeline Areas", True,
+                "not configured · the historical project order stays unchanged",
+            ))
+        else:
+            def _number(value, default):
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    return default
+                if not math.isfinite(number) or number < 0:
+                    return default
+                return min(number, MAX_TIMELINE_AREA_SECONDS)
+
+            start_zone = _number(
+                getattr(settings, "timeline_area_start_seconds", TIMELINE_AREA_START_SECONDS),
+                TIMELINE_AREA_START_SECONDS,
+            )
+            end_zone = _number(
+                getattr(settings, "timeline_area_end_seconds", TIMELINE_AREA_END_SECONDS),
+                TIMELINE_AREA_END_SECONDS,
+            )
+            midpoint = min(100.0, max(0.0, float(getattr(
+                settings, "timeline_area_midpoint_percent", TIMELINE_AREA_MIDPOINT_PERCENT,
+            ))))
+            allow_area3 = bool(getattr(
+                settings, "shorts_allow_area_middle_end", SHORTS_ALLOW_AREA_MIDDLE_END,
+            ))
+            counts = {area: 0 for area in TIMELINE_AREA_LABELS}
+            for area in area_map.values():
+                counts[area] += 1
+            detail = (
+                f"{len(area_map)} folder(s) with a role · "
+                + " · ".join(
+                    f"{TIMELINE_AREA_LABELS[area]}: {counts[area]}"
+                    for area in (AREA_START_END, AREA_START_MIDDLE, AREA_MIDDLE_END)
+                )
+                + f" · soft targets: start {start_zone:.1f} s, midpoint {midpoint:.0f} %, "
+                f"end {end_zone:.1f} s · clips are never cut"
+                + " · Shorts: "
+                + ("Area 1 + 2 + 3 (explicitly allowed)" if allow_area3 else "Area 1 + 2 only")
+            )
+            if media:
+                per_area = {area: 0 for area in TIMELINE_AREA_LABELS}
+                unassigned = 0
+                for item in media:
+                    area = area_of(item, area_map)
+                    if area:
+                        per_area[area] += 1
+                    else:
+                        unassigned += 1
+                detail += (
+                    f" · analyzed clips: {per_area[AREA_START_END]}/{per_area[AREA_START_MIDDLE]}"
+                    f"/{per_area[AREA_MIDDLE_END]}"
+                    + (f" + {unassigned} without a role (general reserve)" if unassigned else "")
+                )
+            items.append(DiagnosticItem("Timeline Areas", True, detail))
+    except (TypeError, ValueError, VideoMergerError) as exc:
+        items.append(DiagnosticItem("Timeline Areas", False, str(exc)))
     if media:
         visual = sum(item.source_duration or item.duration for item in media)
         items.append(DiagnosticItem(

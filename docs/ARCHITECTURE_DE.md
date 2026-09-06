@@ -303,7 +303,7 @@ verwenden. Alle Resolver klemmen und validieren (0–150 %, ≥ 0 s, endlich) un
 werfen `VideoMergerError` mit lesbarem Label, den `diagnostics.py` im Eintrag
 „Output Music & Transitions“ fail-closed anzeigt, statt ihn zu verschlucken.
 
-`render_cache.FINGERPRINT_SCHEMA` steht auf `4`: Die Stage-1-Identität enthält
+`render_cache.FINGERPRINT_SCHEMA` steht auf `5`: Die Stage-1-Identität enthält
 die vier Abschnittsdauern, beide Musik-Lautstärken (nur bei konfigurierter Spur)
 und die vier Übergangswerte (unbedingt) neben Opening Effect,
 Animations-/Profilwerten und der effektiven Medienreihenfolge. `load()` bleibt
@@ -349,3 +349,99 @@ weil der letzte Zeitstempel aus der Wort-Zeitleiste stets am oder hinter dem
 Dateiende liegen konnte. Echte Fehler – Untertitel-Erzeugung, ungültige
 Zeitachse, fehlende/leere Artefakte, Burn-in, FFprobe-Validierung – behalten die
 strikte Klassifizierung und räumen weiterhin auf.
+
+## Phase 24: Weiche Timeline-Areas (Quellenreihenfolge)
+
+### Schicht und Abgrenzung
+
+`app/video_merger/timeline_areas.py` ist die einzige neue Schicht: Sie liegt
+**vor** `timeline.fit_media_to_duration` und **nach**
+`video_pool.order_media_for_video_order`, entscheidet also ausschließlich, welche
+konfigurierte Quelle an welcher ungefähren Timeline-Position verwendet wird.
+Render-Graphen, Filterketten, Encoding, Übergänge, Untertitel, Voiceover, Musik,
+Originalaudio und Intro-/Outro-Rendering bleiben unberührt. Das Modul enthält
+bewusst keinerlei Analyse (kein Scoring, keine Bewegungs-/Qualitätsmessung, keine
+Semantik, kein Ranking, keine KI/CV) und kostet einen O(n)-Permutationsdurchlauf
+über bereits analysierte Metadaten.
+
+### Datenmodell und Normalisierung
+
+`ExportSettings` erhält fünf Felder: `source_folder_areas`
+(`dict[str, str]`, Ordnerschlüssel → Rolle), `timeline_area_start_seconds`
+(`20.0`), `timeline_area_end_seconds` (`20.0`),
+`timeline_area_midpoint_percent` (`50.0`) und
+`shorts_allow_area_middle_end` (`False`); dazu die Konstanten
+`TIMELINE_AREA_*` und `MAX_TIMELINE_AREA_SECONDS = 600.0`. Rollenkanon sind
+`area_1_start_end`, `area_2_start_middle`, `area_3_middle_end`;
+`normalize_timeline_area` akzeptiert GUI-, CLI- und handgeschriebene Aliase
+(`1`, `area 2`, `Start & End`, `2) Start to Middle`, kanonische Schlüssel) und
+liefert sonst `""` = keine Rolle. Eine nummerierte Schreibweise wird nur
+akzeptiert, wenn Nummer und Rolle übereinstimmen – `1. middle to end` ergibt
+`""` statt einer stillen Fehlzuordnung. `folder_area_map` nutzt
+`video_pool.normalize_legacy_root` als Ordnerschlüssel und
+`media_source_folder` als Clip-Identität, verworfen wird alles, was kein
+nicht-leeres dict ist.
+
+### Weiche Zonen statt harter Schnitte
+
+`area_zone_bounds(target, settings)` liefert `(start_zone, midpoint, end_start)`:
+Reserven werden auf `0.3 · target` verkleinert, sobald `start + end > 0.8 ·
+target`, der Midpoint wird zwischen beide Kanten geklemmt, alle Werte werden
+geklemmt und auf Endlichkeit geprüft (`0`/negativ/`NaN`/`inf` → Default,
+`> 600 s` → Cap). `_zone_plan` erzeugt daraus vier Zonen:
+`[0 → start] = Area 1`, `[start → midpoint] = Area 2`,
+`[midpoint → end_start] = Area 3`, `[end_start → target] = Area 1`.
+
+`order_media_by_timeline_areas` baut pro Rolle eine Queue in Eingangsreihenfolge,
+läuft die Zonen ab und nimmt jeweils **ganze** Clips: Die Uhr advance nur um
+vollständige Clip-Dauern, geprüft wird erst danach – deshalb darf ein Clip über
+ein Zonenziel hinausragen (23,7 s bei 20 s Ziel) und wird nie gekürzt.
+`_clip_seconds` misst mit dem kanonischen `Duration Before Merge`-Multiplikator
+(`timeline.duration_before_merge_value`, `0.70x`-Default, optional per
+`playback_rate` überschrieben), weil Zonenziele Positionen der *gerenderten*
+Timeline sind; Clip-Dauern werden dabei nie verändert. `_next_item` liefert nur
+aus der eigenen Rolle, sonst `None`: Eine Zone wird nie mit fremdem Material
+aufgefüllt, sondern endet an der natürlichen Clip-Grenze.
+`_area_one_start_cap` begrenzt die führende Zone ausschließlich dann, wenn das
+Material der Rolle nicht für beide Reserven reicht – Area 1 bedient Anfang *und*
+Ende, also wird knappes Material nach den konfigurierten Zielen geteilt
+(mindestens ein Clip pro Ende, nie ein Schnitt). Nicht verbrauchte Clips
+(Ordner ohne Rolle, Reste anderer Rollen) folgen anschließend in
+Eingangsreihenfolge, wodurch die allgemeine Reserve erhalten bleibt und die
+bestehende Required-Only-Auswahl unverändert entscheidet. Ohne Rolle, ohne
+positives Ziel oder mit weniger als zwei Clips ist die Funktion ein No-op und
+gibt die Eingangsliste unverändert zurück.
+
+### Shorts-Pool
+
+`shorts_area_pool` filtert Area 3 heraus (`SHORTS_TIMELINE_AREAS`), sofern
+`shorts_allow_area_middle_end` nicht gesetzt ist, und fällt auf den vollen Pool
+zurück, wenn der Filter sonst leer würde. Die Reihenfolge der verbleibenden Clips
+bleibt unangetastet, der Without-Replacement-Cursor und die gesamte
+Shorts-Erzeugung sind unverändert.
+
+### Verdrahtung
+
+`main_project.create_main` ruft den Scheduler nach einem eventuellen Pool-Take
+und **vor** `fit_media_to_duration`, gesteuert durch den neuen expliziten
+Parameter `apply_timeline_areas` (Default `True`);
+`create_youtube_exports` setzt ihn auf `kind == "long"`, weil `short_video_pool`
+nach der Vorab-Planung `None` sein kann und daher kein zuverlässiges
+Long-Form-Kriterium ist. Derselbe Orchestrator bildet `shorts_pool_media =
+shorts_area_pool(effective_media, …)` und speist damit sowohl den Laufzeit-Pool
+als auch den Planungs-Pool. `video_pool.compute_pool_status` erhält optional
+`timeline_area_settings` und wendet (lazy importiert, nur bei `target > 0`)
+dieselbe Ordnung inklusive Rate an, damit GUI-Status und Stage-1-Sequenz
+identisch entscheiden. `diagnostics.run_project_diagnostics` meldet im Eintrag
+„Timeline Areas" Rollen, weiche Ziele, Shorts-Politik und – falls Medien
+bekannt sind – die Clip-Verteilung, fail-closed bei unbrauchbaren Werten.
+
+### Persistenz und Cache-Identität
+
+`SettingsStore` braucht keine Migration: `load()` filtert unbekannte Schlüssel,
+fehlende Felder erhalten die dokumentierten Defaults, Projektdateien vor diesem
+Feature laden unverändert und bleiben ein No-op. Alle fünf Felder stehen in
+`render_cache._SETTING_FIELDS`; `json.dumps(..., sort_keys=True)` macht auch das
+dict deterministisch, sodass äquivalente Mappings dieselbe Identität ergeben.
+`FINGERPRINT_SCHEMA` steigt von `4` auf `5`, damit kein Eintrag, der ohne
+Quellenordnung entstand, still wiederverwendet wird; Stage 2 behält Schema `2`.

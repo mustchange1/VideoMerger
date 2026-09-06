@@ -53,6 +53,22 @@ SHORTS_MUSIC_VOLUME = MUSIC_VOLUME_PERCENT
 #: (``command_builder._percent_gain`` clamps to 1.5 == 150 %).
 MAX_MUSIC_VOLUME_PERCENT = 150
 
+#: Soft timeline-based source ordering ("timeline areas"). Each configured video
+#: folder can carry one of three roles - ``1. Start & End``,
+#: ``2. Start to Middle``, ``3. Middle to End`` - and the values below describe
+#: where those roles are *approximately* used on the output timeline. They are
+#: guidance for source ordering only: a clip always completes before the next
+#: role takes over, so a zone may end later than its target and no clip is ever
+#: cut to satisfy one. See :mod:`app.video_merger.timeline_areas`.
+TIMELINE_AREA_START_SECONDS = 20.0
+TIMELINE_AREA_END_SECONDS = 20.0
+TIMELINE_AREA_MIDPOINT_PERCENT = 50.0
+#: Upper bound used by the GUI spin boxes; the model accepts any finite value >= 0.
+MAX_TIMELINE_AREA_SECONDS = 600.0
+#: YouTube Shorts draw from ``1. Start & End`` + ``2. Start to Middle``. The
+#: later/main pool stays out of every Short unless this is explicitly enabled.
+SHORTS_ALLOW_AREA_MIDDLE_END = False
+
 
 @dataclass(slots=True)
 class AudioInfo:
@@ -334,9 +350,23 @@ class ExportSettings:
     # Legacy Input Root ("1 · Ordner" → Legacy Input Root). When Random order is
     # active, the first three selected clips are reserved from this folder
     # (themselves randomized), and clip 4+ returns to the normal full random
-    # pool. An empty value keeps the historical unbiased shuffle untouched.
+    # pool. An empty value keeps the historical unbiased shuffle untouched. The
+    # timeline areas below are the primary mechanism for source ordering; this
+    # field stays available for backward compatibility and keeps working as
+    # before wherever it already worked.
     legacy_input_root: str = ""
 
+    # Soft timeline-based source ordering. ``source_folder_areas`` maps a
+    # configured folder path to one timeline area role ("area_1_start_end",
+    # "area_2_start_middle", "area_3_middle_end"); several folders may share a
+    # role. An empty mapping - the default and the state of every project saved
+    # before this feature - leaves the historical project order byte-identical,
+    # and no clip is ever cut, dropped or ranked to satisfy a zone target.
+    source_folder_areas: dict[str, str] = field(default_factory=dict)
+    timeline_area_start_seconds: float = TIMELINE_AREA_START_SECONDS
+    timeline_area_end_seconds: float = TIMELINE_AREA_END_SECONDS
+    timeline_area_midpoint_percent: float = TIMELINE_AREA_MIDPOINT_PERCENT
+    shorts_allow_area_middle_end: bool = SHORTS_ALLOW_AREA_MIDDLE_END
 
     # Render-time values filled by MainProjectEngine; they are harmless if
     # persisted and are recalculated before every Stage-1 render.

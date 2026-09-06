@@ -34,7 +34,12 @@ CACHE_SCHEMA = 1
 # received independent music volume and transition settings with new defaults.
 # A cached render from schema 3 therefore contains different audio bytes and
 # possibly different transitions, and must never be reused silently.
-FINGERPRINT_SCHEMA = 4
+# 5: configured video folders can now carry a soft timeline-area role
+# (1. Start & End / 2. Start to Middle / 3. Middle to End) plus start/end zone
+# targets and a midpoint percentage, which change WHICH clips are selected for a
+# render. A schema-4 entry was built without that source ordering and must never
+# be reused silently.
+FINGERPRINT_SCHEMA = 5
 STAGE2_FINGERPRINT_SCHEMA = 2
 
 # These are the settings that can change the bytes or duration of the Stage-1
@@ -105,6 +110,14 @@ _STAGE1_SETTING_FIELDS = (
     # legacy semantics; new GUI projects use the canonical field above.
     "video_speed",
     "video_order_mode",
+    # Soft timeline-area source ordering: which configured folder is used at
+    # which approximate part of the timeline changes the selected clips, so it
+    # is part of the render identity like the project order itself.
+    "source_folder_areas",
+    "timeline_area_start_seconds",
+    "timeline_area_end_seconds",
+    "timeline_area_midpoint_percent",
+    "shorts_allow_area_middle_end",
     # Shorts are independent Stage-1 jobs; this prevents duplicate rows from
     # sharing a cache result merely because their audio path is the same.
     "render_variant_key",

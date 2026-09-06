@@ -443,11 +443,15 @@ def compute_pool_status(
     video_order_mode: str | None = None,
     video_order_rng: random.Random | None = None,
     video_order_seed: int | None = None,
+    timeline_area_settings: object | None = None,
 ) -> PoolStatus:
     """Berechnet Required / Selected / Not-Used für die aktuelle aktive Reihenfolge.
 
     * Ohne Voiceover-Ziel (``target_duration <= 0``) wird die komplette aktive
       Reihenfolge gerendert – der Klassik-Workflow bleibt erhalten.
+    * ``timeline_area_settings`` (optional) wendet dieselbe weiche
+      Timeline-Area-Quellenreihenfolge an wie der Render, damit Status und
+      Stage-1-Sequenz identisch entscheiden.
     * Deckt ein Präfix das Ziel, sind genau diese Clips "benötigt"; alle
       Clips dahinter sind "nicht verwendet" und erscheinen weder im
       ``-i``-Input noch im Filtergraph des Exports.
@@ -476,6 +480,15 @@ def compute_pool_status(
         )
     else:
         active_media = folder_aware_order(media) if folder_aware else list(media)
+    if timeline_area_settings is not None and target > 0:
+        # Same soft source ordering the render applies, so the pool status and
+        # the Stage-1 sequence never disagree. Lazy import: timeline_areas
+        # reuses this module's folder helpers.
+        from .timeline_areas import order_media_by_timeline_areas
+
+        active_media = order_media_by_timeline_areas(
+            active_media, target, timeline_area_settings, playback_rate=rate
+        )
     durations = [max(minimum, item.duration / rate) for item in active_media]
     # Ein einziger O(n)-Lauf; „benötigt“ wird aus derselben Liste abgeleitet
     # (keine zweite Transition-Berechnung, keine erneute Sortierung).
