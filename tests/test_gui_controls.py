@@ -5,9 +5,16 @@ import os
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QApplication
+try:
+    from PySide6.QtWidgets import QApplication
+except ImportError as exc:
+    # Guard the widget module, not the package: a PySide6 installation whose Qt
+    # libraries cannot load (missing libGL/libEGL on a headless Linux box, for
+    # example) raises ImportError while importing, and `importorskip` re-raises
+    # that broken dependency instead of skipping. Without this guard one
+    # unusable Qt installation aborted collection of the whole suite.
+    pytest.skip(f"PySide6 nicht verfügbar: {exc}", allow_module_level=True)
 
 from app.video_merger.gui.main_window import MainWindow
 from app.video_merger.models import (
