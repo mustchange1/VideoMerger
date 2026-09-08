@@ -168,7 +168,12 @@ def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
         ):
             assert not hasattr(window, removed)
         assert window.ducking_check.isChecked()
-        assert window.subtitle_language_combo.currentText() == "German"
+        # Phase 26: the selector shows the language in its own spelling, so the
+        # canonical value ("German", the default) is the item data - same
+        # convention as the style/animation/font combos next to it.
+        assert window.subtitle_language_combo.currentData() == "German"
+        assert window.subtitle_language_combo.currentText() == "Deutsch"
+        assert window._settings().subtitle_language == "German"
         assert window.subtitle_style_combo.currentData() == "long_1"
         # 1.2.4: Animation-Default "static_phrase" (vor 1.2.4 "type_reveal").
         assert window.subtitle_animation_combo.currentData() == "static_phrase"

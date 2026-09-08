@@ -12,6 +12,9 @@ from .engine import VideoMergerEngine
 from .errors import VideoMergerError
 from .font_manager import bundled_fonts_dir
 from .models import (
+    LANGUAGE_MISMATCH_COMPATIBILITY,
+    SUBTITLE_LANGUAGE_AUTO,
+    SUBTITLE_LANGUAGE_GERMAN,
     AlignmentResult,
     CompleteWorkflowResult,
     ExportSettings,
@@ -23,6 +26,9 @@ from .models import (
     ProgressEvent,
     ValidationReport,
     WordTiming,
+    normalize_subtitle_language,
+    subtitle_language_code,
+    subtitle_language_label,
 )
 from .paths import project_root
 from .project_assets import (
@@ -1100,10 +1106,49 @@ class MainProjectEngine:
                 for warning in alignment.warnings:
                     warnings.append(warning)
                     log("WARNUNG: " + warning)
+                # One language drives the whole speech/subtitle pipeline, so the
+                # report names it together with the measured compatibility. A
+                # language drift is what makes captions lose their timing: the
+                # ASR then returns words that match almost nothing in the
+                # authoritative script, and every script word falls back to
+                # interpolated timing instead of real acoustics.
+                selected_language = normalize_subtitle_language(settings.subtitle_language)
+                language_code = subtitle_language_code(selected_language)
+                log(
+                    f"Speech language: {subtitle_language_label(selected_language)} · "
+                    f"ASR language: {language_code or 'auto-detect'} "
+                    f"({'forced' if language_code else 'detected'}) · "
+                    f"Alignment reference: supplied script · "
+                    f"compatibility {alignment.compatibility:.1%}"
+                )
                 # Compatibility and unmatched-word warnings describe local
                 # caption gaps; they must never turn a usable audio render into
                 # a global subtitle failure. Only genuinely invalid/system
-                # errors raised by the ASR or file pipeline fail the workflow.
+                # errors raised by the ASR or file pipeline fail the workflow -
+                # plus one case where the captions themselves would be fiction:
+                # an explicitly selected language other than the historical
+                # default whose acoustic evidence contradicts it, i.e. almost no
+                # script word could be located in the speech. German and Auto
+                # keep the long-standing behaviour (warn, then render with
+                # interpolated timing) so existing projects stay byte- and
+                # stage-compatible; the line above reports the measured
+                # compatibility for every language either way.
+                # ``allow_alignment_warnings`` is the documented escape hatch.
+                if (
+                    alignment.words
+                    and selected_language not in (SUBTITLE_LANGUAGE_GERMAN, SUBTITLE_LANGUAGE_AUTO)
+                    and alignment.compatibility < LANGUAGE_MISMATCH_COMPATIBILITY
+                    and not settings.allow_alignment_warnings
+                ):
+                    raise _subtitle_failure(
+                        "language / script alignment",
+                        f"Die ausgewählte Sprache {subtitle_language_label(selected_language)} "
+                        f"(ASR {language_code or 'auto'}) passt nicht zum gesprochenen Inhalt: "
+                        f"nur {alignment.compatibility:.1%} des Skripts ließ sich akustisch "
+                        "zuordnen, alle übrigen Wörter hätten geschätzte Zeitstempel. "
+                        "Bitte die Sprache der Voiceover prüfen (Deutsch/English) oder "
+                        "'Alignment-Warnungen erlauben' aktivieren, um trotzdem zu rendern.",
+                    )
                 if alignment.words and alignment.words[-1].start >= voice_total:
                     raise _subtitle_failure(
                         "word timeline validation",

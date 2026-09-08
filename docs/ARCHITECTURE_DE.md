@@ -522,3 +522,83 @@ Short-Musik. Gruppen und Overrides werden als Pfade gespeichert und bei jeder
 Änderung der Liste bereinigt (`_prune_short_state`), überleben also Umsortieren.
 CLI: `--short-group A+B`, `--short-music-for VO=MUSIK`,
 `--short-music-volume-for VO=PROZENT`.
+## Phase 26: Eine Sprache für die gesamte Sprach-/Untertitel-Pipeline
+
+### Kanonisches Vokabular in `models.py`
+
+Statt verstreuter Zuweisungen gibt es jetzt **eine** Sprachquelle: die
+Konstanten `SUBTITLE_LANGUAGE_GERMAN`/`_ENGLISH`/`_AUTO`, die
+Nutzerlabels `SUBTITLE_LANGUAGE_LABELS` (`Deutsch`, `English`), die ASR-Codes
+`SUBTITLE_LANGUAGE_CODES` (`de`, `en`, `None` für Auto), die Alias-Tabelle
+(`de`/`deutsch`/`german`/`en`/`englisch`/`english`, Groß-/Kleinschreibung und
+Leerzeichen egal) sowie `SUBTITLE_LANGUAGE_CHOICES = (German, English)` als die
+genau zwei auswählbaren Werte. `normalize_subtitle_language` führt jede Eingabe
+auf den kanonischen internen Wert zurück, `subtitle_language_code` auf das
+ASR-Kürzel, `subtitle_language_label` auf die Anzeige; ein unbrauchbarer Wert
+wirft `VideoMergerError`, wird also nie still zu „auto". Der kanonische Wert für
+Deutsch bleibt das historische `"German"` — deshalb ändern sich weder
+Projektdateien noch Fingerprints noch Cache-Schlüssel bestehender Projekte.
+`ExportSettings.subtitle_language` hat `DEFAULT_SUBTITLE_LANGUAGE` als Default.
+
+### ASR, Alignment und Cache-Identität
+
+`alignment.py` ersetzt die drei identischen Inline-Zuweisungen
+(`{"German": "de", …}` plus Mitgliedschaftsprüfung) durch
+`subtitle_language_code(language)`; Semantik und Fehlermeldung bleiben
+gleich. `align`, `align_global` und `recognize` zwingen das Kürzel damit in
+`WhisperModel.transcribe(..., language=<code>)` — eine ausdrückliche Auswahl
+schlägt die automatische Erkennung, `Auto` (Code `None`) behält sie.
+`_normalize` und die gesamte Text-Pipeline blieben unverändert: gemessen Kontraktionen 0.944, verrauschtes Englisch 0.914, Kleinschreibung/Gedanken-
+strich/typografische Apostrophe 1.000 Kompatibilität.
+
+Cache-Identitäten enthalten die Sprache bereits (`transcriptions` über
+`audio_sha256 + model + language`, `alignments` über den Transkriptionsschlüssel
+plus Skript-Hash, Stage-1-Fingerprint über `_SUBTITLE_SETTING_FIELDS` mit
+`subtitle_language`), deshalb war kein Schema-Bump nötig: Deutsch behält seine
+Einträge, English erzeugt eigene. `_CACHE_SCHEMA` bleibt 4.
+
+### Fail-closed-Gate und Rückwärtskompatibilität
+
+`main_project.py` loggt nach dem Alignment einmal pro Auftrag die Sprache samt
+gemessener Kompatibilität (`Speech language: … · ASR language: … ·
+Alignment reference: supplied script · compatibility …`) und bricht ab, wenn
+**alle vier** Bedingungen gelten: es gibt Alignment-Wörter, die ausdrückliche
+Auswahl ist nicht der historische Standard (also weder `German` noch `Auto`),
+die Kompatibilität liegt unter `LANGUAGE_MISMATCH_COMPATIBILITY = 0.20`, und
+`allow_alignment_warnings` ist aus. Die Meldung lautet
+`SUBTITLE GENERATION FAILED [language / script alignment]`, nennt die Sprache
+und verhindert MP4/SRT/VTT. Deutsch und `Auto` behalten bewusst das bisherige
+Verhalten (warnen, dann mit interpolierten Zeitstempeln rendern), weil
+bestehende Projekte byte- und stufenkompatibel bleiben müssen — gemessen:
+Englisch-Skript mit deutscher Erkennung 0.043, englisch/englisch 1.000,
+deutsch/deutsch 1.000. `allow_alignment_warnings` existierte bereits, wurde aber
+nie ausgewertet; es ist jetzt die dokumentierte Ausnahmeregel.
+
+### GUI, CLI und Diagnose
+
+Die ComboBox **Speech Language** steht in der Gruppe *3 · Subtitles* in Zeile 2
+(direkt unter *Output Mode*, vor Style/Animation/Font/Position), bezieht ihre
+Einträge aus `SUBTITLE_LANGUAGE_CHOICES` und trägt als Item-Daten den kanonischen
+Wert — `currentData()` statt `currentText()` liefert also `"German"`/`"English"`,
+während `"Deutsch"`/`"English"` angezeigt werden. `_load_subtitle_language` lädt
+tolerant: ein gespeicherter Wert wird normalisiert, ein unbekannter (z. B. `Auto`
+aus einer alten Datei) als zusätzlicher Eintrag sichtbar gemacht und nie
+still überschrieben. CLI: `--language de|en|German|English|Auto`, Default `de`,
+normalisiert in `ExportSettings.subtitle_language`; bestehende Aufrufe bleiben
+unverändert gültig. Die Diagnose ergänzt den Eintrag **Subtitle Language**
+(Label, ASR-Kürzel, `forced onto faster-whisper` bzw. `detected by
+faster-whisper`, Alignment-Referenz) und zeigt einen unbrauchbaren Wert als
+fehlgeschlagenes Element statt abzustürzen.
+
+### Verifikation
+
+A/B-Vergleich gegen den Vorgänger-Commit mit identischem Harness: Long-Form
+Deutsch, Long-Form English und ein gruppierter deutscher Short liefern
+byteweise gleiche SRT/VTT-Inhalte, gleiche Cue-Zeitstempel, gleiche Dauer und
+gleiche ASR-Sprachcodes (Laufzeiten 0.55/0.57/1.91 s vorher, 0.60/0.56/1.91 s
+nachher). Die vollständige Test-Suite hat dieselben 17 vorbestehenden
+Sandbox-Fehlschläge und dieselben 8 Skips wie vorher, plus 64 neue bestandene
+Phase-26-Tests (kanonisches Vokabular, Sprachweitergabe an `align`/`align_global`/
+`recognize`, Cache-Isolation Deutsch↔English, Persistenz und Alt-Projekte, CLI,
+Diagnose, GUI-Vertrag auf Quelltextebene sowie echte FFmpeg-Render für Long-Form,
+gruppierte und ungruppierte Shorts).

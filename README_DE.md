@@ -703,3 +703,56 @@ Es wurde keine Render-Optimierung vorgenommen, weil keine hinreichend sichere,
 qualitätsneutrale Verbesserung identifiziert wurde: Die Gruppierung ändert nur,
 welche Einheiten ein bestehender Auftrag erhält – kein Render-Graph, kein
 Filter, keine Timing-Regel und kein Encoding-Parameter wurde verändert.
+## Sprache der Vertonung: Deutsch / English
+
+Eine Sprache steuert die gesamte Sprach-/Untertitel-Pipeline. **Speech Language**
+liegt in der Gruppe *3 · Subtitles* direkt unter *Output Mode* und bietet genau
+zwei Auswahlmöglichkeiten: **Deutsch** (Standard) und **English**. Die Auswahl
+ist kein Etikett — sie wird jeder Stufe aufgezwungen, die mit Sprache zu tun hat:
+
+* **Lokale ASR** — faster-whisper transkribiert mit `language="de"` bzw.
+  `language="en"`, statt die Sprache selbst zu erkennen. Eine englische
+  Vertonung wird also nie mit deutschen Annahmen analysiert (Zeensetzung,
+  Apostrophe, Kurzformen, Groß-/Kleinschreibung, Wortgrenzen).
+* **Wortausrichtung und Untertitel** — das gelieferte Skript bleibt maßgeblich,
+  die erkannten Wörter liefern nur die Zeitstempel. Abgleich, Segmentierung,
+  SRT/VTT und die eingebrannten Untertitel durchlaufen für beide Sprachen
+  dieselbe kanonische Text-Pipeline; es gibt keine zweite englische Pipeline.
+* **YouTube-Metadaten** — die Spracherkennung für Titel/Beschreibung erhält
+  dieselbe Auswahl.
+* **Caches** — die Sprache ist Teil der ASR-/Alignment-Identität und des
+  Stage-1-Render-Fingerprints. Ein Wechsel zwischen Deutsch und English
+  analysiert das Audio erneut, statt das Ergebnis der anderen Sprache
+  wiederzuverwenden. Unbeteiligte Caches bleiben gültig, und der gespeicherte
+  Wert für Deutsch ist unverändert — bestehende deutsche Projekte behalten ihre
+  Cache-Einträge und ihre exakte Ausgabe.
+
+CLI: `--language de|en` (Standard `de`). Die bisherigen Schreibweisen `German`,
+`English` und `Auto` funktionieren weiter — `Auto` lässt Whisper die Sprache
+erkennen. Projektdatei: `subtitle_language`, Standard `German`; eine von einer
+älteren Version gespeicherte Projektdatei lädt unverändert als Deutsch.
+
+Der Diagnose-Eintrag **Subtitle Language** fasst den Vertrag in einer Zeile
+zusammen — `Subtitle Language: English · ASR Language: en (forced onto
+faster-whisper) · Alignment Reference: supplied script` — und jeder Lauf loggt
+`Speech language: English · ASR language: en (forced) · Alignment reference:
+supplied script · compatibility 100.0%`.
+
+### Lieber sauber abbrechen als Schätzwerte veröffentlichen
+
+Widerspricht eine ausdrücklich gewählte Sprache (also eine andere als der
+bisherige Standard) dem Audio — lässt sich fast nichts des Skripts in der
+erkannten Sprache wiederfinden, gemessene Kompatibilität unter 20 % —, bricht der
+Lauf mit `SUBTITLE GENERATION FAILED [language / script alignment]` ab, nennt die
+gewählte Sprache und erzeugt weder MP4 noch SRT oder VTT, statt Untertitel mit
+rein interpolierten Zeitstempeln zu schreiben. **Allow alignment warnings**
+(CLI: `--allow-alignment-warning`) ist die dokumentierte Ausnahmeregel: Sie
+rendert trotzdem, hält das vollständige Skript untertitelt und meldet die
+gemessene Abweichung weiterhin. Deutsch und `Auto` behalten das bisherige
+Verhalten (warnen, dann rendern), damit vorhandene Projekte byte- und
+stufenkompatibel bleiben.
+
+Long-Form, einzelne Shorts und gruppierte Shorts folgen derselben Regel; ein
+gruppierter Short ist eine durchgehende Voiceover- und Untertitel-Timeline, deren
+Mitglieder alle in der gewählten Sprache transkribiert, ausgerichtet und
+untertitelt werden.

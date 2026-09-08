@@ -23,6 +23,7 @@ from .video_merger.models import (
     TIMELINE_AREA_START_SECONDS,
     TRANSITION_DURATION_LEGACY_DEFAULT,
     ExportSettings,
+    normalize_subtitle_language,
 )
 from .video_merger.opening_effects import (
     OPENING_EFFECT_NONE,
@@ -319,7 +320,13 @@ def main() -> int:
         choices=["with_subtitles", "without_subtitles", "with_and_without_subtitles", "burned_and_sidecars", "burned_only"],
         help="With Subtitles (default), Without Subtitles, or With and Without Subtitles",
     )
-    parser.add_argument("--language", choices=["German", "English", "Auto"], default="German")
+    parser.add_argument(
+        "--language", choices=["de", "en", "German", "English", "Auto"], default="de",
+        help="Speech/subtitle language: de (Deutsch, default) or en (English). The same "
+             "value is forced onto the local ASR, the script alignment and the metadata. "
+             "'Auto' lets Whisper detect the language; the historical spellings "
+             "'German'/'English' keep working.",
+    )
     parser.add_argument("--subtitle-style", default="long_1")
     parser.add_argument(
         "--subtitle-animation", choices=list(accepted_animation_values("long")),
@@ -540,7 +547,8 @@ def main() -> int:
         image_fit_mode=args.image_fit_mode, image_zoom=max(100, min(300, args.image_zoom)),
         image_filter=args.image_filter,
         subtitle_output_mode=args.subtitle_output_mode,
-        subtitle_enabled=args.subtitles, subtitle_language=args.language,
+        subtitle_enabled=args.subtitles,
+        subtitle_language=normalize_subtitle_language(args.language),
         subtitle_style=args.subtitle_style, subtitle_animation=args.subtitle_animation,
         subtitle_font=args.subtitle_font, subtitle_position=subtitle_position,
         short_subtitle_style=args.short_subtitle_style,

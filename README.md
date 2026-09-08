@@ -525,3 +525,53 @@ before, in every mode.
 No render optimization was made because no sufficiently safe quality-neutral
 improvement was identified: grouping only changes which units one existing job
 receives, so no render graph, filter, timing rule or encoding parameter changed.
+## Speech language: Deutsch / English
+
+One language drives the complete speech/subtitle pipeline. **Speech Language**
+sits in the *3 · Subtitles* group directly below *Output Mode* and offers exactly
+two choices: **Deutsch** (the default) and **English**. The selection is not a
+label — it is forced onto every stage that touches speech:
+
+* **Local ASR** — faster-whisper transcribes with `language="de"` or
+  `language="en"` instead of detecting the language itself, so an English
+  voiceover is never analysed with German assumptions (punctuation, apostrophes,
+  contractions, capitalisation, word boundaries).
+* **Word alignment and subtitles** — the supplied script stays authoritative and
+  the recognised words only supply timing. Matching, segmentation, SRT/VTT and
+  the burned-in captions run through the same canonical text pipeline for both
+  languages; there is no second English pipeline.
+* **YouTube metadata** — title/description language detection receives the same
+  selection.
+* **Caches** — the language is part of the ASR/alignment identity and of the
+  Stage-1 render fingerprint, so switching between Deutsch and English analyses
+  the audio again instead of replaying the other language's result. Unrelated
+  caches stay valid, and the stored value for German is unchanged, so existing
+  German projects keep their cache entries and their exact output.
+
+CLI: `--language de|en` (default `de`). The historical spellings `German`,
+`English` and `Auto` keep working — `Auto` lets Whisper detect the language.
+Project file: `subtitle_language`, default `German`; a project saved by an older
+version loads as German unchanged.
+
+The diagnostics entry **Subtitle Language** reports the whole contract in one
+line — `Subtitle Language: English · ASR Language: en (forced onto
+faster-whisper) · Alignment Reference: supplied script` — and every run logs
+`Speech language: English · ASR language: en (forced) · Alignment reference:
+supplied script · compatibility 100.0%`.
+
+### Fail closed instead of publishing guesswork
+
+When an explicitly selected language other than the historical default
+contradicts the audio — almost nothing of the script can be located in the
+recognised speech, measured compatibility below 20 % — the render stops with
+`SUBTITLE GENERATION FAILED [language / script alignment]`, names the selected
+language, and produces no MP4, SRT or VTT at all, instead of writing captions
+whose timestamps are pure interpolation. **Allow alignment warnings** (CLI:
+`--allow-alignment-warning`) is the documented escape hatch: it renders anyway,
+keeps the complete script captioned and still reports the measured mismatch.
+German and `Auto` keep the long-standing behaviour (warn, then render), so
+existing projects stay byte- and stage-compatible.
+
+Long-Form, individual Shorts and grouped Shorts all follow the same rule; a
+grouped Short is one continuous voiceover and subtitle timeline whose every
+member is transcribed, aligned and captioned in the selected language.

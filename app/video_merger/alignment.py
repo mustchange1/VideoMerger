@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .errors import VideoMergerError
-from .models import AlignmentResult, WordTiming
+from .models import AlignmentResult, WordTiming, subtitle_language_code
 from .paths import project_root
 
 _WORD_RE = re.compile(r"[\wÄÖÜäöüß]+(?:[’'][\wÄÖÜäöüß]+)*", re.UNICODE)
@@ -299,9 +299,11 @@ class LocalWordAligner:
             "cache_hit": False,
             "cache_level": "none",
         }
-        language_code = {"German": "de", "English": "en", "Auto": None}.get(language)
-        if language not in {"German", "English", "Auto"}:
-            raise VideoMergerError(f"Unbekannte Untertitelsprache: {language}")
+        # One canonical vocabulary for the whole pipeline (see models.py). The
+        # selected language is forced onto faster-whisper, so an explicit
+        # Deutsch/English choice always takes precedence over detection; an
+        # unusable value fails closed instead of silently becoming "auto".
+        language_code = subtitle_language_code(language)
         path = audio_path.expanduser().resolve()
         if not path.is_file() and self._recognizer is None:
             raise VideoMergerError(f"Voiceover für Wortausrichtung fehlt: {path}")
@@ -337,9 +339,11 @@ class LocalWordAligner:
             "cache_hit": False,
             "cache_level": "none",
         }
-        language_code = {"German": "de", "English": "en", "Auto": None}.get(language)
-        if language not in {"German", "English", "Auto"}:
-            raise VideoMergerError(f"Unbekannte Untertitelsprache: {language}")
+        # One canonical vocabulary for the whole pipeline (see models.py). The
+        # selected language is forced onto faster-whisper, so an explicit
+        # Deutsch/English choice always takes precedence over detection; an
+        # unusable value fails closed instead of silently becoming "auto".
+        language_code = subtitle_language_code(language)
         units = [(Path(path).expanduser().resolve(), float(duration)) for path, duration in units]
         if not units:
             raise VideoMergerError("Für das globale Alignment wurde kein Voiceover übergeben.")
@@ -439,9 +443,11 @@ class LocalWordAligner:
             "cache_hit": False,
             "cache_level": "none",
         }
-        language_code = {"German": "de", "English": "en", "Auto": None}.get(language)
-        if language not in {"German", "English", "Auto"}:
-            raise VideoMergerError(f"Unbekannte Untertitelsprache: {language}")
+        # One canonical vocabulary for the whole pipeline (see models.py). The
+        # selected language is forced onto faster-whisper, so an explicit
+        # Deutsch/English choice always takes precedence over detection; an
+        # unusable value fails closed instead of silently becoming "auto".
+        language_code = subtitle_language_code(language)
         path = audio_path.expanduser().resolve()
         if not path.is_file() and self._recognizer is None:
             raise VideoMergerError(f"Voiceover für Wortausrichtung fehlt: {path}")

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
+from .errors import VideoMergerError
+
 
 _SUBTITLE_DEFAULT = object()
 
@@ -68,6 +70,98 @@ MAX_TIMELINE_AREA_SECONDS = 600.0
 #: YouTube Shorts draw from ``1. Start & End`` + ``2. Start to Middle``. The
 #: later/main pool stays out of every Short unless this is explicitly enabled.
 SHORTS_ALLOW_AREA_MIDDLE_END = False
+
+#: Speech/subtitle language. One canonical vocabulary drives the whole pipeline:
+#: GUI, CLI, project files, ASR (faster-whisper), script alignment, diagnostics
+#: and cache identity all resolve through :func:`normalize_subtitle_language`.
+#:
+#: The canonical stored values deliberately stay the historical ``"German"`` /
+#: ``"English"`` strings, so every existing project file, settings payload and
+#: Stage-1 render fingerprint keeps its exact identity - a German project that
+#: changes nothing renders byte-identically. Only the user-facing labels
+#: ("Deutsch"/"English") and the accepted aliases are new.
+SUBTITLE_LANGUAGE_GERMAN = "German"
+SUBTITLE_LANGUAGE_ENGLISH = "English"
+#: Automatic detection stays supported for legacy projects and third-party
+#: callers, but it is no longer a user-facing choice: handing Whisper an
+#: explicit language is what stops German and English from drifting into each
+#: other on calm narration, where detection can pick the wrong language and
+#: every script word then falls back to interpolated timing.
+SUBTITLE_LANGUAGE_AUTO = "Auto"
+#: The two choices the language selector offers, in display order.
+SUBTITLE_LANGUAGE_CHOICES = (SUBTITLE_LANGUAGE_GERMAN, SUBTITLE_LANGUAGE_ENGLISH)
+#: German is the default: doing nothing must keep the historical behaviour.
+DEFAULT_SUBTITLE_LANGUAGE = SUBTITLE_LANGUAGE_GERMAN
+SUBTITLE_LANGUAGE_LABELS = {
+    SUBTITLE_LANGUAGE_GERMAN: "Deutsch",
+    SUBTITLE_LANGUAGE_ENGLISH: "English",
+    SUBTITLE_LANGUAGE_AUTO: "Auto",
+}
+#: ISO 639-1 code handed to faster-whisper. ``None`` means "detect automatically".
+SUBTITLE_LANGUAGE_CODES = {
+    SUBTITLE_LANGUAGE_GERMAN: "de",
+    SUBTITLE_LANGUAGE_ENGLISH: "en",
+    SUBTITLE_LANGUAGE_AUTO: None,
+}
+#: Accepted spellings, so ``--language en``, a hand-edited project file and the
+#: GUI selector all resolve to the same canonical value.
+_SUBTITLE_LANGUAGE_ALIASES = {
+    "german": SUBTITLE_LANGUAGE_GERMAN,
+    "deutsch": SUBTITLE_LANGUAGE_GERMAN,
+    "de": SUBTITLE_LANGUAGE_GERMAN,
+    "deu": SUBTITLE_LANGUAGE_GERMAN,
+    "ger": SUBTITLE_LANGUAGE_GERMAN,
+    "english": SUBTITLE_LANGUAGE_ENGLISH,
+    "englisch": SUBTITLE_LANGUAGE_ENGLISH,
+    "en": SUBTITLE_LANGUAGE_ENGLISH,
+    "eng": SUBTITLE_LANGUAGE_ENGLISH,
+    "auto": SUBTITLE_LANGUAGE_AUTO,
+    "automatic": SUBTITLE_LANGUAGE_AUTO,
+    "auto-detect": SUBTITLE_LANGUAGE_AUTO,
+    "detect": SUBTITLE_LANGUAGE_AUTO,
+}
+
+
+#: Below this measured script/voiceover compatibility the alignment carries no
+#: real lexical correspondence at all, so every caption timestamp would be
+#: interpolated guesswork rather than acoustics. That is exactly what a language
+#: drift looks like (English audio forced through German ASR measured 0.04, while
+#: a correct English run measures 1.00 and a noisy but correct one still 0.91),
+#: so an explicitly selected language other than the historical default fails
+#: closed with ``allow_alignment_warnings=False`` (the default) instead of
+#: publishing misleading subtitles. German and Auto keep the long-standing
+#: behaviour - warn, then render - so existing projects stay byte- and
+#: stage-compatible. Ordinary partial matches (a reworded sentence, a few
+#: unmatched words) stay far above this floor for every language.
+LANGUAGE_MISMATCH_COMPATIBILITY = 0.20
+
+
+def normalize_subtitle_language(value: object) -> str:
+    """Return the canonical language for any accepted spelling.
+
+    Missing/empty values fall back to the historical default (German) so old
+    project files and hand-edited configurations keep loading. An unusable
+    value fails closed instead of silently becoming auto-detection.
+    """
+    if value is None:
+        return DEFAULT_SUBTITLE_LANGUAGE
+    text = str(value).strip()
+    if not text:
+        return DEFAULT_SUBTITLE_LANGUAGE
+    canonical = _SUBTITLE_LANGUAGE_ALIASES.get(text.casefold())
+    if canonical is None:
+        raise VideoMergerError(f"Unbekannte Untertitelsprache: {value}")
+    return canonical
+
+
+def subtitle_language_code(value: object) -> str | None:
+    """ISO code for faster-whisper: ``"de"``, ``"en"`` or ``None`` (detect)."""
+    return SUBTITLE_LANGUAGE_CODES[normalize_subtitle_language(value)]
+
+
+def subtitle_language_label(value: object) -> str:
+    """User-facing label ("Deutsch"/"English") for logs, GUI and diagnostics."""
+    return SUBTITLE_LANGUAGE_LABELS[normalize_subtitle_language(value)]
 
 
 @dataclass(slots=True)
@@ -296,7 +390,10 @@ class ExportSettings:
     video_speed: float = 1.0
 
     subtitle_enabled: bool = False
-    subtitle_language: str = "German"  # German | English | Auto
+    # Canonical speech/subtitle language: "German" (default, UI label "Deutsch")
+    # or "English". "Auto" is still accepted for legacy projects but is no
+    # longer offered as a user-facing choice.
+    subtitle_language: str = DEFAULT_SUBTITLE_LANGUAGE
     subtitle_style: str = "long_1"
     subtitle_animation: str = "static_phrase"  # Long-Form default: Static White Reveal
     subtitle_font: str = "modern_sans_bold"

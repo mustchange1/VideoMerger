@@ -35,8 +35,12 @@ from ..models import (
     TIMELINE_AREA_END_SECONDS,
     TIMELINE_AREA_MIDPOINT_PERCENT,
     TIMELINE_AREA_START_SECONDS,
+    DEFAULT_SUBTITLE_LANGUAGE,
+    SUBTITLE_LANGUAGE_CHOICES,
+    SUBTITLE_LANGUAGE_LABELS,
     ExportSettings,
     ProgressEvent,
+    normalize_subtitle_language,
 )
 from ..opening_effects import OPENING_EFFECTS, normalize_opening_effect
 from ..project_order import natural_order, natural_sort_key, randomize_order
@@ -760,8 +764,18 @@ class MainWindow(QMainWindow):
         self.subtitle_output_combo.currentIndexChanged.connect(self._subtitle_output_mode_changed)
         subtitle_layout.addWidget(QLabel("Output Mode"), 1, 0)
         subtitle_layout.addWidget(self.subtitle_output_combo, 1, 1, 1, 2)
+        # Speech/subtitle language: exactly two user-facing choices, Deutsch
+        # (the default) and English. The item data is the canonical stored value,
+        # so project files keep their historical "German"/"English" form while
+        # the selector shows the language in its own spelling.
         self.subtitle_language_combo = QComboBox()
-        self.subtitle_language_combo.addItems(["German", "English", "Auto"])
+        for language in SUBTITLE_LANGUAGE_CHOICES:
+            self.subtitle_language_combo.addItem(SUBTITLE_LANGUAGE_LABELS[language], language)
+        self.subtitle_language_combo.setToolTip(
+            "One language for the whole speech/subtitle pipeline: it is forced onto the "
+            "local ASR (faster-whisper), the script alignment and the YouTube metadata. "
+            "Deutsch transcribes as German (de), English as English (en)."
+        )
         self.subtitle_style_combo = QComboBox()
         from ..subtitle_presets import SUBTITLE_PRESETS
         for preset in SUBTITLE_PRESETS:
@@ -806,7 +820,7 @@ class MainWindow(QMainWindow):
         self._subtitle_style_overridden = False
         self._subtitle_animation_overridden = False
         self.subtitle_debug_check = QCheckBox("Subtitle Debug Overlay – current word + exact start/end (default OFF)")
-        subtitle_layout.addWidget(QLabel("Language"), 2, 0)
+        subtitle_layout.addWidget(QLabel("Speech Language"), 2, 0)
         subtitle_layout.addWidget(self.subtitle_language_combo, 2, 1)
         subtitle_layout.addWidget(QLabel("Style"), 3, 0)
         subtitle_layout.addWidget(self.subtitle_style_combo, 3, 1)
@@ -1645,7 +1659,7 @@ class MainWindow(QMainWindow):
             subtitle_mode_index if subtitle_mode_index >= 0 else 0
         )
         self.alignment_warning_check.setChecked(self.saved.allow_alignment_warnings)
-        self.subtitle_language_combo.setCurrentText(self.saved.subtitle_language)
+        self._load_subtitle_language(self.saved.subtitle_language)
         self.subtitle_position_combo.setCurrentText(self.saved.subtitle_position)
         self.subtitle_debug_check.setChecked(self.saved.subtitle_debug_overlay)
         self.watermark_check.setChecked(self.saved.watermark_enabled)
@@ -1684,6 +1698,24 @@ class MainWindow(QMainWindow):
         self._sync_subtitle_request()
         self._update_subtitle_live_preview()
         self._update_pool_status()
+
+    def _load_subtitle_language(self, stored: object) -> None:
+        """Select the stored speech/subtitle language in the two-choice selector.
+
+        Tolerant like every other loaded value: a hand-edited project file can
+        never crash the GUI. A legacy project that still stores automatic
+        detection keeps it (the entry is added on demand) instead of being
+        silently rewritten into another language.
+        """
+        try:
+            language = normalize_subtitle_language(stored)
+        except VideoMergerError:
+            language = DEFAULT_SUBTITLE_LANGUAGE
+        index = self.subtitle_language_combo.findData(language)
+        if index < 0:
+            self.subtitle_language_combo.addItem(SUBTITLE_LANGUAGE_LABELS[language], language)
+            index = self.subtitle_language_combo.findData(language)
+        self.subtitle_language_combo.setCurrentIndex(max(0, index))
 
     def _settings(self) -> ExportSettings:
         voiceover_units = list(getattr(self, "voiceover_paths_list", []))
@@ -1789,7 +1821,7 @@ class MainWindow(QMainWindow):
             duration_after_merge_enabled=self.duration_after_merge_check.isChecked(),
             video_speed=1.0,
             subtitle_enabled=self.subtitle_check.isChecked(),
-            subtitle_language=self.subtitle_language_combo.currentText(),
+            subtitle_language=str(self.subtitle_language_combo.currentData()),
             subtitle_style=str(self.subtitle_style_combo.currentData()),
             subtitle_animation=str(self.subtitle_animation_combo.currentData()),
             subtitle_font=str(self.subtitle_font_combo.currentData()),
@@ -2131,7 +2163,7 @@ class MainWindow(QMainWindow):
         """
         if not hasattr(self, "subtitle_live_preview") or not hasattr(self.subtitle_live_preview, "set_state"):
             return
-        language = self.subtitle_language_combo.currentText()
+        language = str(self.subtitle_language_combo.currentData())
         sample = sample_subtitle_text(language)
         if self.subtitle_debug_check.isChecked():
             sample += " [DEBUG Overlay aktiv]"
@@ -2169,7 +2201,7 @@ class MainWindow(QMainWindow):
         position = self.subtitle_position_combo.currentText()
         font_key = str(self.subtitle_font_combo.currentData())
         width, height = (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
-        language = self.subtitle_language_combo.currentText()
+        language = str(self.subtitle_language_combo.currentData())
         text = sample_subtitle_text(language)
         if self.subtitle_debug_check.isChecked():
             text += " [DEBUG Overlay aktiv]"

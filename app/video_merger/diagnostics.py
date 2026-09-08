@@ -99,6 +99,11 @@ def run_diagnostics(test_encoders: bool = False) -> list[DiagnosticItem]:
 def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
     """Report assigned Stage-1/Stage-2 roles without performing a render."""
     from .alignment import script_word_spans
+    from .models import (
+        normalize_subtitle_language,
+        subtitle_language_code,
+        subtitle_language_label,
+    )
     from .project_assets import optional_path, probe_audio, read_script
 
     items: list[DiagnosticItem] = []
@@ -203,7 +208,8 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
             text = read_script(script)
             items.append(DiagnosticItem(
                 "Script", True,
-                f"{len(script_word_spans(text))} words · selected language {settings.subtitle_language}"
+                f"{len(script_word_spans(text))} words · selected language "
+                f"{subtitle_language_label(settings.subtitle_language)}"
             ))
         except Exception as exc:
             items.append(DiagnosticItem("Script", False, str(exc)))
@@ -211,6 +217,25 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
         items.append(DiagnosticItem("Script", False, "required while subtitles are enabled"))
     else:
         items.append(DiagnosticItem("Script", True, "not required while subtitles are disabled"))
+    try:
+        language = normalize_subtitle_language(settings.subtitle_language)
+        code = subtitle_language_code(language)
+        # The language is one setting for the whole speech/subtitle pipeline, so
+        # the report shows exactly what the ASR will be forced to and what the
+        # caption text comes from. A silent language drift (English audio
+        # transcribed as German) is what used to make subtitles lose their
+        # timing, so it is surfaced here instead of only in the render log.
+        items.append(DiagnosticItem(
+            "Subtitle Language", True,
+            f"Subtitle Language: {subtitle_language_label(language)} · "
+            f"ASR Language: {code or 'auto-detect'} "
+            f"({'forced onto faster-whisper' if code else 'detected by faster-whisper'}) · "
+            f"Alignment Reference: supplied script"
+        ))
+    except VideoMergerError as exc:
+        # A hand-edited project can carry an unusable language value; the report
+        # shows it as a failed item instead of crashing the diagnostics.
+        items.append(DiagnosticItem("Subtitle Language", False, str(exc)))
     alignment_detail = (
         f"pending render · faster-whisper/{settings.subtitle_model} word timestamps + authoritative script mapping"
         if settings.subtitle_enabled else "disabled"
