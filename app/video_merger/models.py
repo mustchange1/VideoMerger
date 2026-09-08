@@ -228,6 +228,25 @@ class ExportSettings:
     # independent, and a Short still plays only its own Shorts track.
     long_form_music_volume: int | None = None
     shorts_music_volume: int | None = None
+    # Phase 25 script-to-Short mapping. ``short_script_groups`` lists the
+    # voiceover units that render as ONE Short: every inner list holds voiceover
+    # paths, and the members are always rendered in the authoritative
+    # voiceover/script list order (Script 3 before Script 4, never the reverse).
+    # The default — no groups — keeps the historical mapping of one voiceover
+    # unit == one Short, including byte-identical output names and cache keys.
+    # Grouping is pure planning data: a grouped Short is rendered by the
+    # existing multi-voiceover pipeline on ONE video, voiceover, subtitle and
+    # music timeline and produces ONE MP4 plus ONE transcript file. Rendered
+    # Shorts are never concatenated afterwards.
+    short_script_groups: list[list[str]] = field(default_factory=list)
+    # Per-Short background music. Both maps are keyed by the FIRST voiceover
+    # path of a Short (its anchor), so a grouped Short owns exactly one track
+    # and one volume. An entry overrides that one Short only; every other Short
+    # keeps ``short_music_path``/``shorts_music_volume``. The strict
+    # Long-Form/Shorts music separation stays intact: a Short without a Shorts
+    # track remains silent and never inherits the Long-Form music.
+    short_music_overrides: dict[str, str] = field(default_factory=dict)
+    short_music_volume_overrides: dict[str, int] = field(default_factory=dict)
     music_preset: str = "balanced"
     ducking_enabled: bool = True
     ducking_attack_ms: int = 25

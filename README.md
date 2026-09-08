@@ -442,3 +442,86 @@ what really happened, e.g. `Timeline areas (soft targets): 0.0-2.0 s =
 No quality-neutral render optimization was necessary or sufficiently safe, so
 none was added: the scheduler is a single permutation pass over already analyzed
 metadata and changes no render graph, no filter and no encoding parameter.
+
+## Output modes and the script-to-Short mapping
+
+**Output mode** (group `4 · Output`, combo *YouTube Output*) decides which
+outputs a run produces, and nothing else:
+
+| Mode | Result |
+| --- | --- |
+| `Long-Form only` | the existing landscape Long-Form video, **no** Short is planned or rendered |
+| `Shorts only` | only the vertical Shorts — **no** Long-Form directory, file or render |
+| `Long-Form + Shorts` | the existing Long-Form **and** the configured Shorts |
+
+**One voiceover/script unit is one Short** by default: `Script 1 → Short 001`,
+`Script 2 → Short 002`, `Script 3 → Short 003`, each with its own video,
+voiceover, subtitles, transcript, music and output file. A project without
+groups renders exactly as before — same numbering, same file names, same
+render-cache entries.
+
+### Grouping several scripts into ONE Short
+
+Select several rows in the voiceover/script table (Ctrl/Shift + click) and press
+**Group Selected → 1 Short**. The new fourth column *Short* then shows the same
+Short name on every member row (e.g. `003-004 (group)`, highlighted), so the
+mapping is visible before the run. **Ungroup Selected** dissolves a group again
+and every unit becomes its own Short. Nothing forces a group: units you never
+select stay independent.
+
+`Script 1`, `Script 2 + Script 3`, `Script 4` therefore produce three Shorts:
+`001.mp4`, `002-003.mp4`, `004.mp4`.
+
+The **voiceover/script list order is authoritative**: a group always renders its
+members top-down (Script 3 before Script 4, never the reverse), no matter in
+which order the rows were clicked, and groups themselves are ordered by their
+first member. A unit belongs to at most one group; unknown, empty or
+single-member entries in an old or hand-edited project file are ignored instead
+of breaking the run.
+
+A grouped Short is **one real Short, planned as one job** — never two finished
+Shorts concatenated afterwards:
+
+* one media plan and one video timeline for the combined duration,
+* one continuous voiceover timeline: member A, the configured *Pause Between
+  Voiceovers*, member B (a single-unit Short keeps the historical `0.0` pause),
+* **one** subtitle timeline whose timestamps keep accumulating — Script B's
+  captions start at the correct accumulated time and never reset to zero,
+* one music timeline that covers the complete combined duration (looping,
+  trimming, volume and the ending behave exactly as for a normal Short),
+* one final encode → **one MP4** named after all members (`003-004.mp4`) and
+  **one transcript** `003-004.txt` containing Script A followed by Script B,
+* the existing Short intro/outro, ending behaviour, transitions and subtitle
+  styling stay untouched, and the without-replacement Shorts pool reserves the
+  complete combined duration before rendering, so no Short takes material the
+  grouped one still needs.
+
+No ASR, alignment, styling, animation, transition, music or FFmpeg code was
+changed for this: the group is handed to the existing multi-voiceover pipeline,
+which already concatenates units on one timeline with cumulative offsets.
+
+### Own music per Short
+
+**Short Music for Selected …** gives exactly one Short its own track (a grouped
+Short owns one track for its whole timeline); **Clear Short Music** removes it
+and the Short uses the shared *Background Music (Shorts)* selection again. Every
+other Short is unaffected. The strict separation stays intact: a Short without a
+Shorts track remains silent and never inherits the Long-Form music.
+
+CLI: `--short-group VOICEOVER+VOICEOVER[+…]` (repeatable),
+`--short-music-for VOICEOVER=MUSIC` and
+`--short-music-volume-for VOICEOVER=PERCENT` (both repeatable, keyed by the
+Short's first voiceover). Project file: `short_script_groups`,
+`short_music_overrides`, `short_music_volume_overrides` — all three default to
+empty, so older project files load unchanged.
+
+The Short → script mapping is reported before and during a run: the diagnostics
+entry **YouTube Shorts Mapping** (`3 Short(s) from 4 voiceover unit(s) ·
+grouped: Short 002-003 = voice_2.wav + voice_3.wav · own music: voice_1.wav →
+a.mp3`) and the log line `YouTube Shorts script grouping: …`. Grouping never
+touches the Long-Form pipeline: it receives every voiceover unit exactly as
+before, in every mode.
+
+No render optimization was made because no sufficiently safe quality-neutral
+improvement was identified: grouping only changes which units one existing job
+receives, so no render graph, filter, timing rule or encoding parameter changed.

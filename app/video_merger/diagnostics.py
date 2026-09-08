@@ -129,6 +129,40 @@ def run_project_diagnostics(settings, media=None) -> list[DiagnosticItem]:
         ))
     else:
         items.append(DiagnosticItem("Voiceover", True, "optional · not assigned"))
+    # Phase 25: the script-to-Short mapping, visible before a run starts. One
+    # entry lists how many Shorts are planned and which voiceovers/scripts share
+    # a grouped Short (in render order), plus any per-Short own music track.
+    if voices:
+        try:
+            from .youtube_outputs import (
+                EXPORT_MODE_LONG_FORM,
+                build_short_jobs,
+                normalize_export_mode,
+            )
+
+            if normalize_export_mode(getattr(settings, "export_mode", "")) != EXPORT_MODE_LONG_FORM:
+                short_jobs = build_short_jobs(settings)
+                grouped = [job for job in short_jobs if job.grouped]
+                detail = f"{len(short_jobs)} Short(s) from {len(voices)} voiceover unit(s)"
+                if grouped:
+                    detail += " · grouped: " + "; ".join(
+                        f"Short {job.output_name} = " + " + ".join(unit.name for unit in job.members)
+                        for job in grouped
+                    )
+                else:
+                    detail += " · one voiceover = one Short"
+                overrides = {
+                    key: value
+                    for key, value in (getattr(settings, "short_music_overrides", {}) or {}).items()
+                    if str(value or "").strip()
+                }
+                if overrides:
+                    detail += " · own music: " + ", ".join(
+                        f"{Path(key).name} → {Path(value).name}" for key, value in overrides.items()
+                    )
+                items.append(DiagnosticItem("YouTube Shorts Mapping", True, detail))
+        except (TypeError, ValueError, VideoMergerError) as exc:
+            items.append(DiagnosticItem("YouTube Shorts Mapping", False, str(exc)))
     scripts = script_paths(settings)
     if str(settings.script_mode).casefold() in {"matched", "individual"} and voices and len(scripts) < len(voices):
         items.append(DiagnosticItem(

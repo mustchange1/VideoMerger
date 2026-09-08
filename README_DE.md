@@ -613,3 +613,93 @@ Eine qualitätsneutrale Render-Optimierung war weder nötig noch hinreichend
 sicher und wurde daher nicht ergänzt: Der Scheduler ist ein einziger
 Permutationsdurchlauf über bereits analysierte Metadaten und ändert keinen
 Render-Graphen, keinen Filter und keinen Encoding-Parameter.
+
+## Ausgabe-Modi und Script-zu-Short-Zuordnung
+
+Der **Ausgabe-Modus** (Gruppe `4 · Output`, Combo *YouTube Output*) entscheidet
+ausschliesslich darüber, welche Ausgaben ein Lauf erzeugt:
+
+| Modus | Ergebnis |
+| --- | --- |
+| `Long-Form only` | das bestehende Long-Form-Video im Querformat, **kein** Short |
+| `Shorts only` | nur die vertikalen Shorts – **kein** Long-Form-Ordner, keine Datei, kein Render |
+| `Long-Form + Shorts` | das bestehende Long-Form **und** die konfigurierten Shorts |
+
+**Eine Voiceover-/Script-Einheit ist standardendlich ein Short**: `Script 1 →
+Short 001`, `Script 2 → Short 002`, `Script 3 → Short 003` – jeweils mit eigenem
+Video, eigener Voiceover, eigenen Untertiteln, eigenem Transkript, eigener Musik
+und eigener Datei. Ein Projekt ohne Gruppen rendert exakt wie bisher: gleiche
+Nummerierung, gleiche Dateinamen, gleiche Render-Cache-Einträge.
+
+### Mehrere Scripts zu EINEM Short gruppieren
+
+In der Voiceover-/Script-Tabelle mehrere Zeilen auswählen (Strg/Shift + Klick)
+und **Group Selected → 1 Short** drücken. Die neue vierte Spalte *Short* zeigt
+danach auf allen Mitgliedern denselben Short-Namen (z. B. `003-004 (group)`,
+hervorgehoben), die Zuordnung ist also schon vor dem Lauf sichtbar.
+**Ungroup Selected** löst eine Gruppe wieder auf, jede Einheit wird wieder zu
+einem eigenen Short. Nichts erzwingt eine Gruppe: nicht ausgewählte Einheiten
+bleiben unabhängig.
+
+`Script 1`, `Script 2 + Script 3`, `Script 4` ergeben damit drei Shorts:
+`001.mp4`, `002-003.mp4`, `004.mp4`.
+
+Die **Reihenfolge der Voiceover-/Script-Liste ist massgeblich**: Eine Gruppe
+rendert ihre Mitglieder immer von oben nach unten (Script 3 vor Script 4, nie
+umgekehrt), unabhängig davon, in welcher Reihenfolge die Zeilen angeklickt
+wurden; Gruppen selbst werden nach ihrer ersten Einheit sortiert. Eine Einheit
+gehört zu höchstens einer Gruppe; unbekannte, leere oder einzeilige Einträge in
+einer alten oder manuell geänderten Projektdatei werden ignoriert, statt den
+Lauf abzubrechen.
+
+Ein gruppierter Short ist **ein echter Short, der als ein Auftrag geplant wird**
+– niemals zwei fertig gerenderte Shorts, die nachträglich zusammengefügt werden:
+
+* ein Medienplan und eine Video-Timeline für die kombinierte Dauer,
+* eine durchgehende Voiceover-Timeline: Einheit A, die konfigurierte *Pause
+  Between Voiceovers*, Einheit B (ein Short aus einer Einheit behält die
+  bisherige Pause `0.0`),
+* **eine** Untertitel-Timeline mit weiterlaufenden Zeitstempeln – die Captions
+  von Script B beginnen zur korrekt aufsummierten Zeit und starten nie bei Null,
+* eine Musik-Timeline über die komplette kombinierte Dauer (Looping, Schnitt,
+  Lautstärke und Ending verhalten sich wie bei einem normalen Short),
+* ein finaler Encode → **eine MP4-Datei**, benannt nach allen Mitgliedern
+  (`003-004.mp4`), und **ein Transkript** `003-004.txt` mit Script A gefolgt von
+  Script B,
+* Short-Intro/-Outro, Ending-Verhalten, Übergänge und Untertitel-Stil bleiben
+  unangetastet, und der Shorts-Pool ohne Zurücklegen reserviert die komplette
+  kombinierte Dauer vor dem Rendern, damit kein Short Material verbraucht, das
+  der gruppierte Short noch braucht.
+
+Dafür wurde keine ASR-, Alignment-, Stil-, Animations-, Übergangs-, Musik- oder
+FFmpeg-Logik geändert: Die Gruppe wird der bestehenden Multi-Voiceover-Pipeline
+übergeben, die Einheiten ohnehin auf einer Timeline mit kumulierten Offsets
+verketten.
+
+### Eigene Musik pro Short
+
+**Short Music for Selected …** gibt genau einem Short einen eigenen Titel (ein
+gruppierter Short besitzt einen Titel für seine gesamte Timeline);
+**Clear Short Music** entfernt ihn, der Short nutzt wieder die gemeinsame
+Auswahl *Background Music (Shorts)*. Alle anderen Shorts bleiben unberührt. Die
+strikte Trennung gilt weiter: Ein Short ohne Shorts-Titel bleibt stumm und erbt
+nie die Long-Form-Musik.
+
+CLI: `--short-group VOICEOVER+VOICEOVER[+…]` (wiederholbar),
+`--short-music-for VOICEOVER=MUSIK` und
+`--short-music-volume-for VOICEOVER=PROZENT` (beide wiederholbar, Schlüssel ist
+die erste Voiceover-Datei des Shorts). Projektdatei: `short_script_groups`,
+`short_music_overrides`, `short_music_volume_overrides` – alle drei sind
+standardmässig leer, ältere Projektdateien laden daher unverändert.
+
+Die Short-zu-Script-Zuordnung wird vor und während des Laufs berichtet: der
+Diagnose-Eintrag **YouTube Shorts Mapping** (`3 Short(s) from 4 voiceover
+unit(s) · grouped: Short 002-003 = voice_2.wav + voice_3.wav · own music:
+voice_1.wav → a.mp3`) sowie die Log-Zeile `YouTube Shorts script grouping: …`.
+Die Gruppierung berührt die Long-Form-Pipeline nie: Sie erhält in jedem Modus
+weiterhin alle Voiceover-Einheiten.
+
+Es wurde keine Render-Optimierung vorgenommen, weil keine hinreichend sichere,
+qualitätsneutrale Verbesserung identifiziert wurde: Die Gruppierung ändert nur,
+welche Einheiten ein bestehender Auftrag erhält – kein Render-Graph, kein
+Filter, keine Timing-Regel und kein Encoding-Parameter wurde verändert.

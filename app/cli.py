@@ -12,6 +12,7 @@ from .video_merger.models import (
     LONG_FORM_MUSIC_VOLUME,
     LONG_FORM_OUTRO_SECONDS,
     LONG_FORM_TRANSITION_DURATION,
+    MAX_MUSIC_VOLUME_PERCENT,
     MUSIC_VOLUME_PERCENT,
     SHORT_INTRO_SECONDS,
     SHORT_OUTRO_SECONDS,
@@ -200,6 +201,33 @@ def main() -> int:
         help=(
             f"YouTube Shorts background music volume in percent (default {SHORTS_MUSIC_VOLUME}); "
             "independent from --long-music-volume"
+        ),
+    )
+    parser.add_argument(
+        "--short-group", action="append", default=[], metavar="VOICEOVER+VOICEOVER",
+        help=(
+            "render the listed voiceovers/scripts as ONE Short, e.g. "
+            "'/vo/vo3.wav+/vo/vo4.wav'. Repeat for several groups. Members are "
+            "always rendered in voiceover-list order (the first list member "
+            "plays first), the group becomes one video, voiceover, subtitle and "
+            "music timeline, one MP4 named after all members (003-004.mp4) and "
+            "one transcript. Without this flag every voiceover stays its own Short."
+        ),
+    )
+    parser.add_argument(
+        "--short-music-for", action="append", default=[], metavar="VOICEOVER=MUSIC",
+        help=(
+            "own background track for exactly one Short, keyed by its first "
+            "voiceover file, e.g. '/vo/vo1.wav=/music/a.mp3'. Repeat for several "
+            "Shorts; every other Short keeps --short-music. A grouped Short owns "
+            "one track for its complete timeline. The Long-Form track is never used."
+        ),
+    )
+    parser.add_argument(
+        "--short-music-volume-for", action="append", default=[], metavar="VOICEOVER=PERCENT",
+        help=(
+            "own music volume in percent for exactly one Short, keyed like "
+            "--short-music-for. Every other Short keeps --short-music-volume."
         ),
     )
     parser.add_argument(
@@ -402,6 +430,43 @@ def main() -> int:
                 + ", ".join(f"{key} = {label}" for key, label in TIMELINE_AREA_LABELS.items())
             )
         folder_areas[str(Path(folder).expanduser().resolve())] = area
+    # Phase 25 script-to-Short mapping. Empty means no group and no per-Short
+    # music, so the historical one-voiceover-per-Short behaviour stays intact.
+    short_groups: list[list[str]] = []
+    for entry in args.short_group:
+        members = [
+            str(Path(part).expanduser().resolve())
+            for part in str(entry).split("+") if part.strip()
+        ]
+        if len(members) < 2:
+            parser.error(
+                "--short-group expects VOICEOVER+VOICEOVER[+VOICEOVER...]: at least "
+                "two voiceover files render together as one Short"
+            )
+        short_groups.append(members)
+    short_music_overrides: dict[str, str] = {}
+    for entry in args.short_music_for:
+        anchor, separator, track = str(entry).partition("=")
+        if not separator or not anchor.strip() or not track.strip():
+            parser.error("--short-music-for expects VOICEOVER=MUSIC")
+        short_music_overrides[str(Path(anchor).expanduser().resolve())] = str(
+            Path(track).expanduser().resolve()
+        )
+    short_music_volume_overrides: dict[str, int] = {}
+    for entry in args.short_music_volume_for:
+        anchor, separator, percent = str(entry).partition("=")
+        if not separator or not anchor.strip():
+            parser.error("--short-music-volume-for expects VOICEOVER=PERCENT")
+        try:
+            volume = int(str(percent).strip())
+        except ValueError:
+            parser.error(
+                f"--short-music-volume-for expects a percent integer (0-{MAX_MUSIC_VOLUME_PERCENT}), "
+                f"not {percent!r}"
+            )
+        short_music_volume_overrides[str(Path(anchor).expanduser().resolve())] = max(
+            0, min(MAX_MUSIC_VOLUME_PERCENT, volume)
+        )
     settings = ExportSettings(
         export_mode=normalize_export_mode(args.export_mode),
         aspect=args.aspect, resolution=args.resolution,
@@ -432,6 +497,9 @@ def main() -> int:
         voiceover_pause=max(0.0, min(10.0, args.voiceover_pause)),
         voiceover_order_mode=args.voiceover_order,
         music_path=args.music, short_music_path=args.short_music,
+        short_script_groups=short_groups,
+        short_music_overrides=short_music_overrides,
+        short_music_volume_overrides=short_music_volume_overrides,
         # Explicit visual-only sections. The Long-Form outro is the canonical
         # Main Video end padding (final_pause), so the tail exists exactly once.
         long_form_intro_seconds=args.long_intro,

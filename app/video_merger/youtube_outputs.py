@@ -11,7 +11,6 @@ orchestrator (see :mod:`script_sections`) and handed to :func:`short_settings`.
 
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -32,6 +31,13 @@ from .models import (
 )
 from .opening_effects import OPENING_EFFECT_NONE, normalize_opening_effect
 from .project_assets import read_script
+from .short_groups import (
+    build_short_plan,
+    short_cache_key,
+    short_music_for,
+    short_music_volume_for,
+    short_voiceover_pause,
+)
 from .subtitle_presets import get_preset
 from .subtitles import normalize_subtitle_animation
 from .transition_effects import normalize_transition
@@ -317,13 +323,37 @@ def main_timeline(settings: object, voice_total: float) -> MainTimeline:
 
 @dataclass(frozen=True, slots=True)
 class ShortJob:
-    """One independent Short render, including its authoritative audio unit."""
+    """One independent Short render, including its authoritative audio unit.
+
+    ``voiceover_path``/``script_path`` stay the FIRST member of the Short, so
+    every existing consumer (script sections, transcript sidecars, cache keys,
+    logs) keeps working unchanged. ``voiceover_paths``/``script_paths`` list all
+    members of a grouped Short in the authoritative list order; for the default
+    one-unit Short they hold exactly that single unit.
+    """
 
     index: int
     voiceover_path: Path
     script_path: Path | None
     output_name: str
     cache_key: str
+    voiceover_paths: tuple[Path, ...] = ()
+    script_paths: tuple[Path | None, ...] = ()
+
+    @property
+    def members(self) -> tuple[Path, ...]:
+        """All voiceover units of this Short, in render order."""
+        return self.voiceover_paths or (self.voiceover_path,)
+
+    @property
+    def member_scripts(self) -> tuple[Path | None, ...]:
+        """Script of every member, positionally paired with :attr:`members`."""
+        return self.script_paths or (self.script_path,)
+
+    @property
+    def grouped(self) -> bool:
+        """True when several scripts/voiceovers render as this ONE Short."""
+        return len(self.members) > 1
 
 
 def normalize_export_mode(value: str | None) -> str:
@@ -381,7 +411,15 @@ def _matched_scripts(settings: ExportSettings, ordered_units: list[Path]) -> lis
 
 
 def build_short_jobs(settings: ExportSettings) -> list[ShortJob]:
-    """Create one stable job per configured voiceover, independent of scripts."""
+    """Create one stable job per planned Short, independent of scripts.
+
+    Without configured groups this stays exactly the historical behaviour: one
+    job per voiceover unit, numbered from its position in the ordered list,
+    named ``NNN`` and keyed with the same cache formula. A configured group
+    becomes ONE job carrying every member voiceover in list order, so the
+    existing multi-voiceover pipeline renders it on a single video, voiceover,
+    subtitle and music timeline (never as concatenated finished Shorts).
+    """
     units = _effective_voiceovers(settings)
     matched = str(getattr(settings, "script_mode", "single")).casefold() in {"matched", "individual"}
     global_value = str(getattr(settings, "global_script_path", "") or "").strip()
@@ -393,12 +431,27 @@ def build_short_jobs(settings: ExportSettings) -> list[ShortJob]:
     global_path = Path(global_value).expanduser().resolve() if global_value else None
     scripts = _matched_scripts(settings, units) if matched else [global_path] * len(units)
     jobs: list[ShortJob] = []
-    for index, (unit, script) in enumerate(zip(units, scripts), start=1):
+    for plan in build_short_plan(units, getattr(settings, "short_script_groups", ())):
         # The index is deliberately part of the identity even when two rows
         # point to the same file. Shorts are output jobs, not deduplicated audio
-        # assets, and must never share a cache result across rows.
-        digest = hashlib.sha256(f"short:{index}:{unit}".encode("utf-8")).hexdigest()[:16]
-        jobs.append(ShortJob(index, unit, script, f"{index:03d}", f"youtube-short-{index:03d}-{digest}"))
+        # assets, and must never share a cache result across rows. A grouped
+        # Short keeps the index of its first member and folds every member into
+        # its cache digest instead, so membership changes invalidate the entry.
+        member_scripts = tuple(
+            scripts[position - 1] if 0 < position <= len(scripts) else None
+            for position in plan.positions
+        )
+        jobs.append(
+            ShortJob(
+                plan.index,
+                plan.units[0],
+                member_scripts[0],
+                plan.output_name,
+                short_cache_key(plan),
+                voiceover_paths=plan.units,
+                script_paths=member_scripts,
+            )
+        )
     return jobs
 
 
@@ -501,9 +554,23 @@ def short_settings(
             else str(Path(script_section).expanduser().resolve())
         )
     if script_mode == "matched" or section is None:
-        scripts = [str(job.script_path)] if job.script_path is not None else []
+        if job.grouped:
+            # One entry per member keeps the positional/stem pairing contract of
+            # the multi-voiceover pipeline: an unassigned member stays an empty
+            # slot (filtered downstream) instead of shifting the next script.
+            scripts = [str(path) if path is not None else "" for path in job.member_scripts]
+        else:
+            scripts = [str(job.script_path)] if job.script_path is not None else []
         script_path = str(job.script_path) if job.script_path is not None else ""
-        global_script = "" if script_mode == "matched" else script_path
+        if script_mode == "matched":
+            # A grouped Short ships ONE transcript containing every member's text
+            # in render order. Matched subtitle alignment keeps using the
+            # per-member ``script_paths`` above, and create_main ignores
+            # ``global_script_path`` in matched mode, so this feeds only the
+            # ``.txt`` sidecar. A single Short keeps the historical empty value.
+            global_script = section if (job.grouped and section) else ""
+        else:
+            global_script = script_path
     else:
         scripts = [section] if section else []
         script_path = section
@@ -538,7 +605,9 @@ def short_settings(
         aspect="9:16",
         output_preset="youtube_vertical",
         resolution="Auto",
-        voiceover_paths=[str(job.voiceover_path)],
+        # All members of this Short on ONE timeline. For the default one-unit
+        # Short this is exactly the historical single-entry list.
+        voiceover_paths=[str(unit) for unit in job.members],
         voiceover_path=str(job.voiceover_path),
         script_paths=scripts,
         script_path=script_path,
@@ -546,8 +615,11 @@ def short_settings(
         subtitle_enabled=subtitle_enabled,
         # Strictly separate background music: a Short plays only its own
         # selected track, and an unselected Shorts track means no music at all.
-        # The Long-Form track above is never mixed into a vertical render.
-        music_path=str(getattr(settings, "short_music_path", "") or ""),
+        # The Long-Form track above is never mixed into a vertical render. A
+        # per-Short override (keyed by this Short's first voiceover, so a
+        # grouped Short owns exactly one track) replaces the shared Shorts
+        # selection for this job only.
+        music_path=short_music_for(settings, job.voiceover_path),
         # Independent Shorts audio and transition settings, resolved into the
         # canonical fields of THIS job only: a Short never inherits the
         # Long-Form music volume or transition, and the Long-Form job never
@@ -555,7 +627,7 @@ def short_settings(
         # 0.000 s and plays through the visual outro to the final frame.
         music_volume=output_music_volume(
             settings,
-            getattr(settings, "shorts_music_volume", None),
+            short_music_volume_for(settings, job.voiceover_path),
             label="Shorts Music Volume",
             default=SHORTS_MUSIC_VOLUME,
         ),
@@ -570,9 +642,11 @@ def short_settings(
             label="Shorts Transition Duration",
             default=SHORTS_TRANSITION_DURATION,
         ),
-        # A Short is one acoustic unit. Inter-unit silence belongs only to the
-        # combined Long-Form timeline, never to an individual Short.
-        voiceover_pause=0.0,
+        # A single-unit Short is one acoustic unit: inter-unit silence belongs
+        # only to the combined Long-Form timeline, never to an individual Short.
+        # A grouped Short IS a combined voiceover timeline (Script A, pause,
+        # Script B) on ONE Short, so it keeps the project's configured pause.
+        voiceover_pause=short_voiceover_pause(settings, job.grouped),
         # The spoken audio stays the authoritative duration. The Short begins
         # with its own visual-only intro and continues with video-only material
         # for its visual outro; both come from the normal video timeline.

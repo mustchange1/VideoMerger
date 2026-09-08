@@ -445,3 +445,80 @@ Feature laden unverändert und bleiben ein No-op. Alle fünf Felder stehen in
 dict deterministisch, sodass äquivalente Mappings dieselbe Identität ergeben.
 `FINGERPRINT_SCHEMA` steigt von `4` auf `5`, damit kein Eintrag, der ohne
 Quellenordnung entstand, still wiederverwendet wird; Stage 2 behält Schema `2`.
+
+## Phase 25: Ausgabe-Modi, Script-Gruppen und eigene Short-Musik
+
+### Planungsschicht `short_groups.py`
+
+Die komplette neue Logik liegt in einem eigenen, reinen Planungsmodul ohne
+FFmpeg-, GUI- oder Engine-Abhängigkeit:
+
+* `normalize_short_groups(raw, ordered_units)` validiert die Gruppen gegen die
+  geordnete Voiceover-Liste: Mitglieder werden wie die Einheitenliste aufgelöst,
+  unbekannte entfallen, eine Einheit gehört zu höchstens einer Gruppe (die erste
+  gewinnt), Mitglieder werden nach ihrer Listenposition sortiert und Gruppen mit
+  weniger als zwei verbleibenden Mitgliedern entfallen ganz.
+* `build_short_plan(units, groups)` liefert einen `ShortPlan` pro Short
+  (`index`, `positions`, `units`, `output_name`). Ohne Gruppen ist das exakt ein
+  Plan pro Einheit mit der bisherigen Nummer und dem bisherigen Namen.
+* `short_output_name` erzeugt `003` für eine Einheit und `003-004` (bzw.
+  `004-005-006`) für eine Gruppe; `short_cache_key` bleibt für eine Einheit
+  byteweise identisch zur bisherigen Formel
+  `youtube-short-<index>-<sha256("short:<index>:<unit>")[:16]>` und faltet bei
+  einer Gruppe alle Mitglieder in den Digest.
+* `short_music_for` / `short_music_volume_for` / `short_voiceover_pause` lösen
+  die Short-spezifischen Werte auf. Eigene Musik überschreibt nur diesen einen
+  Short; ohne Shorts-Titel bleibt der Short stumm (keine Long-Form-Erbschaft).
+  `short_voiceover_pause` gibt `0.0` für einen Short aus einer Einheit zurück
+  (bisheriges Verhalten) und die konfigurierte Projekt-Pause für eine Gruppe,
+  weil eine Gruppe wirklich eine kombinierte Voiceover-Timeline ist.
+
+### Auftragsmodell und Orchestrierung
+
+`ShortJob` behält `voiceover_path`/`script_path` als **erste** Mitglieder, damit
+alle bestehenden Konsumenten (Script-Abschnitte, Transkript-Sidecars, Cache,
+Logs) unverändert funktionieren, und ergänzt `voiceover_paths`/`script_paths`
+sowie die Eigenschaften `members`, `member_scripts`, `grouped`.
+`build_short_jobs` erzeugt einen Auftrag pro `ShortPlan`; `short_settings` setzt
+`voiceover_paths` auf alle Mitglieder. Damit rendert die bestehende
+Multi-Voiceover-Pipeline eine Gruppe als **einen** Short: eine Video-, Audio-,
+Untertitel- und Musik-Timeline, ein Encode, keine nachträgliche MP4-Konkatenation.
+Die aufsummierten Untertitel-Zeitstempel stammen aus dem bestehenden
+matched-Alignment ("concatenate the canonical word timelines with cumulative
+offsets"), das unverändert blieb.
+
+`_short_script_sections` hängt an einen gruppierten Auftrag die
+aneinandergereihten Mitglieder-Abschnitte (Listenreihenfolge) statt eines
+einzelnen Abschnitts; fehlt eine Einheit akustisch, bleibt es bei der bisherigen
+Konfiguration. Im Individual-Scripts-Modus ergänzt
+`_grouped_matched_sections` **nur** für Gruppen eine kombinierte
+Transkriptquelle, damit das einzelne `.txt` eines gruppierten Shorts Script A
+gefolgt von Script B enthält (`global_script_path` wird im matched-Modus von
+`create_main` ignoriert, beeinflusst also weder Alignment noch Untertitel).
+Der Without-Replacement-Pool reserviert in `create_youtube_exports` die komplette
+kombinierte Dauer (`voiceover_timeline_duration` über alle Mitglieder plus
+konfigurierter Pause) statt nur die Dauer der ersten Einheit.
+
+### Persistenz, Cache und Diagnose
+
+Drei neue Felder in `ExportSettings` (`short_script_groups`,
+`short_music_overrides`, `short_music_volume_overrides`) sind leer per Default;
+`SettingsStore` braucht keine Migration, weil `load()` unbekannte Schlüssel
+filtert und `save()` über `asdict()` schreibt. Ein Bump von `FINGERPRINT_SCHEMA`
+war **nicht** nötig: Die Stage-1-Identität enthält bereits `voiceovers` (alle
+Einheiten des Auftrags), `scripts` und `music`, ein gruppierter Short oder eine
+eigene Short-Musik ergibt also automatisch einen anderen Fingerprint. Die
+Diagnose ergänzt den Eintrag `YouTube Shorts Mapping`, der Lauf loggt
+`YouTube Shorts script grouping: …`.
+
+### GUI und CLI
+
+Die Voiceover-/Script-Tabelle behält ihr Verhalten (Drag-Reihenfolge,
+Move-Buttons, Remove/Script-Aktionen arbeiten weiter auf der aktuellen Zeile)
+und wird nur erweitert: vierte Spalte *Short*, `ExtendedSelection` ausschließlich
+auf dieser Tabelleninstanz, eine zweite Button-Zeile im selben Grid-Row-Index
+(keine bestehende Zeile verschiebt sich) mit Group/Ungroup und eigener
+Short-Musik. Gruppen und Overrides werden als Pfade gespeichert und bei jeder
+Änderung der Liste bereinigt (`_prune_short_state`), überleben also Umsortieren.
+CLI: `--short-group A+B`, `--short-music-for VO=MUSIK`,
+`--short-music-volume-for VO=PROZENT`.

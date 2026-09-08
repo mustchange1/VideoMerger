@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, QUrl, Signal
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QBrush, QCloseEvent, QColor, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -24,6 +24,7 @@ from ..models import (
     LONG_FORM_MUSIC_VOLUME,
     LONG_FORM_OUTRO_SECONDS,
     LONG_FORM_TRANSITION_DURATION,
+    MAX_MUSIC_VOLUME_PERCENT,
     MAX_VISUAL_SECTION_SECONDS,
     SHORT_INTRO_SECONDS,
     SHORT_OUTRO_SECONDS,
@@ -41,6 +42,7 @@ from ..opening_effects import OPENING_EFFECTS, normalize_opening_effect
 from ..project_order import natural_order, natural_sort_key, randomize_order
 from ..project_assets import probe_audio
 from ..quality import QUALITY_KEYS, QUALITY_PRESETS, quality_label
+from ..short_groups import build_short_plan
 from ..subtitles import (
     DEFAULT_LONG_ANIMATION,
     DEFAULT_SHORT_ANIMATION,
@@ -157,6 +159,14 @@ def _transition_duration_spin(default: float, tooltip: str) -> QDoubleSpinBox:
     spin.setToolTip(tooltip)
     spin.setValue(default)
     return spin
+
+
+def _coerce_percent(value: object) -> int | None:
+    """Tolerant music-volume percent for hand-edited project files."""
+    try:
+        return max(0, min(MAX_MUSIC_VOLUME_PERCENT, int(str(value).strip())))
+    except (TypeError, ValueError):
+        return None
 
 
 class ReorderTableWidget(QTableWidget):
@@ -437,11 +447,21 @@ class MainWindow(QMainWindow):
         self.voiceover_pause_spin.setSuffix(" sec")
         self.voiceover_pause_spin.setValue(0.7)
         self.voiceover_pause_spin.valueChanged.connect(self._update_pool_status)
-        self.voiceover_table = ReorderTableWidget(0, 3)
-        self.voiceover_table.setHorizontalHeaderLabels(["#", "Voiceover", "Script"])
+        # The fourth column shows which Short a row renders into, so the
+        # script-to-Short mapping (including groups) is visible before the run.
+        self.voiceover_table = ReorderTableWidget(0, 4)
+        self.voiceover_table.setHorizontalHeaderLabels(["#", "Voiceover", "Script", "Short"])
         self.voiceover_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.voiceover_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.voiceover_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.voiceover_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        # Grouping needs several rows at once. Every existing handler keeps
+        # working on the current row, so single-row behaviour is unchanged.
+        self.voiceover_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.voiceover_table.setToolTip(
+            "One row = one voiceover/script unit. Select several rows (Ctrl/Shift + click) "
+            "and use 'Group Selected' to render them as ONE Short."
+        )
         self.voiceover_table.setMaximumHeight(150)
         self.voiceover_table.row_move_requested.connect(self._move_voiceover_row)
         self.voiceover_add_button = QPushButton("Add Voiceover Files …")
@@ -454,6 +474,25 @@ class MainWindow(QMainWindow):
         self.voiceover_top_button = QPushButton("Move to Top")
         self.voiceover_bottom_button = QPushButton("Move to Bottom")
         self.voiceover_reset_button = QPushButton("Reset to Default Order")
+        self.voiceover_group_button = QPushButton("Group Selected → 1 Short")
+        self.voiceover_group_button.setToolTip(
+            "Render the selected voiceovers/scripts as ONE Short: one video, voiceover, "
+            "subtitle and music timeline, one MP4 and one transcript. The list order stays "
+            "authoritative (the topmost selected unit plays first)."
+        )
+        self.voiceover_ungroup_button = QPushButton("Ungroup Selected")
+        self.voiceover_ungroup_button.setToolTip(
+            "Dissolve the Short group of the selected rows: every unit becomes its own Short again."
+        )
+        self.short_own_music_button = QPushButton("Short Music for Selected …")
+        self.short_own_music_button.setToolTip(
+            "Give exactly this Short its own background track (a grouped Short owns one track). "
+            "All other Shorts keep the shared Shorts music above."
+        )
+        self.short_own_music_clear_button = QPushButton("Clear Short Music")
+        self.short_own_music_clear_button.setToolTip(
+            "Remove the own track of the selected Short; it uses the shared Shorts music again."
+        )
         self.voiceover_add_button.clicked.connect(self._add_voiceovers)
         self.voiceover_remove_button.clicked.connect(self._remove_voiceover)
         self.voiceover_delete_all_button.clicked.connect(self._delete_all_voiceovers)
@@ -464,6 +503,10 @@ class MainWindow(QMainWindow):
         self.voiceover_top_button.clicked.connect(lambda: self._move_voiceover_selected_to(-10_000))
         self.voiceover_bottom_button.clicked.connect(lambda: self._move_voiceover_selected_to(10_000))
         self.voiceover_reset_button.clicked.connect(self._reset_voiceover_order)
+        self.voiceover_group_button.clicked.connect(self._group_selected_voiceovers)
+        self.voiceover_ungroup_button.clicked.connect(self._ungroup_selected_voiceovers)
+        self.short_own_music_button.clicked.connect(self._choose_short_music)
+        self.short_own_music_clear_button.clicked.connect(self._clear_short_music)
         audio_layout.addWidget(QLabel("Script Mode"), 0, 0)
         audio_layout.addWidget(self.script_mode_combo, 0, 1, 1, 2)
         audio_layout.addWidget(QLabel("Voiceover Order"), 1, 0)
@@ -480,7 +523,18 @@ class MainWindow(QMainWindow):
         voice_buttons.addWidget(self.voiceover_top_button)
         voice_buttons.addWidget(self.voiceover_bottom_button)
         voice_buttons.addWidget(self.voiceover_reset_button)
-        audio_layout.addLayout(voice_buttons, 3, 0, 1, 3)
+        # Second button row for the Short mapping. Both rows share grid row 3 so
+        # no existing row index (and no unrelated widget) has to move.
+        short_buttons = QHBoxLayout()
+        short_buttons.addWidget(self.voiceover_group_button)
+        short_buttons.addWidget(self.voiceover_ungroup_button)
+        short_buttons.addWidget(self.short_own_music_button)
+        short_buttons.addWidget(self.short_own_music_clear_button)
+        short_buttons.addStretch(1)
+        voice_button_rows = QVBoxLayout()
+        voice_button_rows.addLayout(voice_buttons)
+        voice_button_rows.addLayout(short_buttons)
+        audio_layout.addLayout(voice_button_rows, 3, 0, 1, 3)
         audio_layout.addWidget(QLabel("Global Script File"), 4, 0)
         audio_layout.addWidget(self.global_script_edit, 4, 1)
         audio_layout.addWidget(self.global_script_button, 4, 2)
@@ -1419,6 +1473,25 @@ class MainWindow(QMainWindow):
             script_units = [self.saved.script_path]
         self.voiceover_paths_list: list[str] = voiceover_units
         self.voiceover_scripts_list: list[str] = script_units
+        # Script-to-Short mapping of the loaded project. Older project files
+        # carry none of these keys, so the defaults keep their exact behaviour:
+        # one voiceover = one Short and one shared Shorts music track.
+        self.short_group_lists: list[list[str]] = [
+            [str(member) for member in group]
+            for group in (getattr(self.saved, "short_script_groups", []) or [])
+            if isinstance(group, (list, tuple))
+        ]
+        self.short_music_map: dict[str, str] = {
+            str(key): str(value)
+            for key, value in (getattr(self.saved, "short_music_overrides", {}) or {}).items()
+            if str(value or "").strip()
+        }
+        self.short_music_volume_map: dict[str, int] = {
+            str(key): percent
+            for key, value in (getattr(self.saved, "short_music_volume_overrides", {}) or {}).items()
+            if (percent := _coerce_percent(value)) is not None
+        }
+        self._prune_short_state(voiceover_units)
         saved_global_script = getattr(self.saved, "global_script_path", "") or ""
         if not saved_global_script and self.saved.script_mode == "single" and script_units:
             # Migration fallback for projects created before the explicit
@@ -1685,6 +1758,12 @@ class MainWindow(QMainWindow):
             # its own selected track.
             long_form_music_volume=int(self.music_volume_slider.value()),
             shorts_music_volume=int(self.short_music_volume_slider.value()),
+            # Phase 25 script-to-Short mapping. Both stay empty by default, so a
+            # project without groups and without per-Short music renders exactly
+            # like before (one voiceover = one Short, shared Shorts music).
+            short_script_groups=[list(group) for group in (getattr(self, "short_group_lists", []) or [])],
+            short_music_overrides=dict(getattr(self, "short_music_map", {}) or {}),
+            short_music_volume_overrides=dict(getattr(self, "short_music_volume_map", {}) or {}),
             music_preset=str((self.music_preset_combo.currentData() or ("custom", 0))[0]),
             ducking_enabled=self.ducking_check.isChecked(),
             ducking_attack_ms=self.duck_attack_spin.value(),
@@ -2352,19 +2431,204 @@ class MainWindow(QMainWindow):
     def _render_voiceover_table(self, selected_row: int | None = None) -> None:
         units = list(getattr(self, "voiceover_paths_list", []))
         scripts = list(getattr(self, "voiceover_scripts_list", []))
+        # Which Short does this row render into? By default one row is one Short;
+        # grouped rows share one Short name (e.g. "003-004") and are highlighted,
+        # so the script-to-Short mapping is visible before the run starts.
+        short_by_row: dict[int, tuple[str, bool]] = {}
+        for plan in build_short_plan(units, getattr(self, "short_group_lists", [])):
+            for position in plan.positions:
+                short_by_row[position - 1] = (
+                    f"{plan.output_name} (group)" if plan.grouped else plan.output_name,
+                    plan.grouped,
+                )
         self.voiceover_table.setRowCount(len(units))
         for row, path_text in enumerate(units):
             name = Path(path_text).name
             script_text = scripts[row] if row < len(scripts) else ""
-            values = [str(row + 1), name, script_text or "— no script —"]
+            short_label, grouped = short_by_row.get(row, ("—", False))
+            values = [str(row + 1), name, script_text or "— no script —", short_label]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column == 0:
+                if column in (0, 3):
                     item.setTextAlignment(Qt.AlignCenter)
+                if grouped:
+                    item.setBackground(QBrush(QColor(214, 232, 250)))
+                    item.setToolTip(
+                        f"Renders together with the other rows of Short {short_label.split(' ')[0]} "
+                        "as ONE Short (list order: topmost selected unit first)."
+                    )
                 self.voiceover_table.setItem(row, column, item)
         if selected_row is not None and units:
             self.voiceover_table.selectRow(max(0, min(selected_row, len(units) - 1)))
         self._sync_subtitle_request()
+
+    # ------------------------------------------------------------------ #
+    # Phase 25: script-to-Short mapping (grouping + per-Short music)      #
+    # ------------------------------------------------------------------ #
+    def _prune_short_state(self, keep: list[str] | None = None) -> None:
+        """Drop group members and per-Short music of voiceovers that are gone.
+
+        Grouping is stored by voiceover path, so it survives reordering. A unit
+        that leaves the list also leaves its group, and a group that drops below
+        two members is no group at all (its unit renders as its own Short again).
+        """
+        allowed = {
+            str(value) for value in (
+                list(getattr(self, "voiceover_paths_list", [])) if keep is None else keep
+            )
+        }
+        groups = [
+            [str(member) for member in group if str(member) in allowed]
+            for group in (getattr(self, "short_group_lists", []) or [])
+        ]
+        self.short_group_lists = [group for group in groups if len(group) > 1]
+        self.short_music_map = {
+            str(key): str(value)
+            for key, value in (getattr(self, "short_music_map", {}) or {}).items()
+            if str(key) in allowed and str(value or "").strip()
+        }
+        self.short_music_volume_map = {
+            str(key): percent
+            for key, value in (getattr(self, "short_music_volume_map", {}) or {}).items()
+            if str(key) in allowed and (percent := _coerce_percent(value)) is not None
+        }
+
+    def _selected_voiceover_rows(self) -> list[int]:
+        """Rows the user selected, in list order (the authoritative order)."""
+        units = list(getattr(self, "voiceover_paths_list", []))
+        model = self.voiceover_table.selectionModel()
+        rows = {index.row() for index in model.selectedRows()} if model is not None else set()
+        if not rows and self.voiceover_table.currentRow() >= 0:
+            rows = {self.voiceover_table.currentRow()}
+        return sorted(row for row in rows if 0 <= row < len(units))
+
+    def _group_selected_voiceovers(self) -> None:
+        """Render the selected voiceovers/scripts as ONE Short."""
+        if self.busy:
+            return
+        units = list(getattr(self, "voiceover_paths_list", []))
+        rows = self._selected_voiceover_rows()
+        if len(rows) < 2:
+            QMessageBox.information(
+                self, "Short group",
+                "Select at least two rows (Ctrl/Shift + click) that should render as ONE Short.",
+            )
+            return
+        members = [units[row] for row in rows]
+        self._prune_short_state()
+        # A unit belongs to exactly one group: the new group wins.
+        groups = [
+            [member for member in group if member not in members]
+            for group in (getattr(self, "short_group_lists", []) or [])
+        ]
+        groups = [group for group in groups if len(group) > 1]
+        groups.append(members)
+        self.short_group_lists = groups
+        self._render_voiceover_table()
+        self._append_log(
+            "Short-Gruppe: " + " + ".join(Path(member).name for member in members)
+            + " = EIN Short (" + ", ".join(f"Zeile {row + 1}" for row in rows)
+            + "; Reihenfolge = Listenreihenfolge)"
+        )
+        self._save_project()
+        self._update_pool_status()
+
+    def _ungroup_selected_voiceovers(self) -> None:
+        """Dissolve the group of the selected rows: one Short per unit again."""
+        if self.busy:
+            return
+        units = list(getattr(self, "voiceover_paths_list", []))
+        rows = self._selected_voiceover_rows()
+        selected = {units[row] for row in rows}
+        groups = [
+            [member for member in group if member not in selected]
+            for group in (getattr(self, "short_group_lists", []) or [])
+        ]
+        kept = [group for group in groups if len(group) > 1]
+        if len(kept) == len([group for group in (getattr(self, "short_group_lists", []) or [])]):
+            QMessageBox.information(
+                self, "Short group",
+                "The selected rows are not part of a Short group.",
+            )
+            return
+        self.short_group_lists = kept
+        self._render_voiceover_table()
+        self._append_log(
+            "Short-Gruppe aufgelöst: "
+            + ", ".join(Path(member).name for member in sorted(selected))
+            + " -> wieder jeweils EIN eigener Short"
+        )
+        self._save_project()
+        self._update_pool_status()
+
+    def _short_anchor(self, row: int) -> str | None:
+        """First voiceover of the Short this row belongs to (its override key)."""
+        units = list(getattr(self, "voiceover_paths_list", []))
+        if not 0 <= row < len(units):
+            return None
+        for plan in build_short_plan(units, getattr(self, "short_group_lists", [])):
+            if row + 1 in plan.positions:
+                return str(plan.units[0])
+        return str(units[row])
+
+    def _choose_short_music(self) -> None:
+        """Give exactly ONE Short its own background track."""
+        if self.busy:
+            return
+        rows = self._selected_voiceover_rows()
+        if len(rows) != 1:
+            QMessageBox.information(
+                self, "Short music",
+                "Select exactly one row: its Short (including a grouped Short) gets one own track.",
+            )
+            return
+        anchor = self._short_anchor(rows[0])
+        if anchor is None:
+            return
+        current = str((getattr(self, "short_music_map", {}) or {}).get(anchor, "") or "")
+        selected, _ = QFileDialog.getOpenFileName(
+            self, "Choose Music for This Short", current or str(self.root),
+            "Audio (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.opus);;All files (*)",
+        )
+        if not selected:
+            return
+        music = str(Path(selected).expanduser().resolve())
+        mapping = dict(getattr(self, "short_music_map", {}) or {})
+        mapping[anchor] = music
+        self.short_music_map = mapping
+        self._render_voiceover_table()
+        self._append_log(
+            f"Short-Musik (eigen): Short {Path(anchor).name} -> {Path(music).name} "
+            "(alle anderen Shorts behalten die gemeinsame Shorts-Musik)"
+        )
+        self._save_project()
+
+    def _clear_short_music(self) -> None:
+        """Remove the own track of the selected Short(s)."""
+        if self.busy:
+            return
+        rows = self._selected_voiceover_rows()
+        anchors = {anchor for anchor in (self._short_anchor(row) for row in rows) if anchor}
+        mapping = dict(getattr(self, "short_music_map", {}) or {})
+        volumes = dict(getattr(self, "short_music_volume_map", {}) or {})
+        removed = [anchor for anchor in anchors if mapping.pop(anchor, None) is not None]
+        for anchor in anchors:
+            volumes.pop(anchor, None)
+        if not removed:
+            QMessageBox.information(
+                self, "Short music",
+                "The selected Short(s) have no own track; they already use the shared Shorts music.",
+            )
+            return
+        self.short_music_map = mapping
+        self.short_music_volume_map = volumes
+        self._render_voiceover_table()
+        self._append_log(
+            "Short-Musik (eigen) entfernt für "
+            + ", ".join(Path(anchor).name for anchor in sorted(removed))
+            + "; diese Shorts nutzen wieder die gemeinsame Shorts-Musik."
+        )
+        self._save_project()
 
     def _add_voiceovers(self) -> None:
         if self.busy:
@@ -2408,6 +2672,8 @@ class MainWindow(QMainWindow):
         scripts.pop(row)
         self.voiceover_paths_list = units
         self.voiceover_scripts_list = scripts
+        # A removed unit also leaves its Short group and its own music override.
+        self._prune_short_state(units)
         self._render_voiceover_table()
         self._save_project()
         self._update_pool_status()
@@ -2418,6 +2684,9 @@ class MainWindow(QMainWindow):
             return
         self.voiceover_paths_list = []
         self.voiceover_scripts_list = []
+        self.short_group_lists = []
+        self.short_music_map = {}
+        self.short_music_volume_map = {}
         # Reset all state that belongs to the deleted voiceover set. In
         # particular, a subsequent add starts in the same mode/order/pause
         # state as a fresh project and cannot inherit a stale subtitle request.

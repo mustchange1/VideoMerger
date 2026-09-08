@@ -1427,6 +1427,46 @@ class MainProjectEngine:
             return
         log(f"YouTube Short script text: {target}")
 
+    def _grouped_matched_sections(
+        self,
+        short_jobs: list[ShortJob],
+        log: LogCallback,
+    ) -> dict[int, Path | str]:
+        """Combined transcript source for grouped Shorts in Individual Scripts mode.
+
+        Subtitles keep aligning each member against its own script (the proven
+        matched pipeline with cumulative offsets). This only gives a grouped
+        Short ONE ``.txt`` sidecar whose text is every member's script in render
+        order, so no text is lost and no ambiguous duplicate file appears.
+        Single-unit Shorts are omitted and keep their own script unchanged.
+        """
+        result: dict[int, Path | str] = {}
+        summary: list[str] = []
+        for job_index, job in enumerate(short_jobs):
+            if not job.grouped:
+                continue
+            parts: list[str] = []
+            for script in job.member_scripts:
+                if script is None:
+                    continue
+                try:
+                    text = read_script(
+                        require_asset(script, "Textskript", {".txt", ".text", ".md"})
+                    ).strip()
+                except VideoMergerError as exc:
+                    log(f"Transcript part skipped for Short {job.output_name}: {script}: {exc}")
+                    continue
+                if text:
+                    parts.append(text)
+            if not parts:
+                continue
+            combined = "\n\n".join(parts)
+            result[job_index] = script_section_path(combined, f"Short_{job.output_name}")
+            summary.append(f"{job.output_name}={len(script_word_spans(combined))} word(s)")
+        if summary:
+            log("Combined transcript for grouped Shorts: " + ", ".join(summary))
+        return result
+
     def _short_script_sections(
         self,
         settings: ExportSettings,
@@ -1459,7 +1499,11 @@ class MainProjectEngine:
         )
         script = global_script_path(settings) if script_mode == "single" else None
         if script is None:
-            return {}
+            # Individual/matched scripts need no per-unit derivation: every Short
+            # already owns its own script. A GROUPED Short still needs one
+            # combined transcript source, so its single ``.txt`` sidecar contains
+            # Script A followed by Script B instead of only the first member.
+            return self._grouped_matched_sections(short_jobs, log)
         subtitle_mode = normalize_subtitle_output_mode(
             getattr(settings, "subtitle_output_mode", SUBTITLE_OUTPUT_COMBINED)
         )
@@ -1511,17 +1555,29 @@ class MainProjectEngine:
             result: dict[int, Path | str] = {}
             summary: list[str] = []
             for job_index, job in enumerate(short_jobs):
-                voice = Path(job.voiceover_path).expanduser().resolve()
-                position = positions.get(str(voice))
-                if position is None:
+                # A grouped Short speaks every member's section, in the
+                # authoritative list order: the combined text becomes ONE
+                # transcript sidecar and ONE continuous subtitle source for that
+                # single Short. For the default one-unit Short this resolves to
+                # exactly the historical single section.
+                member_positions = [
+                    positions.get(str(Path(unit).expanduser().resolve())) for unit in job.members
+                ]
+                member_positions = [value for value in member_positions if value is not None]
+                if not member_positions:
                     # Not part of the acoustic timeline: keep its configuration.
                     continue
-                section = sections[position].strip()
+                spoken = [sections[value].strip() for value in member_positions]
+                section = " ".join(part for part in spoken if part)
+                label = (
+                    Path(job.voiceover_path).name if not job.grouped
+                    else " + ".join(unit.name for unit in job.members)
+                )
                 if not section:
                     result[job_index] = NO_SCRIPT_SECTION
                     summary.append(f"{job.output_name}=no spoken script section")
                     notes.append(
-                        f"YouTube Short {job.output_name}: {voice.name} speaks no part of the global "
+                        f"YouTube Short {job.output_name}: {label} speaks no part of the global "
                         "script; this Short stays without subtitles instead of showing text it never says."
                     )
                     continue
@@ -1610,6 +1666,19 @@ class MainProjectEngine:
             short_jobs = build_short_jobs(settings)
             if not short_jobs:
                 raise VideoMergerError("YouTube Shorts benötigen mindestens ein Voiceover.")
+            grouped_jobs = [job for job in short_jobs if job.grouped]
+            if grouped_jobs:
+                # Explicit Short -> script mapping for logs, diagnostics and the
+                # export manifest: one grouped Short lists all of its members in
+                # render order, every other Short stays a 1:1 mapping.
+                log(
+                    f"YouTube Shorts script grouping: {len(short_jobs)} Short(s) from "
+                    f"{sum(len(job.members) for job in short_jobs)} voiceover unit(s); "
+                    + "; ".join(
+                        f"Short {job.output_name} = " + " + ".join(unit.name for unit in job.members)
+                        for job in grouped_jobs
+                    )
+                )
             # One global script stays one global source: the Long-Form receives
             # the complete text, each Short only the section its own voiceover
             # speaks. Derived once here, before the per-job settings are built.
@@ -1650,13 +1719,30 @@ class MainProjectEngine:
                     min(50.0, float(getattr(short_entries[0][1], "max_stretch_percent", 10.0) or 10.0)),
                 )
                 for _kind, short_job_settings, _job_dir, short_stem in short_entries:
-                    voice_path = Path(short_job_settings.voiceover_path).expanduser().resolve()
-                    voice_asset = probe_audio(self.engine.ffprobe_path, voice_path)
+                    # Every member of a grouped Short is spoken on this ONE
+                    # timeline, so the reservation covers the complete combined
+                    # voiceover including the configured inter-unit pauses --
+                    # exactly the duration create_main computes for the render.
+                    # A single-member Short keeps the historical single probe.
+                    voice_paths = [
+                        Path(value).expanduser().resolve()
+                        for value in (
+                            list(short_job_settings.voiceover_paths)
+                            or [short_job_settings.voiceover_path]
+                        )
+                    ]
+                    voice_total = voiceover_timeline_duration(
+                        [
+                            probe_audio(self.engine.ffprobe_path, voice_path).duration
+                            for voice_path in voice_paths
+                        ],
+                        voiceover_pause(short_job_settings),
+                    )
                     planned_short_media[short_stem] = planning_pool.take_for_duration(
                         # Reserve intro + spoken timeline + outro for this Short,
                         # so the without-replacement pool never hands the next
                         # Short material that this one still needs.
-                        main_timeline(short_job_settings, voice_asset.duration).target,
+                        main_timeline(short_job_settings, voice_total).target,
                         short_job_settings.transition_duration,
                         planning_fps,
                         short_job_settings.short_video_mode,
