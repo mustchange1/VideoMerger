@@ -1,7 +1,15 @@
 # VideoMerger — Phase 27 Delivery Report
 
+> **Update 2026-09-11:** the base named below (`c09ba40`) turned out to be
+> incomplete (it lacks Phases 19–26). The true last-known-good state
+> `afc801918150584c136c355196ef622963c457fc` was merged additively on top of
+> this Phase-27 line (merge commit `1f54c1a`). See
+> [`PHASE26_PARITY_REPORT.md`](PHASE26_PARITY_REPORT.md) for the final
+> feature-parity audit, the fixed Shorts music/transition regressions and the
+> complete test/regression results.
+
 **Branch:** `arena/01a091fe-videomerger`
-**Final SHA:** `5dca15fd593f1892a2c19d8d62ec3ced748a8789`
+**Final SHA:** `5dca15fd593f1892a2c19d8d62ec3ced748a8789` (superseded by merge `1f54c1a`)
 **Base:** `c09ba40cc0631463a8506df7ca601b8395e40c5c` (`Optimize Shorts clip pools and subtitle alignment`)
 **Push status:** pushed to `origin/arena/01a091fe-videomerger` (new branch).
 
