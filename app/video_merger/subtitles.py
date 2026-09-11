@@ -35,8 +35,26 @@ def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip())
 
 
-def _font_size(width: int, height: int, preset: SubtitlePreset) -> int:
-    return max(11, round(min(width, height) * preset.font_ratio))
+def clamp_font_size_percent(value: object) -> int:
+    """Bound the user font-size percentage to a safe, readable range."""
+    try:
+        percent = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 100
+    return max(50, min(200, percent))
+
+
+def _font_size(
+    width: int, height: int, preset: SubtitlePreset, font_size_percent: int = 100,
+) -> int:
+    # The preset base size is the historical resolution-aware calculation.
+    # The user percentage scales it for BOTH cue wrapping and ASS rendering;
+    # 100 % keeps the exact former size.
+    base = max(11, round(min(width, height) * preset.font_ratio))
+    percent = clamp_font_size_percent(font_size_percent)
+    if percent == 100:
+        return base
+    return max(11, round(base * percent / 100.0))
 
 
 def _layout_words(
@@ -68,11 +86,14 @@ def build_cues(
     width: int = 1920,
     height: int = 1080,
     font_key: str = "modern_sans_bold",
+    font_size_percent: int = 100,
 ) -> list[SubtitleCue]:
     """Build phrase-oriented cues solely on the canonical acoustic word list.
 
     Timing rate never participates in grouping. Punctuation, phrase boundaries,
     selected-font advances, available width and visual line balance do.
+    ``font_size_percent`` scales the preset's resolution-aware size; it only
+    influences measured wrapping geometry, never word timing.
     """
     preset = get_preset(preset_key)
     words = alignment.words
@@ -81,7 +102,7 @@ def build_cues(
     # by gaps in ``words`` and resume at later reliable acoustic matches.
     if not words:
         return []
-    size = _font_size(width, height, preset)
+    size = _font_size(width, height, preset, font_size_percent)
     width_ratio = .86 if preset.collection == "long" else .90
     available_width = max(40.0, width * width_ratio)
     # Caption grouping and later long-form rebalancing must share this guard;
@@ -386,6 +407,7 @@ def write_ass(
     animation: str | None = None,
     font_key: str | None = None,
     debug_overlay: bool = False,
+    font_size_percent: int = 100,
 ) -> None:
     preset = get_preset(preset_key)
     # None preserves 1.2.1's direct API/Arial fallback behavior. The render
@@ -395,12 +417,22 @@ def write_ass(
     family = resolved_font.family if resolved_font else "Arial"
     animation = animation if animation in ANIMATION_KEYS else ("type_reveal" if preset.progressive else "word_highlight")
     basis = min(width, height)
-    font_size = _font_size(width, height, preset)
+    font_size = _font_size(width, height, preset, font_size_percent)
     outline = max(1.0, round(basis * preset.outline_ratio, 1))
     alignment, margin_v = _position(position, width, height, preset.collection)
     margin_h = round(width * (.07 if preset.collection == "long" else .055))
     border_style = 3 if preset.box else 1
     back = "&H78000000" if preset.box else "&H00000000"
+    # Phase 27 debug safety: the Debug style is emitted ONLY when the
+    # diagnostic overlay is explicitly ON. With the production default OFF no
+    # debug layer, style or dialogue can reach the burned-in output.
+    debug_style = ""
+    if debug_overlay:
+        debug_style = (
+            f"\nStyle: Debug,{family},{max(11, round(basis * .024))},&H00FFFFFF,&H00FFFFFF,"
+            f"&H00000000,&H90000000,-1,0,0,0,100,100,0,0,3,1,0,7,"
+            f"{max(12, round(width*.02))},{max(12, round(width*.02))},{max(12, round(height*.02))},1"
+        )
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -411,8 +443,7 @@ YCbCr Matrix: TV.709
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{family},{font_size},&H00F7F7F7,{preset.accent},&H00101010,{back},{-1 if preset.bold or (resolved_font and resolved_font.weight == 'bold') else 0},0,0,0,100,100,0,0,{border_style},{outline},{max(.5, outline * .45):.1f},{alignment},{margin_h},{margin_h},{margin_v},1
-Style: Debug,{family},{max(11, round(basis * .024))},&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,3,1,0,7,{max(12, round(width*.02))},{max(12, round(width*.02))},{max(12, round(height*.02))},1
+Style: Caption,{family},{font_size},&H00F7F7F7,{preset.accent},&H00101010,{back},{-1 if preset.bold or (resolved_font and resolved_font.weight == 'bold') else 0},0,0,0,100,100,0,0,{border_style},{outline},{max(.5, outline * .45):.1f},{alignment},{margin_h},{margin_h},{margin_v},1{debug_style}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

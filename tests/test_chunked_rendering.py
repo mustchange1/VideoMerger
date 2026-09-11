@@ -85,10 +85,57 @@ def test_planner_uses_only_post_transition_boundaries_and_keeps_overlap():
         lambda start, stop, logical_start, logical_end, video_start, duration: stop - start <= 3,
     )
     assert [(plan.media_start, plan.media_stop) for plan in plans] == [(0, 3), (2, 4)]
-    assert plans[0].logical_end == pytest.approx(5.0)
-    assert plans[1].logical_start == pytest.approx(5.0)
+    # The boundary is where the overlap clip's INCOMING transition completes
+    # (clip 2 is fully revealed at global 3.5), not the clip's end. The next
+    # segment trims exactly the already-rendered transition prefix (0.5 s)
+    # and therefore replays no frame of the overlap clip.
+    assert plans[0].logical_end == pytest.approx(3.5)
+    assert plans[1].logical_start == pytest.approx(3.5)
     assert plans[1].video_window_start == pytest.approx(0.5)
-    assert plans[1].duration == pytest.approx(1.5)
+    assert plans[1].duration == pytest.approx(3.0)
+
+
+def test_planner_segments_form_exact_timeline_partition_no_replay():
+    """Phase 27 regression: every global frame is rendered exactly once.
+
+    The historical boundary formula replayed the overlap clip at every
+    transition boundary (visible as "clip A interrupted, then A again") and
+    dropped the final clip's tail. For any plan, the segment windows mapped
+    back into global time must partition [0, total) without gaps/overlaps.
+    """
+    import random
+
+    def global_partition(durations, transitions, fits):
+        plans = plan_segments(durations, transitions, fits)
+        total = sum(durations) - sum(transitions)
+        starts = [0.0]
+        for index in range(1, len(durations)):
+            starts.append(sum(durations[:index]) - sum(transitions[:index]))
+        coverage = []
+        for plan in plans:
+            begin = starts[plan.media_start] + plan.video_window_start
+            coverage.append((begin, begin + plan.duration))
+        coverage.sort()
+        assert abs(coverage[0][0]) < 1e-9
+        assert abs(coverage[-1][1] - total) < 1e-6
+        for (_left_a, left_b), (right_a, _right_b) in zip(coverage, coverage[1:]):
+            assert abs(left_b - right_a) < 1e-6, f"gap or replay between {left_b} and {right_a}"
+
+    rng = random.Random(27)
+    for _trial in range(60):
+        count = rng.randint(2, 14)
+        durations = [round(rng.uniform(0.3, 4.0), 3) for _ in range(count)]
+        transition_request = rng.choice([0.0, 0.3, 0.5, 1.0])
+        transitions = [
+            round(min(transition_request, durations[i] * 0.45, durations[i + 1] * 0.45), 6)
+            if transition_request > 0 else 0.0
+            for i in range(count - 1)
+        ]
+        limit = rng.randint(2, max(2, count))
+        global_partition(
+            durations, transitions,
+            lambda start, stop, *_args, _limit=limit: stop - start <= _limit,
+        )
 
 
 def test_planner_keeps_one_small_project_as_one_segment():

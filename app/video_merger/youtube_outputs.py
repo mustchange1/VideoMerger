@@ -129,6 +129,9 @@ def long_form_settings(settings: ExportSettings) -> ExportSettings:
         aspect="16:9",
         output_preset="youtube_landscape",
         subtitle_style=style,
+        # Phase 27: the Long-Form Duration Before Merge stays the canonical
+        # multiplier for this job; the independent Shorts value never leaks in.
+        duration_before_merge=float(getattr(settings, "duration_before_merge", 0.70)),
         render_variant_key="youtube-long-form",
     )
 
@@ -147,6 +150,14 @@ def short_settings(settings: ExportSettings, job: ShortJob) -> ExportSettings:
     style = str(getattr(settings, "short_subtitle_style", "short_1") or "short_1")
     if get_preset(style).collection != "short":
         style = "short_1"
+    from .subtitles import clamp_font_size_percent
+    try:
+        shorts_before_merge = float(
+            getattr(settings, "duration_before_merge_shorts", None)
+            or getattr(settings, "duration_before_merge", 0.70)
+        )
+    except (TypeError, ValueError):
+        shorts_before_merge = 0.70
     return replace(
         settings,
         export_mode=EXPORT_MODE_SHORTS,
@@ -165,5 +176,13 @@ def short_settings(settings: ExportSettings, job: ShortJob) -> ExportSettings:
         subtitle_animation=str(getattr(settings, "short_subtitle_animation", "word_highlight") or "word_highlight"),
         subtitle_font=str(getattr(settings, "short_subtitle_font", "inter") or "inter"),
         subtitle_position=str(getattr(settings, "short_subtitle_position", "Bottom Center") or "Bottom Center"),
+        # Phase 27: independent Shorts font size and Duration Before Merge.
+        # Both are mapped onto the job's canonical generic fields, so the
+        # complete Stage-1 pipeline keeps ONE subtitle profile and ONE merge
+        # multiplier per job; Long-Form values never change because of this.
+        subtitle_font_size=clamp_font_size_percent(
+            getattr(settings, "short_subtitle_font_size", 100)
+        ),
+        duration_before_merge=shorts_before_merge,
         render_variant_key=job.cache_key,
     )

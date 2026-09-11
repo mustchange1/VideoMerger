@@ -90,6 +90,11 @@ _SUBTITLE_SETTING_FIELDS = (
     "subtitle_animation",
     "subtitle_font",
     "subtitle_position",
+    # Phase 27: visual size only — it invalidates the render stage, never
+    # ASR/alignment (those cache keys live in alignment.py and contain no
+    # visual fields). The per-Shorts size reaches this digest through the
+    # mapped generic field, exactly like short_subtitle_style/font/position.
+    "subtitle_font_size",
     "subtitle_debug_overlay",
     "subtitle_model",
     "allow_alignment_warnings",
@@ -211,6 +216,7 @@ def build_stage1_payload(
     script_files: Sequence[Path] = (),
     subtitle_requested: bool = False,
     music_asset: AudioAssetInfo | None = None,
+    music_track_plan: Sequence[dict] = (),
     watermark_path: Path | None = None,
 ) -> dict[str, Any]:
     """Build the complete canonical payload used by the Stage-1 digest."""
@@ -255,7 +261,7 @@ def build_stage1_payload(
         ):
             values[name] = None
 
-    return {
+    payload = {
         "schema": FINGERPRINT_SCHEMA,
         "settings": values,
         # ``media`` is the already fitted render sequence. Unused pool files
@@ -274,6 +280,27 @@ def build_stage1_payload(
             "audio_channels": 2,
         },
     }
+    # Phase 27 multi-track music. A historical single track WITHOUT trim
+    # keeps the exact legacy payload (no new key), so existing Stage-1 caches
+    # remain valid. Two or more tracks, or any trim value, add the ordered
+    # sequence identity and correctly invalidate the render stage only —
+    # ASR/alignment cache keys never contain music.
+    plan = list(music_track_plan or [])
+    if len(plan) > 1 or any(
+        float(item.get("trim_start", 0.0) or 0.0) > 1e-9
+        or float(item.get("trim_duration", 0.0) or 0.0) > 1e-9
+        for item in plan
+    ):
+        payload["music_tracks"] = [
+            {
+                "file": file_signature(item.get("path", "")),
+                "trim_start": float(item.get("trim_start", 0.0) or 0.0),
+                "trim_duration": float(item.get("trim_duration", 0.0) or 0.0),
+                "duration": float(item.get("duration", 0.0) or 0.0),
+            }
+            for item in plan
+        ]
+    return payload
 
 
 def stage1_fingerprint(
@@ -285,6 +312,7 @@ def stage1_fingerprint(
     script_files: Sequence[Path] = (),
     subtitle_requested: bool = False,
     music_asset: AudioAssetInfo | None = None,
+    music_track_plan: Sequence[dict] = (),
     watermark_path: Path | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return ``(sha256, canonical_payload)`` for a Stage-1 render."""
@@ -296,6 +324,7 @@ def stage1_fingerprint(
         script_files=script_files,
         subtitle_requested=subtitle_requested,
         music_asset=music_asset,
+        music_track_plan=music_track_plan,
         watermark_path=watermark_path,
     )
     encoded = _canonical_json(payload).encode("utf-8")

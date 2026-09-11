@@ -74,6 +74,7 @@ def preview_cue(
     *,
     animation: str = "static_phrase",
     active_word: int = -1,
+    font_size_percent: int = 100,
 ) -> SubtitlePreviewLayout:
     """Baut eine repräsentative Demo-Cue mit der echten Renderer-Logik.
 
@@ -81,10 +82,13 @@ def preview_cue(
     identisch zu :func:`subtitles.build_cues`; passt der Text nicht in zwei
     gemessene Zeilen, zeigt die Vorschau die längste Darstellungsgruppe
     (der Render würde mehrere Cues ausgeben – die Vorschau zeigt die erste).
+    ``font_size_percent`` nutzt dieselbe skalierte Größe wie der Burn-In
+    (gemeinsame :func:`subtitles._font_size`), damit Zeilenumbruch und
+    Footprint der Preview exakt dem Final Render entsprechen.
     """
     preset = get_preset(preset_key)
     font = resolve_font(font_key)
-    size = _font_size(width, height, preset)
+    size = _font_size(width, height, preset, font_size_percent)
     width_ratio = .86 if preset.collection == "long" else .90
     available_width = max(40.0, width * width_ratio)
     alignment, margin_v = _position(position, width, height, preset.collection)
@@ -335,6 +339,11 @@ if _QIMPORTS_OK:
             self._layout: SubtitlePreviewLayout | None = None
             self._animation = "static_phrase"
             self._active_word = -1
+            # Optional background photo (Include Image): the caption preview
+            # stays fully readable on the plain gradient when no image is
+            # active, and paints the image BEHIND the captions when it is.
+            self._background: QImage | None = None
+            self._background_fit: str = "fill"
 
         def set_state(
             self,
@@ -346,14 +355,30 @@ if _QIMPORTS_OK:
             width: int,
             height: int,
             active_word: int = -1,
+            font_size_percent: int = 100,
         ) -> None:
             self._layout = preview_cue(
                 text, font_key, preset_key, position, width, height,
                 animation=animation, active_word=active_word,
+                font_size_percent=font_size_percent,
             )
             self._animation = animation
             self._active_word = active_word
             self.update()
+
+        def set_background_image(self, path: str, fit_mode: str = "fill") -> None:
+            """Load an optional preview background; '' disables the image."""
+            self._background_fit = fit_mode if fit_mode in {"fit", "fill"} else "fill"
+            source = str(path or "").strip()
+            self._background = None
+            if source:
+                image = QImage(source)
+                if not image.isNull():
+                    self._background = image
+            self.update()
+
+        def has_background_image(self) -> bool:
+            return self._background is not None
 
         def set_active_word(self, active_word: int) -> None:
             """Stage a different word without recomputing the layout."""
@@ -365,11 +390,36 @@ if _QIMPORTS_OK:
         def current_layout(self) -> SubtitlePreviewLayout | None:
             return self._layout
 
+        def _paint_background_image(self, painter: "QPainter", rect) -> None:
+            image = self._background
+            if image is None:
+                return
+            target = QSize(max(1, round(rect.width())), max(1, round(rect.height())))
+            if self._background_fit == "fit":
+                shown = image.scaled(
+                    target, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                x = rect.left() + (rect.width() - shown.width()) / 2
+                y = rect.top() + (rect.height() - shown.height()) / 2
+            else:
+                shown = image.scaled(
+                    target, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                x = rect.left() + (rect.width() - shown.width()) / 2
+                y = rect.top() + (rect.height() - shown.height()) / 2
+            painter.save()
+            painter.setClipRect(rect)
+            painter.drawImage(QPointF(x, y), shown)
+            painter.restore()
+
         def paintEvent(self, event) -> None:  # noqa: N802
             layout = self._layout
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             video = self._video_rect(
                 layout.width if layout else 16, layout.height if layout else 9
             )
@@ -379,6 +429,7 @@ if _QIMPORTS_OK:
                 return
             rect, scale = video
             self._paint_backdrop(painter, rect)
+            self._paint_background_image(painter, rect)
             paint_subtitle_layout(
                 painter, layout, rect, scale, self._animation, self._active_word,
             )

@@ -42,6 +42,7 @@ from .image_insertion import (
     normalize_image_position,
     normalize_image_transition,
 )
+from .music_tracks import effective_music_tracks
 from .quote_artwork import (
     cleanup_prepared_quote_artwork,
     prepare_quote_artwork,
@@ -562,7 +563,13 @@ class MainProjectEngine:
         units = available_units
         if script_mode == "matched":
             unit_scripts = available_scripts
-        music_path = optional_path(settings.music_path)
+        # Phase 27: the ordered music sequence is authoritative. A legacy
+        # single ``music_path`` migrates to a one-item sequence here.
+        music_track_settings = effective_music_tracks(settings)
+        music_path = (
+            Path(music_track_settings[0]["path"]).expanduser().resolve()
+            if music_track_settings else None
+        )
         watermark_path = optional_path(settings.watermark_path)
 
         subtitle_mode = normalize_subtitle_output_mode(
@@ -645,6 +652,39 @@ class MainProjectEngine:
             probe_audio(self.engine.ffprobe_path, require_asset(music_path, "Background Music", AUDIO_EXTENSIONS))
             if music_path else None
         )
+        # Phase 27 multi-track sequence: probe every track and build the
+        # explicit render-time plan. The ENTIRE sequence loops as one unit in
+        # the filter graph; a single track remains a one-item sequence with
+        # the exact historical stream-loop behavior.
+        music_track_plan: list[dict] = []
+        if music is not None and len(music_track_settings) >= 1:
+            assets = [music]
+            for track in music_track_settings[1:]:
+                assets.append(probe_audio(
+                    self.engine.ffprobe_path,
+                    require_asset(
+                        Path(track["path"]).expanduser().resolve(),
+                        "Background Music", AUDIO_EXTENSIONS,
+                    ),
+                ))
+            for track, asset in zip(music_track_settings, assets):
+                trim_start = float(track.get("trim_start", 0.0) or 0.0)
+                trim_duration = float(track.get("trim_duration", 0.0) or 0.0)
+                if trim_start >= asset.duration - 0.02:
+                    raise VideoMergerError(
+                        f"Music-Trim ungültig: Start {trim_start:.2f} s liegt außerhalb von "
+                        f"'{asset.path.name}' ({asset.duration:.2f} s)."
+                    )
+                available = asset.duration - trim_start
+                effective = (
+                    available if trim_duration <= 0 else min(trim_duration, available)
+                )
+                music_track_plan.append({
+                    "path": str(asset.path),
+                    "trim_start": trim_start,
+                    "trim_duration": trim_duration,
+                    "duration": max(0.1, effective),
+                })
         timings["music_processing_seconds"] = time.perf_counter() - music_started
         if settings.watermark_enabled:
             require_asset(watermark_path, "Watermark", IMAGE_EXTENSIONS)
@@ -726,6 +766,9 @@ class MainProjectEngine:
             ),
             global_script_path=str(global_script) if global_script else "",
             music_path=str(music.path) if music else "",
+            # Phase 27: the ordered render-time music sequence plan. Empty for
+            # the legacy single-track graph (kept byte-identical).
+            music_track_plan=music_track_plan,
             watermark_path=str(watermark_path) if watermark_path else "",
         )
         resolved = self.engine.make_plan(render_media, render_settings, log)
@@ -754,6 +797,7 @@ class MainProjectEngine:
             script_files=script_files,
             subtitle_requested=subtitle_requested,
             music_asset=music,
+            music_track_plan=music_track_plan,
             watermark_path=watermark_path,
         )
         if reuse_cached:
@@ -845,13 +889,26 @@ class MainProjectEngine:
             )
         else:
             log("Voiceover: nicht zugewiesen; bestehender Video-Workflow bleibt aktiv.")
-        if music:
+        if music_track_plan:
+            sequence = " → ".join(Path(item["path"]).name for item in music_track_plan)
+            total = sum(float(item["duration"]) for item in music_track_plan)
+            log(
+                f"Music: {len(music_track_plan)} Track(s), Sequenz {sequence} "
+                f"(gesamt {total:.3f} s); die komplette Sequenz loopt als Einheit und wird auf "
+                f"{render_settings.program_duration:.3f} s begrenzt."
+            )
+        elif music:
             log(
                 f"Music: {music.duration:.3f} s, {music.sample_rate} Hz; wird geloopt und auf "
                 f"{render_settings.program_duration:.3f} s begrenzt."
             )
         else:
             log("Music: nicht zugewiesen.")
+        if settings.subtitle_debug_overlay and subtitle_requested:
+            log(
+                "WARNUNG: Subtitle Debug Overlay ist AKTIV – CURRENT WORD / START / END werden "
+                "als separate Diagnose-Ebene mitgerendert (nur für Fehlersuche gedacht)."
+            )
 
         try:
             if subtitle_requested:
@@ -1012,10 +1069,32 @@ class MainProjectEngine:
                 for warning in alignment.warnings:
                     warnings.append(warning)
                     log("WARNUNG: " + warning)
+                # Phase 27 safety contract for "Continue After Alignment
+                # Warning": with the override OFF the workflow is fail-closed —
+                # any alignment warning stops subtitle generation with an
+                # explicit, actionable error instead of silently rendering
+                # captions the user has not accepted. With the override ON the
+                # user has explicitly confirmed continuation; the render then
+                # proceeds unchanged. This flag never repairs or improves a
+                # mismatched alignment, it only releases the stop.
+                if alignment.warnings and not settings.allow_alignment_warnings:
+                    raise _subtitle_failure(
+                        "alignment safety check",
+                        "Subtitle alignment reported warnings and 'Continue After Alignment "
+                        "Warning' is OFF (fail-closed). Review the warnings above; to continue "
+                        "with this alignment anyway, enable 'Continue After Alignment Warning' "
+                        "explicitly. The override is a manual safety confirmation, not a fix.",
+                    )
+                if alignment.warnings and settings.allow_alignment_warnings:
+                    log(
+                        "Alignment-Warnungen vorhanden; Fortsetzen wurde über 'Continue After "
+                        "Alignment Warning' explizit bestätigt."
+                    )
                 # Compatibility and unmatched-word warnings describe local
                 # caption gaps; they must never turn a usable audio render into
-                # a global subtitle failure. Only genuinely invalid/system
-                # errors raised by the ASR or file pipeline fail the workflow.
+                # a global subtitle failure once the user accepted them (or the
+                # safety override is ON). Only genuinely invalid/system errors
+                # raised by the ASR or file pipeline fail the workflow.
                 if alignment.words and alignment.words[-1].start >= voice_total:
                     raise _subtitle_failure(
                         "word timeline validation",
@@ -1034,6 +1113,7 @@ class MainProjectEngine:
                     cues = build_cues(
                         combined_script, alignment, settings.subtitle_style, program_end=subtitle_program_end,
                         width=resolved.width, height=resolved.height, font_key=settings.subtitle_font,
+                        font_size_percent=settings.subtitle_font_size,
                     )
                     timeline_path = temp_dir / f"{output_video.stem}.subtitle_timeline.json"
                     if sidecars_requested:
@@ -1057,6 +1137,7 @@ class MainProjectEngine:
                         settings.subtitle_position, resolved.width, resolved.height,
                         animation=settings.subtitle_animation, font_key=settings.subtitle_font,
                         debug_overlay=settings.subtitle_debug_overlay,
+                        font_size_percent=settings.subtitle_font_size,
                     )
                     if not ass_path.is_file() or "[Events]" not in ass_path.read_text(encoding="utf-8-sig"):
                         raise VideoMergerError("ASS burn-in track could not be created.")

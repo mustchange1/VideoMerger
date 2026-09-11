@@ -45,19 +45,28 @@ class ChunkPlan:
 def _boundary_before_clip(
     durations: Sequence[float], transitions: Sequence[float], clip_index: int,
 ) -> float:
-    """Timestamp after the transition before ``clip_index`` has completed."""
+    """Timestamp where ``clip_index`` is fully revealed (incoming transition done).
+
+    The boundary is the moment at which the transition INTO ``clip_index``
+    has completed — equivalently: the clip's global start plus its incoming
+    transition duration. With no incoming transition this is simply the clip
+    start. This is the only boundary at which the PRECEDING segment (which
+    contains the clip as its overlap item) can stop while the FOLLOWING
+    segment resumes by trimming exactly the already-rendered transition
+    prefix (``video_window_start = transitions[clip_index - 1]``):
+
+    * the preceding segment renders the complete cross-dissolve because it
+      contains both neighbors, and stops where the clip is fully visible;
+    * the following segment skips its local ``transition`` prefix and
+      therefore replays NO already-rendered frame of the overlap clip.
+
+    (The historical formula returned the clip's END instead. The next segment
+    then trimmed only the short transition prefix, replayed the rest of the
+    overlap clip visibly — "clip A interrupted, then A again" — and dropped
+    the final clip's tail. Fixed in Phase 27.)
+    """
     if clip_index <= 0:
         return 0.0
-    boundary_transition = float(transitions[clip_index - 1])
-    if boundary_transition > 1e-9:
-        # The preceding command must include the next clip to render the
-        # complete transition. The boundary is after that transition.
-        return (
-            sum(float(value) for value in durations[: clip_index + 1])
-            - sum(float(value) for value in transitions[:clip_index])
-        )
-    # With no transition the safe boundary is the ordinary end of the prior
-    # clip; no overlap is necessary or desirable.
     return (
         sum(float(value) for value in durations[:clip_index])
         - sum(float(value) for value in transitions[: clip_index - 1])

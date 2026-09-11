@@ -136,6 +136,13 @@ class ExportSettings:
     # final safety net in the mixed graph.
     music_volume: int = 44
     music_preset: str = "balanced"
+    # Phase 27 multiple music tracks. Each entry is a plain JSON-friendly
+    # dict: {"path": str, "trim_start": float, "trim_duration": float}.
+    # ``trim_duration`` 0.0 means "play to the end of the track". The list is
+    # the explicit playback sequence; the ENTIRE sequence loops as one unit
+    # (A → B → C → A → B → C …). An empty list with a non-empty legacy
+    # ``music_path`` is treated as the historical one-track sequence.
+    music_tracks: list[dict] = field(default_factory=list)
     ducking_enabled: bool = True
     ducking_attack_ms: int = 25
     ducking_release_ms: int = 450
@@ -154,6 +161,11 @@ class ExportSettings:
     # timeline duration. Before Merge is intentionally active by default;
     # After Merge is a separate, disabled post-merge operation.
     duration_before_merge: float = 0.70
+    # Phase 27: independent Shorts Duration Before Merge. Same playback-rate
+    # multiplier semantics as the Long-Form control above (0.70 default = the
+    # historical effective value). short_settings() maps this onto the Short
+    # job's canonical duration_before_merge; Long-Form keeps its own value.
+    duration_before_merge_shorts: float = 0.70
     duration_after_merge: float = 1.00
     duration_after_merge_enabled: bool = False
     # Deprecated compatibility input for projects/CLI callers from 1.3.0.
@@ -168,6 +180,12 @@ class ExportSettings:
     subtitle_animation: str = "static_phrase"  # Long-Form default: Static White Reveal
     subtitle_font: str = "modern_sans_bold"
     subtitle_position: str = "Center"
+    # Phase 27 independent font-size controls, expressed as a PERCENT of the
+    # preset's resolution-aware base size (min(w,h) * font_ratio). 100 % is
+    # exactly the historical size, so existing projects and default renders
+    # remain byte-identical. The same scaled size drives cue wrapping and the
+    # ASS render through the existing shared _font_size calculation.
+    subtitle_font_size: int = 100
     subtitle_debug_overlay: bool = False
     subtitle_model: str = "small"
     allow_alignment_warnings: bool = False
@@ -227,6 +245,10 @@ class ExportSettings:
     short_subtitle_animation: str = "word_highlight"
     short_subtitle_font: str = "inter"
     short_subtitle_position: str = "Bottom Center"
+    # Independent Shorts font size (percent of the preset base size; 100 % =
+    # the historical Shorts size). Changing one profile never changes the
+    # other; short_settings() maps this onto the Short job's generic field.
+    short_subtitle_font_size: int = 100
 
     # Process/render identity, intentionally not a user-facing control. The
     # Shorts orchestrator sets a unique value for every voiceover so even
@@ -244,6 +266,10 @@ class ExportSettings:
     # persisted and are recalculated before every Stage-1 render.
     program_duration: float = 0.0
     timeline_target_duration: float = 0.0
+    # Phase 27 render-time music sequence plan filled by MainProjectEngine:
+    # ordered dicts {"path", "trim_start", "trim_duration", "duration"}.
+    # Empty means the legacy single ``music_path`` graph stays authoritative.
+    music_track_plan: list[dict] = field(default_factory=list)
     # Stage-2 only: per-clip original-audio gains in composition order
     # (intro/quote/main/outro). Filled by MainProjectEngine.add_outro().
     stage2_audio_modes: list[str] = field(default_factory=list)

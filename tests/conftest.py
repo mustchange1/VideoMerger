@@ -10,6 +10,22 @@ from app.video_merger.paths import locate_ffmpeg
 from app.video_merger.platform_utils import hidden_process_flags, safe_subprocess_env
 
 
+@pytest.fixture(autouse=True)
+def _isolated_settings_store(tmp_path, monkeypatch):
+    """Every test sees a private ``config/settings.json``.
+
+    The GUI reads and writes ``<project_root>/config/settings.json``. Without
+    isolation, a GUI test leaks its state into the repository and later tests
+    (or a manual run) pick up stale defaults. Redirecting the settings store's
+    project root to the test's temp dir keeps the repo clean and each test
+    deterministic, while preserving the exact default-on-first-run behavior.
+    """
+    import app.video_merger.settings_store as settings_store_module
+
+    monkeypatch.setattr(settings_store_module, "project_root", lambda: tmp_path)
+    yield
+
+
 @pytest.fixture(scope="session")
 def ffmpeg_paths():
     try:

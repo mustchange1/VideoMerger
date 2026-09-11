@@ -1,5 +1,35 @@
 # VideoMerger 1.5.0 für Windows
 
+## Neu in Phase 27
+
+### Mehrere Hintergrundmusik-Tracks
+
+Hintergrundmusik ist jetzt eine geordnete Sequenz: **Add Track**, **Remove**, **Up**, **Down**. Beim Rendern loopt die GESAMTE Sequenz als Einheit (A → B → C → A → B → C …); ein einzelner Track wird nie für sich allein geloopt, solange weitere Tracks vorhanden sind. Ein einzelner Track behält exakt das klassische Verhalten, und ältere Projekte mit einer einzigen Musikdatei wandern automatisch in die entsprechende Ein-Track-Sequenz. Pro-Track-Trim wird über das Einstellungsmodell unterstützt. Lautstärke, Preset und Voiceover-Ducking bleiben global und unverändert. Musikänderungen invalidieren nur die Render-Stufe – niemals ASR-/Alignment-Caches.
+
+### Getrennte Long-Form- und Shorts-Untertitelbereiche
+
+Das Untertitel-Panel zeigt zwei klar getrennte Gruppen, **YouTube Long-Form Subtitles** und **YouTube Shorts Subtitles**, jeweils mit eigenem Stil, Animation, Font, Schriftgröße, Position und Live-Vorschau. Jedes Profil wird unabhängig gespeichert; eine Änderung des einen ändert nie das andere.
+
+### Unabhängige Untertitel-Schriftgrößen
+
+Long-Form und Shorts besitzen je eine Schriftgrößen-Steuerung (50–200 %, Standard 100 %). 100 % reproduziert exakt die historische auflösungsabhängige Größe; jeder andere Wert skaliert die echte Render-Größe und den gemessenen Zeilenumbruch über dieselbe Geometrie-Routine, die der Burn-In-Renderer nutzt. Die Schriftgröße berührt niemals ASR, Alignment oder Wort-Timing.
+
+### Echte Untertitel-Vorschau pro Profil
+
+Beide Vorschauen rendern mit derselben Renderer-Geometrie wie der Burn-In (Vorschau ≈ finales Render): Live-Reaktion auf Preset, Font, Größe, Position, Animation und Ränder; Top/Center/Bottom verschiebt die Caption sichtbar; 16:9-Geometrie für Long-Form, 9:16 für Shorts; optional malt **Include Image** die Add-Image-Datei hinter die Captions. Für die Vorschau wird kein FFmpeg-Prozess gestartet.
+
+### Duration Before Merge pro Profil
+
+Duration Before Merge bleibt ein Abspielraten-Multiplikator (Standard `0.70x`, `setpts=PTS/0.70`) – kein Zeitwert – und ist jetzt unabhängig für Long-Form und Shorts einstellbar. Ältere Projekte behalten den einen gespeicherten Wert für beide, bis der Shorts-Wert geändert wird.
+
+### Sicherheit des Subtitle-Debug-Overlays
+
+Das Diagnose-Overlay (CURRENT WORD / START / END) ist standardmäßig AUS; wenn es AUS ist, kann kein Debug-Style, keine Ebene und kein Text in die finale Ausgabe gelangen. Beim Aktivieren wird zu Render-Beginn eine explizite Warnung protokolliert. Continue After Alignment Warning bleibt bei AUS fail-closed und ist bei ON ein expliziter manueller Sicherheits-Override – es repariert niemals ein Alignment.
+
+### Clip-Kontinuitätsgarantie
+
+Die Planung gibt nie zwei direkt aufeinanderfolgende Vorkommen desselben Quellclips aus. Unnötige Aufteilungen desselben Quellclips werden zu einem durchgehenden Vorkommen zusammengeführt; eine verbleibende Wiederholung wird durch einen anderen Pool-Clip ersetzt (Dauer erhalten, trifft nie einen Nachbarn); nur wenn keine Alternative existiert, wird die Wiederholung mit Warnung beibehalten. Manuelle Reihenfolge, Zufallsreihenfolge, Hold, Full-Timeline-Loop und Loop-Grenzen (… C → A …) funktionieren unverändert weiter.
+
 ## Neu in 1.5.0
 
 ### Mehrere Quellordner und ordnerbewusste Auswahl

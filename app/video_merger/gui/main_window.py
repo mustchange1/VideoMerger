@@ -20,11 +20,12 @@ from ..logging_utils import configure_file_logger
 from ..font_manager import FONT_OPTIONS, register_bundled_fonts_with_qt, resolve_font
 from ..image_insertion import clamp_image_duration, clamp_image_zoom, normalize_image_filter, normalize_image_fit_mode, normalize_image_position
 from ..models import ExportSettings, ProgressEvent
+from ..music_tracks import normalize_music_tracks
 from ..project_order import natural_order, natural_sort_key, randomize_order
 from ..project_assets import probe_audio
 from ..quote_artwork import quote_artwork_path
 from ..quality import QUALITY_KEYS, QUALITY_PRESETS, quality_label
-from ..subtitles import ANIMATION_OPTIONS
+from ..subtitles import ANIMATION_OPTIONS, clamp_font_size_percent
 from ..paths import ensure_project_directories, locate_ffmpeg, project_root
 from ..project_order import ProjectOrderStore
 from ..settings_store import SettingsStore
@@ -231,9 +232,26 @@ class MainWindow(QMainWindow):
 
         audio_group = QGroupBox("2 · Audio & Script")
         audio_layout = QGridLayout(audio_group)
+        # Phase 27: multiple music tracks with an explicit sequence. The whole
+        # sequence loops as one unit (A → B → C → A → B → C …); one track is
+        # the historical one-item sequence. ``music_edit`` remains as the
+        # hidden legacy field for compatibility with older save files.
         self.music_edit = QLineEdit()
-        music_button = QPushButton("Choose …")
-        music_button.clicked.connect(lambda: self._browse_asset(self.music_edit, "audio"))
+        self.music_edit.hide()
+        self.music_tracks_list = QListWidget()
+        self.music_tracks_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.music_tracks_list.setToolTip(
+            "Ordered background music sequence. The ENTIRE sequence loops as one "
+            "unit during rendering. A single track keeps the classic behavior."
+        )
+        music_add_button = QPushButton("Add Track …")
+        music_add_button.clicked.connect(self._add_music_track)
+        music_remove_button = QPushButton("Remove")
+        music_remove_button.clicked.connect(self._remove_music_track)
+        music_up_button = QPushButton("Up")
+        music_up_button.clicked.connect(lambda: self._move_music_track(-1))
+        music_down_button = QPushButton("Down")
+        music_down_button.clicked.connect(lambda: self._move_music_track(1))
         self.script_mode_combo = QComboBox()
         self.script_mode_combo.addItem("One Global Script (eine Textdatei für die komplette Voiceover-Timeline)", "single")
         self.script_mode_combo.addItem("Individual Scripts (Basename-Matching pro Voiceover)", "matched")
@@ -318,8 +336,15 @@ class MainWindow(QMainWindow):
         pause_row.addWidget(self.voiceover_pause_spin)
         audio_layout.addLayout(pause_row, 5, 1, 1, 2)
         audio_layout.addWidget(QLabel("Background Music"), 6, 0)
-        audio_layout.addWidget(self.music_edit, 6, 1)
-        audio_layout.addWidget(music_button, 6, 2)
+        music_tracks_box = QVBoxLayout()
+        self.music_tracks_list.setMinimumHeight(64)
+        self.music_tracks_list.setMaximumHeight(110)
+        music_tracks_box.addWidget(self.music_tracks_list)
+        music_track_buttons = QHBoxLayout()
+        for button in (music_add_button, music_remove_button, music_up_button, music_down_button):
+            music_track_buttons.addWidget(button)
+        music_tracks_box.addLayout(music_track_buttons)
+        audio_layout.addLayout(music_tracks_box, 6, 1)
         # 1.2.4 Default: Original Audio (Mute/Low bleiben unabhängig wählbar).
         self.original_audio_combo = QComboBox()
         self.original_audio_combo.addItem("Original (Standard)", "original")
@@ -394,6 +419,18 @@ class MainWindow(QMainWindow):
             self.duration_before_merge_combo.findData(0.70)
         )
         self.video_speed_combo = self.duration_before_merge_combo
+        # Phase 27: the Duration Before Merge multiplier is profile specific.
+        # Semantics stay EXACTLY the same as before: it is a playback-rate
+        # multiplier (setpts=PTS/x), never a time value. 0.70 remains the
+        # default for both profiles, so legacy projects keep their behavior.
+        self.duration_before_merge_shorts_combo = QComboBox()
+        for step in range(5, 41):  # 0.25 … 2.00 in 0.05 steps
+            value = step / 20.0
+            label = f"{value:.2f}x" + ("" if abs(value - 0.70) > 1e-9 else "  (Standard)")
+            self.duration_before_merge_shorts_combo.addItem(label, value)
+        self.duration_before_merge_shorts_combo.setCurrentIndex(
+            self.duration_before_merge_shorts_combo.findData(0.70)
+        )
         self.duration_after_merge_check = QCheckBox("Enable independent After Merge operation")
         self.duration_after_merge_combo = QComboBox()
         for step in range(5, 41):
@@ -411,6 +448,7 @@ class MainWindow(QMainWindow):
         self.max_stretch_combo.currentIndexChanged.connect(self._update_pool_status)
         self.max_stretch_spin.valueChanged.connect(self._update_pool_status)
         self.duration_before_merge_combo.currentIndexChanged.connect(self._update_pool_status)
+        self.duration_before_merge_shorts_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_check.toggled.connect(self._update_pool_status)
         audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 12, 0)
@@ -424,13 +462,15 @@ class MainWindow(QMainWindow):
         stretch_row.addWidget(self.max_stretch_combo)
         stretch_row.addWidget(self.max_stretch_spin)
         audio_layout.addLayout(stretch_row, 15, 1)
-        audio_layout.addWidget(QLabel("Duration Before Merge"), 16, 0)
+        audio_layout.addWidget(QLabel("Duration Before Merge (Long-Form)"), 16, 0)
         audio_layout.addWidget(self.duration_before_merge_combo, 16, 1)
-        audio_layout.addWidget(QLabel("Duration After Merge"), 17, 0)
+        audio_layout.addWidget(QLabel("Duration Before Merge (Shorts)"), 17, 0)
+        audio_layout.addWidget(self.duration_before_merge_shorts_combo, 17, 1)
+        audio_layout.addWidget(QLabel("Duration After Merge"), 18, 0)
         after_row = QHBoxLayout()
         after_row.addWidget(self.duration_after_merge_check)
         after_row.addWidget(self.duration_after_merge_combo)
-        audio_layout.addLayout(after_row, 17, 1, 1, 2)
+        audio_layout.addLayout(after_row, 18, 1, 1, 2)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -451,8 +491,15 @@ class MainWindow(QMainWindow):
         subtitle_layout.addWidget(self.subtitle_output_combo, 1, 1, 1, 2)
         self.subtitle_language_combo = QComboBox()
         self.subtitle_language_combo.addItems(["German", "English", "Auto"])
-        self.subtitle_style_combo = QComboBox()
+        subtitle_layout.addWidget(QLabel("Speech Language"), 2, 0)
+        subtitle_layout.addWidget(self.subtitle_language_combo, 2, 1)
+
+        # Phase 27: the two delivery profiles are visually separated groups so
+        # it is immediately obvious which control changes Long-Form and which
+        # changes Shorts. Both previews paint through the SAME renderer
+        # geometry routine as the burned-in output (Preview ≈ Final Render).
         from ..subtitle_presets import SUBTITLE_PRESETS
+        self.subtitle_style_combo = QComboBox()
         for preset in SUBTITLE_PRESETS:
             self.subtitle_style_combo.addItem(preset.label, preset.key)
             self.subtitle_style_combo.setItemData(
@@ -466,6 +513,37 @@ class MainWindow(QMainWindow):
             self.subtitle_font_combo.addItem(label, key)
         self.subtitle_position_combo = QComboBox()
         self.subtitle_position_combo.addItems(["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"])
+        self.subtitle_font_size_spin = QSpinBox()
+        self.subtitle_font_size_spin.setRange(50, 200)
+        self.subtitle_font_size_spin.setSingleStep(5)
+        self.subtitle_font_size_spin.setSuffix(" %")
+        self.subtitle_font_size_spin.setValue(100)
+        self.subtitle_font_size_spin.setToolTip(
+            "YouTube Long-Form font size, relative to the style's resolution-aware "
+            "base size. 100 % is exactly the standard size; it changes the real "
+            "caption size AND line wrapping. Does not affect Shorts."
+        )
+
+        long_group = QGroupBox("YouTube Long-Form Subtitles")
+        long_layout = QGridLayout(long_group)
+        long_layout.addWidget(QLabel("Subtitle Style"), 0, 0)
+        long_layout.addWidget(self.subtitle_style_combo, 0, 1)
+        long_layout.addWidget(QLabel("Animation"), 1, 0)
+        long_layout.addWidget(self.subtitle_animation_combo, 1, 1)
+        long_layout.addWidget(QLabel("Font"), 2, 0)
+        long_layout.addWidget(self.subtitle_font_combo, 2, 1)
+        long_layout.addWidget(QLabel("Font Size"), 3, 0)
+        long_layout.addWidget(self.subtitle_font_size_spin, 3, 1)
+        long_layout.addWidget(QLabel("Position"), 4, 0)
+        long_layout.addWidget(self.subtitle_position_combo, 4, 1)
+        self.subtitle_live_preview = SubtitlePreviewCanvas()
+        self.subtitle_live_preview.setMinimumHeight(130)
+        long_layout.addWidget(self.subtitle_live_preview, 5, 0, 1, 2)
+        self.subtitle_preview_button = QPushButton("Open Larger Long-Form Subtitle Preview")
+        self.subtitle_preview_button.clicked.connect(self._preview_subtitle_style)
+        long_layout.addWidget(self.subtitle_preview_button, 6, 1)
+        subtitle_layout.addWidget(long_group, 3, 0, 1, 3)
+
         # Shorts keep a separate mobile-safe profile instead of borrowing the
         # currently visible Long-Form style. It is still persisted in the same
         # project settings and is applied by the Shorts render branch.
@@ -481,35 +559,54 @@ class MainWindow(QMainWindow):
             self.short_subtitle_font_combo.addItem(label, key)
         self.short_subtitle_position_combo = QComboBox()
         self.short_subtitle_position_combo.addItems(["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"])
+        self.short_subtitle_font_size_spin = QSpinBox()
+        self.short_subtitle_font_size_spin.setRange(50, 200)
+        self.short_subtitle_font_size_spin.setSingleStep(5)
+        self.short_subtitle_font_size_spin.setSuffix(" %")
+        self.short_subtitle_font_size_spin.setValue(100)
+        self.short_subtitle_font_size_spin.setToolTip(
+            "YouTube Shorts font size, relative to the Shorts style's base size. "
+            "100 % is exactly the standard size; it changes the real caption size "
+            "AND line wrapping. Does not affect Long-Form."
+        )
+        short_group = QGroupBox("YouTube Shorts Subtitles")
+        short_layout = QGridLayout(short_group)
+        short_layout.addWidget(QLabel("Subtitle Style"), 0, 0)
+        short_layout.addWidget(self.short_subtitle_style_combo, 0, 1)
+        short_layout.addWidget(QLabel("Animation"), 1, 0)
+        short_layout.addWidget(self.short_subtitle_animation_combo, 1, 1)
+        short_layout.addWidget(QLabel("Font"), 2, 0)
+        short_layout.addWidget(self.short_subtitle_font_combo, 2, 1)
+        short_layout.addWidget(QLabel("Font Size"), 3, 0)
+        short_layout.addWidget(self.short_subtitle_font_size_spin, 3, 1)
+        short_layout.addWidget(QLabel("Position"), 4, 0)
+        short_layout.addWidget(self.short_subtitle_position_combo, 4, 1)
+        self.short_subtitle_live_preview = SubtitlePreviewCanvas()
+        self.short_subtitle_live_preview.setMinimumHeight(170)
+        short_layout.addWidget(self.short_subtitle_live_preview, 5, 0, 1, 2)
+        subtitle_layout.addWidget(short_group, 4, 0, 1, 3)
+
+        self.subtitle_preview_image_check = QCheckBox(
+            "Include Image in subtitle preview (Add Image file behind the captions)"
+        )
+        self.subtitle_preview_image_check.setToolTip(
+            "Shows the selected Add Image behind the caption preview. With the "
+            "image off (or none selected) the captions stay clearly visible on the "
+            "plain preview background; with the image on they stay readable over it."
+        )
+        subtitle_layout.addWidget(self.subtitle_preview_image_check, 5, 0, 1, 3)
+
         self._subtitle_position_overridden = False
         self._subtitle_style_overridden = False
         self._subtitle_animation_overridden = False
         self.subtitle_debug_check = QCheckBox("Subtitle Debug Overlay – current word + exact start/end (default OFF)")
-        subtitle_layout.addWidget(QLabel("Language"), 2, 0)
-        subtitle_layout.addWidget(self.subtitle_language_combo, 2, 1)
-        subtitle_layout.addWidget(QLabel("Style"), 3, 0)
-        subtitle_layout.addWidget(self.subtitle_style_combo, 3, 1)
-        subtitle_layout.addWidget(QLabel("Animation"), 4, 0)
-        subtitle_layout.addWidget(self.subtitle_animation_combo, 4, 1)
-        subtitle_layout.addWidget(QLabel("Font"), 5, 0)
-        subtitle_layout.addWidget(self.subtitle_font_combo, 5, 1)
-        subtitle_layout.addWidget(QLabel("Position"), 6, 0)
-        subtitle_layout.addWidget(self.subtitle_position_combo, 6, 1)
-        subtitle_layout.addWidget(QLabel("Shorts Style"), 7, 0)
-        subtitle_layout.addWidget(self.short_subtitle_style_combo, 7, 1)
-        subtitle_layout.addWidget(QLabel("Shorts Animation"), 8, 0)
-        subtitle_layout.addWidget(self.short_subtitle_animation_combo, 8, 1)
-        subtitle_layout.addWidget(QLabel("Shorts Font"), 9, 0)
-        subtitle_layout.addWidget(self.short_subtitle_font_combo, 9, 1)
-        subtitle_layout.addWidget(QLabel("Shorts Position"), 10, 0)
-        subtitle_layout.addWidget(self.short_subtitle_position_combo, 10, 1)
-        subtitle_layout.addWidget(self.subtitle_debug_check, 11, 0, 1, 3)
-        # 1.2.4: echte Subtitle-Preview – dieselbe Layout-Logik wie der
-        # Burn-In-Renderer (Zeilenumbrüche, Font-Metriken, Safe-Area,
-        # Position, Wort-Highlight). Kein fakes GUI-Text.
-        self.subtitle_live_preview = SubtitlePreviewCanvas()
-        self.subtitle_live_preview.setMinimumHeight(130)
-        subtitle_layout.addWidget(self.subtitle_live_preview, 12, 0, 1, 3)
+        self.subtitle_debug_check.setToolTip(
+            "DIAGNOSTIC ONLY. When ON, a separate debug layer renders CURRENT WORD / "
+            "START / END into the video. Production default is OFF; with OFF no debug "
+            "layer, style or text reaches the final output. This overlay never changes "
+            "subtitle timing or the authoritative text."
+        )
+        subtitle_layout.addWidget(self.subtitle_debug_check, 6, 0, 1, 3)
         for control in (
             self.subtitle_font_combo, self.subtitle_style_combo,
             self.subtitle_animation_combo, self.subtitle_position_combo,
@@ -518,15 +615,21 @@ class MainWindow(QMainWindow):
             self.subtitle_language_combo,
         ):
             control.currentIndexChanged.connect(self._update_subtitle_live_preview)
+        self.subtitle_font_size_spin.valueChanged.connect(self._update_subtitle_live_preview)
+        self.short_subtitle_font_size_spin.valueChanged.connect(self._update_subtitle_live_preview)
+        self.subtitle_preview_image_check.toggled.connect(self._update_subtitle_live_preview)
         self.subtitle_debug_check.toggled.connect(self._update_subtitle_live_preview)
         self.subtitle_position_combo.currentIndexChanged.connect(self._subtitle_position_changed)
         self.subtitle_style_combo.currentIndexChanged.connect(self._subtitle_style_changed)
         self.subtitle_animation_combo.currentIndexChanged.connect(self._subtitle_animation_changed)
-        self.subtitle_preview_button = QPushButton("Open Larger Subtitle Preview")
-        self.subtitle_preview_button.clicked.connect(self._preview_subtitle_style)
-        subtitle_layout.addWidget(self.subtitle_preview_button, 13, 1)
         self.alignment_warning_check = QCheckBox("Continue After Alignment Warning (manual confirmation)")
-        subtitle_layout.addWidget(self.alignment_warning_check, 14, 0, 1, 3)
+        self.alignment_warning_check.setToolTip(
+            "Explicit safety override, NOT a repair. When OFF, an alignment warning "
+            "keeps its protected fail-closed handling. When ON, you confirm that you "
+            "accept the warning and the current workflow may continue. It does not "
+            "correct or improve a mismatched alignment in any way."
+        )
+        subtitle_layout.addWidget(self.alignment_warning_check, 7, 0, 1, 3)
         outer.addWidget(subtitle_group)
 
         format_group = QGroupBox("4 · Video Format & Transition")
@@ -1077,6 +1180,22 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(max(0, index))
         self.crf_spin.setValue(self.saved.crf)
         self.output_name_edit.setText(self.saved.output_name)
+        # Phase 27: restore the ordered music sequence; older projects with
+        # only ``music_path`` migrate to the equivalent one-track sequence.
+        self.music_tracks_list.clear()
+        tracks = normalize_music_tracks(list(getattr(self.saved, "music_tracks", None) or []))
+        if tracks:
+            for track in tracks:
+                path = str(track["path"])
+                item = QListWidgetItem(Path(path).name)
+                item.setData(Qt.UserRole, path)
+                item.setToolTip(path)
+                self.music_tracks_list.addItem(item)
+        elif self.saved.music_path:
+            item = QListWidgetItem(Path(self.saved.music_path).name)
+            item.setData(Qt.UserRole, self.saved.music_path)
+            item.setToolTip(self.saved.music_path)
+            self.music_tracks_list.addItem(item)
         self.music_edit.setText(self.saved.music_path)
         self.main_video_edit.setText(self.saved.main_video_path)
         self.intro_edit.setText(self.saved.intro_path)
@@ -1145,6 +1264,19 @@ class MainWindow(QMainWindow):
         self.short_subtitle_position_combo.setCurrentText(
             getattr(self.saved, "short_subtitle_position", "Bottom Center")
         )
+        # Phase 27: independent Long-Form / Shorts caption sizes. Legacy
+        # projects without the fields load at 100 %, i.e. exactly the
+        # standard preset-driven size they always rendered with.
+        self.subtitle_font_size_spin.blockSignals(True)
+        self.subtitle_font_size_spin.setValue(
+            int(clamp_font_size_percent(getattr(self.saved, "subtitle_font_size", 100)))
+        )
+        self.subtitle_font_size_spin.blockSignals(False)
+        self.short_subtitle_font_size_spin.blockSignals(True)
+        self.short_subtitle_font_size_spin.setValue(
+            int(clamp_font_size_percent(getattr(self.saved, "short_subtitle_font_size", 100)))
+        )
+        self.short_subtitle_font_size_spin.blockSignals(False)
         self.voice_volume_slider.setValue(self.saved.voiceover_volume)
         preset_index = next(
             (i for i in range(self.music_preset_combo.count())
@@ -1175,6 +1307,19 @@ class MainWindow(QMainWindow):
         before_index = self.duration_before_merge_combo.findData(before_value)
         self.duration_before_merge_combo.setCurrentIndex(
             before_index if before_index >= 0 else self.duration_before_merge_combo.findData(0.70)
+        )
+        # Phase 27: Shorts keep their own playback-rate multiplier. Legacy
+        # projects without the field fall back to the long-form value so the
+        # historic single-value behavior is preserved exactly.
+        shorts_before = getattr(
+            self.saved, "duration_before_merge_shorts",
+            getattr(self.saved, "duration_before_merge", 0.70),
+        )
+        shorts_before_value = max(0.25, min(2.0, round(float(shorts_before or 0.70) / 0.05) * 0.05))
+        shorts_before_index = self.duration_before_merge_shorts_combo.findData(shorts_before_value)
+        self.duration_before_merge_shorts_combo.setCurrentIndex(
+            shorts_before_index if shorts_before_index >= 0
+            else self.duration_before_merge_shorts_combo.findData(0.70)
         )
         after_value = max(0.25, min(2.0, round(float(getattr(self.saved, "duration_after_merge", 1.0) or 1.0) / 0.05) * 0.05))
         after_index = self.duration_after_merge_combo.findData(after_value)
@@ -1301,6 +1446,13 @@ class MainWindow(QMainWindow):
             voiceover_order_mode=normalize_voiceover_order_mode(self.voiceover_order_combo.currentData()),
             voiceover_pause=float(self.voiceover_pause_spin.value()),
             music_path=self.music_edit.text().strip(),
+            # Phase 27: the ordered multi-track sequence. A single entry is the
+            # legacy one-track configuration; ``music_path`` stays the
+            # first/current track so historic validation keeps working.
+            music_tracks=[
+                {"path": path, "trim_start": 0.0, "trim_duration": 0.0}
+                for path in self._music_track_paths()
+            ],
             main_video_path=self.main_video_edit.text().strip(),
             intro_path=self.intro_edit.text().strip(),
             outro_path=self.outro_edit.text().strip(),
@@ -1318,6 +1470,7 @@ class MainWindow(QMainWindow):
             duration_fit_mode=str(self.duration_fit_combo.currentData()),
             max_stretch_percent=self._max_stretch_value(),
             duration_before_merge=float(self.duration_before_merge_combo.currentData()),
+            duration_before_merge_shorts=float(self.duration_before_merge_shorts_combo.currentData()),
             duration_after_merge=float(self.duration_after_merge_combo.currentData()),
             duration_after_merge_enabled=self.duration_after_merge_check.isChecked(),
             video_speed=1.0,
@@ -1326,10 +1479,12 @@ class MainWindow(QMainWindow):
             subtitle_style=str(self.subtitle_style_combo.currentData()),
             subtitle_animation=str(self.subtitle_animation_combo.currentData()),
             subtitle_font=str(self.subtitle_font_combo.currentData()),
+            subtitle_font_size=int(self.subtitle_font_size_spin.value()),
             subtitle_position=self.subtitle_position_combo.currentText(),
             short_subtitle_style=str(self.short_subtitle_style_combo.currentData()),
             short_subtitle_animation=str(self.short_subtitle_animation_combo.currentData()),
             short_subtitle_font=str(self.short_subtitle_font_combo.currentData()),
+            short_subtitle_font_size=int(self.short_subtitle_font_size_spin.value()),
             short_subtitle_position=self.short_subtitle_position_combo.currentText(),
             subtitle_debug_overlay=self.subtitle_debug_check.isChecked(),
             subtitle_model=self.subtitle_model_combo.currentText(),
@@ -1639,6 +1794,71 @@ class MainWindow(QMainWindow):
             self.voiceover_pause_spin.setEnabled(not getattr(self, "busy", False))
         self._update_pool_status()
 
+    # ------------------------------------------------------------------
+    # Phase 27 – multiple music tracks (explicit sequence, whole-sequence loop)
+    # ------------------------------------------------------------------
+    def _music_track_paths(self) -> list[str]:
+        """The user-defined ordered list of music file paths."""
+        return [
+            str(self.music_tracks_list.item(index).data(Qt.UserRole))
+            for index in range(self.music_tracks_list.count())
+        ]
+
+    def _add_music_track(self) -> None:
+        start_dir = str(self.music_edit.text() or "") or str(project_root())
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Add Music Track",
+            start_dir,
+            "Audio Files (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus)",
+        )
+        if not path:
+            return
+        paths = self._music_track_paths()
+        if path in paths:
+            # Keep the sequence free of duplicate entries; just focus it.
+            self.music_tracks_list.setCurrentRow(paths.index(path))
+            self._append_log("Music track already present in the sequence.")
+        else:
+            item = QListWidgetItem(Path(path).name)
+            item.setData(Qt.UserRole, path)
+            item.setToolTip(path)
+            self.music_tracks_list.addItem(item)
+            self.music_tracks_list.setCurrentRow(self.music_tracks_list.count() - 1)
+        self._sync_music_state()
+
+    def _remove_music_track(self) -> None:
+        row = self.music_tracks_list.currentRow()
+        if row < 0:
+            return
+        removed = self.music_tracks_list.takeItem(row)
+        self._append_log(f"Music track removed: {removed.text()}")
+        self._sync_music_state()
+
+    def _move_music_track(self, delta: int) -> None:
+        row = self.music_tracks_list.currentRow()
+        if row < 0:
+            return
+        target = row + delta
+        if target < 0 or target >= self.music_tracks_list.count():
+            return
+        item = self.music_tracks_list.takeItem(row)
+        self.music_tracks_list.insertItem(target, item)
+        self.music_tracks_list.setCurrentRow(target)
+        self._sync_music_state()
+
+    def _sync_music_state(self) -> None:
+        """Mirror the visible sequence into the legacy single-track field.
+
+        ``music_edit`` stays the canonical "first/current" path so all
+        historic persistence and validation paths keep working; the full
+        ordered list is added in ``_settings()``.
+        """
+        paths = self._music_track_paths()
+        self.music_edit.setText(paths[0] if paths else "")
+        if not getattr(self, "_loading", False):
+            self._save_project()
+
     def _music_preset_changed(self) -> None:
         data = self.music_preset_combo.currentData()
         if data and data[1] >= 0:
@@ -1659,30 +1879,59 @@ class MainWindow(QMainWindow):
             self.music_preset_combo.setCurrentIndex(custom)
             self.music_preset_combo.blockSignals(False)
 
-    def _update_subtitle_live_preview(self, *_args) -> None:
-        """Render the live caption preview with the REAL renderer logic.
+    def _subtitle_preview_background_path(self) -> str:
+        """The Add Image file for the optional caption preview background."""
+        if not self.subtitle_preview_image_check.isChecked():
+            return ""
+        if not getattr(self, "image_check", None) or not self.image_check.isChecked():
+            return ""
+        return self.image_path_edit.text().strip()
 
-        1.2.4: Preview ≈ Final Render. The canvas reuses the exact line-
-        breaking, font metrics, safe-area and position calculations of the
-        burned-in renderer (subtitles.preview_cue), so what the user sees is
-        what the export produces. No FFmpeg render, instant on every change.
+    def _update_subtitle_live_preview(self, *_args) -> None:
+        """Render BOTH live caption previews with the REAL renderer logic.
+
+        1.2.4/Phase 27: Preview ≈ Final Render. Each canvas reuses the exact
+        line-breaking, font metrics, safe-area, position and scaled-font-size
+        calculations of the burned-in renderer (subtitles.preview_cue), so
+        what the user sees is what the export produces. No FFmpeg render,
+        instant on every change. The Long-Form canvas reads ONLY the
+        Long-Form controls in the landscape frame; the Shorts canvas reads
+        ONLY the Shorts controls in the vertical frame — changing one profile
+        never moves the other preview.
         """
         if not hasattr(self, "subtitle_live_preview") or not hasattr(self.subtitle_live_preview, "set_state"):
             return
         language = self.subtitle_language_combo.currentText()
+        background = self._subtitle_preview_background_path()
         sample = sample_subtitle_text(language)
         if self.subtitle_debug_check.isChecked():
             sample += " [DEBUG Overlay aktiv]"
-        frame = (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
+        # Long-Form profile: fixed landscape geometry with the Long controls.
         self.subtitle_live_preview.set_state(
             font_key=str(self.subtitle_font_combo.currentData()),
             preset_key=str(self.subtitle_style_combo.currentData()),
             position=self.subtitle_position_combo.currentText(),
             animation=str(self.subtitle_animation_combo.currentData()),
             text=sample,
-            width=frame[0],
-            height=frame[1],
+            width=1920,
+            height=1080,
+            font_size_percent=self.subtitle_font_size_spin.value(),
         )
+        if hasattr(self.subtitle_live_preview, "set_background_image"):
+            self.subtitle_live_preview.set_background_image(background)
+        if hasattr(self, "short_subtitle_live_preview"):
+            self.short_subtitle_live_preview.set_state(
+                font_key=str(self.short_subtitle_font_combo.currentData()),
+                preset_key=str(self.short_subtitle_style_combo.currentData()),
+                position=self.short_subtitle_position_combo.currentText(),
+                animation=str(self.short_subtitle_animation_combo.currentData()),
+                text=sample,
+                width=1080,
+                height=1920,
+                font_size_percent=self.short_subtitle_font_size_spin.value(),
+            )
+            if hasattr(self.short_subtitle_live_preview, "set_background_image"):
+                self.short_subtitle_live_preview.set_background_image(background)
 
     # ------------------------------------------------------------------ #
     # Quote / Flyer artwork preview

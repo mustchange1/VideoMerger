@@ -10,6 +10,137 @@ DEFAULT_DURATION_BEFORE_MERGE = 0.70
 DEFAULT_DURATION_AFTER_MERGE = 1.00
 
 
+def _same_source(left: MediaInfo, right: MediaInfo) -> bool:
+    """Identity for clip-continuity purposes: the same resolved file."""
+    if bool(left.is_quote_artwork) or bool(right.is_quote_artwork):
+        return False
+    if bool(left.is_image_insertion) or bool(right.is_image_insertion):
+        return False
+    try:
+        return left.path.expanduser().resolve() == right.path.expanduser().resolve()
+    except OSError:
+        return str(left.path) == str(right.path)
+
+
+def enforce_continuous_sources(
+    selected: list[MediaInfo],
+    pool: list[MediaInfo],
+) -> tuple[list[MediaInfo], list[str]]:
+    """Eliminate unintended consecutive repetitions of one source clip.
+
+    Normal planning must yield continuous clip usage (A → B → C → D), never
+    A → A and never an accidentally split A[0–2] → A[2–4]. Two deterministic
+    repairs are applied, in order:
+
+    1. COALESCE — adjacent occurrences of the same source whose combined
+       timeline duration fits inside the source's natural (rate-scaled)
+       length are an unnecessary segmentation. They become ONE continuous
+       occurrence. Word/audio timing, transitions elsewhere and the total
+       timeline length are untouched.
+    2. REPLACE — when a same-source adjacency remains and a different source
+       exists in the pool, the later occurrence is swapped for a natural
+       occurrence of another source (never matching either neighbor). The
+       occurrence keeps its exact timeline duration, so target coverage,
+       Hold/Loop material math and trim behavior do not change. A stretched
+       (Smart-Stretch) occurrence is never swapped.
+
+    A clip is never banned permanently (A → B → A stays valid), randomness
+    and manual order are untouched upstream, and when only ONE unique source
+    exists the adjacency is the intentional insufficient-clip fallback and
+    is preserved (with a warning).
+    """
+    warnings: list[str] = []
+    if len(selected) < 2:
+        return selected, warnings
+
+    def natural_length(item: MediaInfo) -> float:
+        source = float(item.source_duration or item.duration)
+        rate = max(0.25, min(4.0, float(getattr(item, "playback_rate", 1.0) or 1.0)))
+        return source / rate
+
+    result = list(selected)
+    # Pass 1: coalesce unnecessary same-source splits.
+    index = 1
+    while index < len(result):
+        previous, current = result[index - 1], result[index]
+        if not _same_source(previous, current):
+            index += 1
+            continue
+        same_rate = abs(
+            float(getattr(previous, "playback_rate", 1.0) or 1.0)
+            - float(getattr(current, "playback_rate", 1.0) or 1.0)
+        ) <= 1e-6
+        combined = float(previous.duration) + float(current.duration)
+        if same_rate and combined <= natural_length(previous) + 1e-6:
+            merged = replace(
+                previous,
+                duration=combined,
+                source_duration=previous.source_duration or previous.duration,
+            )
+            result[index - 1:index + 1] = [merged]
+            warnings.append(
+                f"Clip-Kontinuität: zwei direkt aufeinanderfolgende Segmente von "
+                f"'{previous.path.name}' wurden zu einem durchgehenden Clip zusammengeführt."
+            )
+            continue
+        index += 1
+
+    # Pass 2: replace remaining same-source adjacencies with another source.
+    unique_paths = {str(item.path.expanduser().resolve()) for item in pool}
+    if len(unique_paths) >= 2:
+        changed = True
+        iterations = 0
+        while changed and iterations < 64:
+            changed = False
+            iterations += 1
+            for index in range(1, len(result)):
+                previous, current = result[index - 1], result[index]
+                if not _same_source(previous, current):
+                    continue
+                if abs(float(getattr(current, "playback_rate", 1.0) or 1.0) - 1.0) > 1e-6 and abs(
+                    float(getattr(current, "playback_rate", 1.0) or 1.0)
+                    - float(getattr(previous, "playback_rate", 1.0) or 1.0)
+                ) > 1e-6:
+                    continue  # never disturb an explicit per-occurrence stretch
+                next_neighbor = result[index + 1] if index + 1 < len(result) else None
+                current_rate = float(getattr(current, "playback_rate", 1.0) or 1.0)
+                candidate = None
+                for item in pool:
+                    if _same_source(item, previous):
+                        continue
+                    if next_neighbor is not None and _same_source(item, next_neighbor):
+                        continue
+                    if abs(float(getattr(item, "playback_rate", 1.0) or 1.0) - current_rate) > 1e-6:
+                        continue
+                    candidate = item
+                    break
+                if candidate is None:
+                    continue
+                replacement = replace(
+                    candidate,
+                    duration=float(current.duration),
+                    source_duration=candidate.source_duration or candidate.duration,
+                    playback_rate=current.playback_rate,
+                )
+                result[index] = replacement
+                warnings.append(
+                    f"Clip-Kontinuität: aufeinanderfolgende Wiederholung von "
+                    f"'{previous.path.name}' ersetzt durch '{candidate.path.name}' "
+                    "(ein anderer Quellclip war verfügbar)."
+                )
+                changed = True
+                break
+    still_repeated = any(
+        _same_source(result[index - 1], result[index]) for index in range(1, len(result))
+    )
+    if still_repeated:
+        warnings.append(
+            "Clip-Kontinuität: aufeinanderfolgende Wiederholung beibehalten, weil kein "
+            "anderer Quellclip verfügbar ist (deterministischer Fallback bei zu wenig Material)."
+        )
+    return result, warnings
+
+
 def duration_before_merge_value(settings) -> float:
     """Return the one canonical Before Merge multiplier.
 
@@ -241,6 +372,8 @@ def fit_media_to_duration(
                 "Videomaterial ist länger als die Voiceover-Timeline; die aktive Reihenfolge bleibt erhalten "
                 "und der letzte benötigte Clip wird passend gekürzt."
             )
+        selected, continuity_warnings = enforce_continuous_sources(selected, originals)
+        warnings.extend(continuity_warnings)
         return selected, warnings
 
     if short_video_mode == "hold":
@@ -259,6 +392,8 @@ def fit_media_to_duration(
             f"Videomaterial ist {shortage:.3f} s kürzer als die Ziel-Timeline; "
             "Hold Last Frame verlängert ausschließlich den finalen gerenderten Frame."
         )
+        selected, continuity_warnings = enforce_continuous_sources(selected, originals)
+        warnings.extend(continuity_warnings)
         return selected, warnings
 
     # Full-timeline loop: append occurrences in the exact active manual order.
@@ -277,4 +412,6 @@ def fit_media_to_duration(
         f"wiederholt ({occurrence} Vorkommen, {rounds:.2f} Durchläufe); auch die Loop-Grenze "
         "verwendet den ausgewählten Übergang."
     )
+    selected, continuity_warnings = enforce_continuous_sources(selected, originals)
+    warnings.extend(continuity_warnings)
     return selected, warnings

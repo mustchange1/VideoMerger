@@ -1,5 +1,35 @@
 # VideoMerger 1.5.0 for Windows
 
+## New in Phase 27
+
+### Multiple background music tracks
+
+Background music is now an explicit ordered sequence: **Add Track**, **Remove**, **Up**, **Down**. The ENTIRE sequence loops as one unit during rendering (A → B → C → A → B → C …); a single track is never looped on its own while other tracks exist. One track keeps the exact classic behavior, and older projects with a single music file migrate to the equivalent one-track sequence automatically. Per-track trim is supported through the settings model. Volume, preset and voiceover ducking remain global and unchanged. Music changes invalidate only the render stage — never ASR/alignment caches.
+
+### Separate Long-Form and Shorts subtitle sections
+
+The Subtitle panel shows two clearly separated groups, **YouTube Long-Form Subtitles** and **YouTube Shorts Subtitles**, each with its own style, animation, font, font size, position and live preview. Each profile saves independently; changing one never changes the other.
+
+### Independent subtitle font sizes
+
+Long-Form and Shorts each have a font-size control (50–200 %, default 100 %). 100 % reproduces exactly the historical resolution-aware size; any other value scales the real rendered size and the measured line wrapping through the same geometry routine the burn-in renderer uses. Font size never touches ASR, alignment or word timing.
+
+### Real per-profile subtitle previews
+
+Both previews paint through the SAME renderer geometry code as the burned-in output (Preview ≈ Final Render): live reaction to preset, font, size, position, animation and margins; Top/Center/Bottom visually move the caption; 16:9 geometry for Long-Form, 9:16 for Shorts; optional **Include Image** paints the Add Image file behind the captions. No FFmpeg process is started for previews.
+
+### Duration Before Merge per profile
+
+Duration Before Merge remains a playback-rate multiplier (default `0.70x`, `setpts=PTS/0.70`) — not a time value — and is now configurable independently for Long-Form and Shorts. Legacy projects keep the single saved value for both until the Shorts value is changed.
+
+### Subtitle debug overlay safety
+
+The diagnostic overlay (CURRENT WORD / START / END) defaults to OFF, and when OFF no debug style, layer or text can reach the final output. Enabling it logs an explicit warning at render start. Continue After Alignment Warning stays fail-closed when OFF and is an explicit manual safety override when ON — it never repairs an alignment.
+
+### Clip continuity guarantee
+
+Planning never emits two directly consecutive occurrences of the same source clip. Unnecessary same-source splits are coalesced into one continuous occurrence; a remaining repetition is replaced by a different pool clip (duration preserved, never matching either neighbor); only when no alternative exists is the repetition kept, with a warning. Manual order, random order, Hold, Full-Timeline Loop and loop boundaries (… C → A …) keep working unchanged.
+
 ## New in 1.5.0
 
 ### Multiple source folders and folder-aware selection

@@ -61,6 +61,29 @@ def _atempo_chain(rate: float) -> str:
     return ",".join(parts)
 
 
+def _music_sequence_plan(settings: ExportSettings) -> list[dict]:
+    """Return the active multi-track/trim music plan, or [] for the legacy graph.
+
+    A single track without trim keeps the historical ``-stream_loop -1``
+    single-input graph byte-identical. Two or more tracks (or any per-track
+    trim) switch to the explicit sequence graph, in which the ENTIRE ordered
+    sequence loops as one unit (A → B → C → A → B → C …).
+    """
+    plan = [
+        track
+        for track in (getattr(settings, "music_track_plan", None) or [])
+        if str(track.get("path", "") or "").strip()
+    ]
+    if not plan:
+        return []
+    if len(plan) == 1:
+        trim_start = float(plan[0].get("trim_start", 0.0) or 0.0)
+        trim_duration = float(plan[0].get("trim_duration", 0.0) or 0.0)
+        if trim_start <= 1e-9 and trim_duration <= 1e-9:
+            return []
+    return plan
+
+
 def _watermark_active(settings: ExportSettings) -> bool:
     if not settings.watermark_enabled or not settings.watermark_path:
         return False
@@ -138,14 +161,21 @@ class FFmpegCommandBuilder:
         next_input = len(media)
         voice_indices: list[int] = []
         music_index: int | None = None
+        music_sequence_indices: list[int] = []
         watermark_index: int | None = None
         voice_inputs = list(getattr(settings, "voiceover_paths", None) or [])
         if not voice_inputs and settings.voiceover_path:
             voice_inputs = [settings.voiceover_path]
+        # Phase 27: an explicit multi-track (or trimmed) sequence owns one
+        # input per track; the legacy single track keeps its stream-loop input.
+        music_plan = _music_sequence_plan(settings) if settings.workflow_stage == "main" else []
         if settings.workflow_stage == "main" and voice_inputs:
             voice_indices = list(range(next_input, next_input + len(voice_inputs)))
             next_input += len(voice_inputs)
-        if settings.workflow_stage == "main" and settings.music_path:
+        if settings.workflow_stage == "main" and music_plan:
+            music_sequence_indices = list(range(next_input, next_input + len(music_plan)))
+            next_input += len(music_plan)
+        elif settings.workflow_stage == "main" and settings.music_path:
             music_index, next_input = next_input, next_input + 1
         if _watermark_active(settings):
             watermark_index, next_input = next_input, next_input + 1
@@ -607,7 +637,7 @@ class FFmpegCommandBuilder:
                     f"{voice_chain}volume={_number(voice_gain)},{voice_trim},asetpts=PTS-STARTPTS,"
                     f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[voice_pre]"
                 )
-                if music_index is not None and settings.ducking_enabled:
+                if (music_index is not None or music_sequence_indices) and settings.ducking_enabled:
                     lines.append("[voice_pre]asplit=2[voice_mix][voice_side]")
                     voice_mix, voice_side = "voice_mix", "voice_side"
                 else:
@@ -623,6 +653,78 @@ class FFmpegCommandBuilder:
                     f"[{music_index}:a:0]aresample=48000:async=1:first_pts=0,"
                     f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
                     f"volume={_number(music_gain)},{music_trim},asetpts=PTS-STARTPTS,"
+                    f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[music_pre]"
+                )
+                music_label = "music_pre"
+                if voice_side is not None:
+                    attack = max(1, min(2000, settings.ducking_attack_ms))
+                    release = max(10, min(9000, settings.ducking_release_ms))
+                    lines.append(
+                        f"[music_pre][{voice_side}]sidechaincompress=threshold=0.025:ratio=8:"
+                        f"attack={attack}:release={release}:makeup=1[ducked_music]"
+                    )
+                    music_label = "ducked_music"
+                mix_labels.append(music_label)
+            elif music_sequence_indices:
+                # Phase 27 multiple music tracks: build the explicit ordered
+                # sequence, then repeat the COMPLETE sequence as one unit
+                # (A → B → C → A → B → C …) until the window is covered.
+                # One track is never looped on its own while others exist.
+                music_gain = _percent_gain(settings.music_volume)
+                track_labels: list[str] = []
+                for track_index, (input_index, track) in enumerate(
+                    zip(music_sequence_indices, music_plan)
+                ):
+                    trim_start = max(0.0, float(track.get("trim_start", 0.0) or 0.0))
+                    trim_duration = max(0.0, float(track.get("trim_duration", 0.0) or 0.0))
+                    label = f"mtrack{track_index}"
+                    track_labels.append(f"[{label}]")
+                    trim_chain = ""
+                    if trim_start > 1e-9 and trim_duration > 1e-9:
+                        trim_chain = (
+                            f"atrim=start={_number(trim_start)}:"
+                            f"duration={_number(trim_duration)},"
+                        )
+                    elif trim_start > 1e-9:
+                        trim_chain = f"atrim=start={_number(trim_start)},"
+                    elif trim_duration > 1e-9:
+                        trim_chain = f"atrim=duration={_number(trim_duration)},"
+                    lines.append(
+                        f"[{input_index}:a:0]aresample=48000:async=1:first_pts=0,"
+                        f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
+                        f"{trim_chain}asetpts=PTS-STARTPTS[{label}]"
+                    )
+                if len(track_labels) == 1:
+                    sequence_label = track_labels[0]
+                else:
+                    lines.append(
+                        f"{''.join(track_labels)}concat=n={len(track_labels)}:v=0:a=1[music_seq]"
+                    )
+                    sequence_label = "[music_seq]"
+                # Enough whole-sequence repeats to cover the latest global
+                # window end (chunked segments trim with the global clock).
+                sequence_duration = sum(
+                    max(0.0, float(track.get("duration", 0.0) or 0.0)) for track in music_plan
+                )
+                required_end = audio_window_start + program
+                if sequence_duration > 1e-6:
+                    repeats = max(1, min(10_000, int(required_end / sequence_duration) + 2))
+                else:
+                    repeats = 1
+                if repeats > 1:
+                    split_labels = "".join(f"[mseq{index}]" for index in range(repeats))
+                    lines.append(f"{sequence_label}asplit={repeats}{split_labels}")
+                    lines.append(
+                        f"{split_labels}concat=n={repeats}:v=0:a=1[music_loop]"
+                    )
+                    sequence_label = "[music_loop]"
+                music_trim = (
+                    f"atrim=start={_number(audio_window_start)}:duration={_number(program)}"
+                    if audio_window_start > 1e-9 else f"atrim=duration={_number(program)}"
+                )
+                lines.append(
+                    f"{sequence_label}volume={_number(music_gain)},{music_trim},"
+                    f"asetpts=PTS-STARTPTS,"
                     f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[music_pre]"
                 )
                 music_label = "music_pre"
@@ -700,8 +802,15 @@ class FFmpegCommandBuilder:
         if settings.workflow_stage == "main" and voice_inputs:
             for voice_input in voice_inputs:
                 command += ["-i", voice_input]
-        if settings.workflow_stage == "main" and settings.music_path:
-            command += ["-stream_loop", "-1", "-i", settings.music_path]
+        if settings.workflow_stage == "main":
+            plan = _music_sequence_plan(settings)
+            if plan:
+                # One real input per sequence track; the graph loops the whole
+                # sequence as a unit, so no input-level stream loop is used.
+                for track in plan:
+                    command += ["-i", str(track["path"])]
+            elif settings.music_path:
+                command += ["-stream_loop", "-1", "-i", settings.music_path]
         if _watermark_active(settings):
             command += ["-loop", "1", "-i", settings.watermark_path]
         output_duration = max(
