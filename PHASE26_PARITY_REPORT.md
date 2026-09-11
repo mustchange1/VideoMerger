@@ -112,3 +112,22 @@ render (`ABCABCA` spectral trace, `/tmp/e2e27b`).
 - **Push status:** ✅ pushed (`c032725..1f54c1a`)
 - **Rules honored:** `main` untouched (still `1db2e91`), no force-push, no history rewrite
 - Defaults preserved exactly; existing projects migrate safely (verified by store round-trip and legacy-file tests); doing nothing remains compatible (single-track legacy configurations keep byte-identical log lines and behavior)
+
+## 8. Post-delivery re-verification (2026-09-12)
+
+After a sandbox environment reset, the complete verification battery was
+repeated on the final commit with a freshly rebuilt test environment
+(PySide6 6.11.2 + generated Qt stub libraries, imageio-ffmpeg 7.0.2 with the
+ffprobe shim, fonttools):
+
+- Unit/integration suite: **876 passed / 0 failed** (identical to §6)
+- e2e suite: 60 passed / 18 failed — the same 18 pre-existing baseline
+  failures (verified against `afc8019` before the reset), zero regressions
+- The opt-in 2-minute benchmark correctly self-skips without `espeak-ng` or
+  the release voice fixture (same on the original environment)
+- Real-render separation proof reproduced byte-identically: Long-Form command
+  references only `long_form.mp3`, the Shorts command only `shorts_only.mp3`;
+  outputs valid (Long-Form 320×240 / Shorts 720×1280, AAC audio)
+- `config/example_settings.json` extended with the Phase-27 keys
+  (`music_tracks`, `short_music_tracks`, `short_subtitle_font_size`,
+  `duration_before_merge_shorts`); all 86 keys load into `ExportSettings`

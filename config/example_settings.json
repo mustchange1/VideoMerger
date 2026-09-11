@@ -80,5 +80,9 @@
   "short_subtitle_style": "short_1",
   "short_subtitle_animation": "word_highlight",
   "short_subtitle_font": "inter",
-  "short_subtitle_position": "Bottom Center"
+  "short_subtitle_position": "Bottom Center",
+  "music_tracks": [],
+  "short_music_tracks": [],
+  "short_subtitle_font_size": 100,
+  "duration_before_merge_shorts": 0.7
 }
