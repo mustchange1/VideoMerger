@@ -11,7 +11,12 @@ from app.video_merger.font_manager import bundled_fonts_dir, resolve_font
 from app.video_merger.models import AlignmentResult, ExportSettings, WordTiming
 from app.video_merger.platform_utils import hidden_process_flags, safe_subprocess_env
 from app.video_merger.settings_store import SettingsStore
-from app.video_merger.subtitles import ANIMATION_OPTIONS, build_cues, write_ass
+from app.video_merger.subtitles import (
+    ANIMATION_OPTIONS,
+    PHRASE_LEVEL_ANIMATIONS,
+    build_cues,
+    write_ass,
+)
 
 
 def _run(command: list[object], timeout: int = 180) -> bytes:
@@ -233,6 +238,11 @@ def test_all_four_safe_positions_execute_and_keep_ordered_stable_regions(ffmpeg_
 @pytest.mark.e2e
 def test_all_five_animations_burn_real_timestamp_changes_with_stable_complete_phrase_geometry(ffmpeg_paths, tmp_path):
     ffmpeg, _ffprobe = ffmpeg_paths
+    # The renderer defines which animations are phrase-level. Phrase Focus (the
+    # conservative Shorts default that replaced the removed rectangular Outline
+    # Highlight) emits ONE event per cue and only fades softly, so it is measured
+    # like Static White Reveal and never like a word-synchronized reveal.
+    assert PHRASE_LEVEL_ANIMATIONS == frozenset({"static_phrase", "phrase_focus"})
     script = "Präzise Wörter bleiben räumlich stabil."
     alignment = _alignment(script, starts=[.10, .55, 1.05, 1.55, 2.05])
     cues = build_cues(script, alignment, "long_1", width=960, height=540, font_key="modern_sans_bold")
@@ -251,7 +261,7 @@ def test_all_five_animations_burn_real_timestamp_changes_with_stable_complete_ph
         events = [line for line in text.splitlines() if line.startswith("Dialogue: 0,")]
         assert events
         assert all(_plain_ass_text(event) == script for event in events)
-        if animation == "static_phrase":
+        if animation in PHRASE_LEVEL_ANIMATIONS:
             assert len(events) == 1 and events[0].split(",", 3)[1] == expected_starts[0]
         else:
             assert [event.split(",", 3)[1] for event in events] == expected_starts
@@ -266,10 +276,13 @@ def test_all_five_animations_burn_real_timestamp_changes_with_stable_complete_ph
         bboxes[animation] = [box for box in boxes if box is not None]
         assert all(330 <= box[1] <= 500 for box in bboxes[animation])
 
-        if animation != "static_phrase":
+        if animation not in PHRASE_LEVEL_ANIMATIONS:
             assert _mean_abs_difference(frames[0], frames[1]) > .025
             assert _mean_abs_difference(frames[1], frames[2]) > .025
         else:
+            # One calm block for the whole cue: Static White Reveal stays
+            # completely static, Phrase Focus only fades softly in and out, so
+            # neither repaints the caption region word by word.
             assert _mean_abs_difference(frames[0], frames[1]) < .20
             assert _mean_abs_difference(frames[1], frames[2]) < .20
 

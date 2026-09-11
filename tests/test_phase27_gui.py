@@ -192,12 +192,12 @@ def test_music_track_list_add_remove_and_order(window, tmp_path):
     add(a)
     add(b)
     add(c)
-    assert window._music_track_paths() == [str(a), str(b), str(c)]
+    assert window._music_track_paths(window.music_tracks_list) == [str(a), str(b), str(c)]
 
     # Reorder: move C up one step → a, c, b.
     window.music_tracks_list.setCurrentRow(2)
-    window._move_music_track(-1)
-    assert window._music_track_paths() == [str(a), str(c), str(b)]
+    window._move_music_track(window.music_tracks_list, -1)
+    assert window._music_track_paths(window.music_tracks_list) == [str(a), str(c), str(b)]
 
     settings = window._settings()
     assert [track["path"] for track in settings.music_tracks] == [str(a), str(c), str(b)]
@@ -205,19 +205,67 @@ def test_music_track_list_add_remove_and_order(window, tmp_path):
 
     # Remove the middle entry.
     window.music_tracks_list.setCurrentRow(1)
-    window._remove_music_track()
-    assert window._music_track_paths() == [str(a), str(b)]
+    window._remove_music_track(window.music_tracks_list)
+    assert window._music_track_paths(window.music_tracks_list) == [str(a), str(b)]
+
+
+def test_shorts_music_sequence_is_independent_from_long_form(window, tmp_path):
+    """Changing one profile's music sequence never changes the other's."""
+    from PySide6.QtWidgets import QListWidgetItem
+    from PySide6.QtCore import Qt as _Qt
+
+    def add(widget, path):
+        item = QListWidgetItem(path.name)
+        item.setData(_Qt.UserRole, str(path))
+        widget.addItem(item)
+
+    long_a = tmp_path / "long_a.mp3"
+    short_x = tmp_path / "short_x.mp3"
+    short_y = tmp_path / "short_y.mp3"
+    for path in (long_a, short_x, short_y):
+        path.write_bytes(b"id3")
+
+    add(window.music_tracks_list, long_a)
+    add(window.short_music_tracks_list, short_x)
+    add(window.short_music_tracks_list, short_y)
+
+    settings = window._settings()
+    assert [t["path"] for t in settings.music_tracks] == [str(long_a)]
+    assert [t["path"] for t in settings.short_music_tracks] == [str(short_x), str(short_y)]
+    assert settings.music_path == str(long_a)
+    assert settings.short_music_path == str(short_x)
+
+    # Editing the Shorts sequence leaves the Long-Form sequence untouched …
+    window.short_music_tracks_list.setCurrentRow(0)
+    window._remove_music_track(window.short_music_tracks_list)
+    settings = window._settings()
+    assert [t["path"] for t in settings.music_tracks] == [str(long_a)]
+    assert [t["path"] for t in settings.short_music_tracks] == [str(short_y)]
+    # … and vice versa.
+    window.music_tracks_list.setCurrentRow(0)
+    window._remove_music_track(window.music_tracks_list)
+    settings = window._settings()
+    assert settings.music_tracks == []
+    assert settings.music_path == ""
+    assert [t["path"] for t in settings.short_music_tracks] == [str(short_y)]
+    assert settings.short_music_path == str(short_y)
 
 
 def test_music_tracks_persist_through_settings_roundtrip(window, tmp_path):
     track = tmp_path / "song.mp3"
-    track.write_bytes(b"id3")
+    short_track = tmp_path / "short_song.mp3"
+    for path in (track, short_track):
+        path.write_bytes(b"id3")
     from PySide6.QtWidgets import QListWidgetItem
     from PySide6.QtCore import Qt as _Qt
 
-    item = QListWidgetItem(track.name)
-    item.setData(_Qt.UserRole, str(track))
-    window.music_tracks_list.addItem(item)
+    def add(widget, path):
+        item = QListWidgetItem(path.name)
+        item.setData(_Qt.UserRole, str(path))
+        widget.addItem(item)
+
+    add(window.music_tracks_list, track)
+    add(window.short_music_tracks_list, short_track)
     window._sync_music_state()
 
     from app.video_merger.settings_store import SettingsStore
@@ -226,6 +274,8 @@ def test_music_tracks_persist_through_settings_roundtrip(window, tmp_path):
     loaded = store.load()
     assert [t["path"] for t in loaded.music_tracks] == [str(track)]
     assert loaded.music_path == str(track)
+    assert [t["path"] for t in loaded.short_music_tracks] == [str(short_track)]
+    assert loaded.short_music_path == str(short_track)
 
 
 def test_alignment_warning_help_text_is_explicit(window):

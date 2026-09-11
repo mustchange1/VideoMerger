@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, QUrl, Signal
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QBrush, QCloseEvent, QColor, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -19,13 +19,44 @@ from ..errors import VideoMergerError
 from ..logging_utils import configure_file_logger
 from ..font_manager import FONT_OPTIONS, register_bundled_fonts_with_qt, resolve_font
 from ..image_insertion import clamp_image_duration, clamp_image_zoom, normalize_image_filter, normalize_image_fit_mode, normalize_image_position
-from ..models import ExportSettings, ProgressEvent
+from ..models import (
+    LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_MUSIC_VOLUME,
+    LONG_FORM_OUTRO_SECONDS,
+    LONG_FORM_TRANSITION_DURATION,
+    MAX_MUSIC_VOLUME_PERCENT,
+    MAX_VISUAL_SECTION_SECONDS,
+    SHORT_INTRO_SECONDS,
+    SHORT_OUTRO_SECONDS,
+    SHORTS_ALLOW_AREA_MIDDLE_END,
+    SHORTS_MUSIC_VOLUME,
+    SHORTS_TRANSITION_DURATION,
+    MAX_TIMELINE_AREA_SECONDS,
+    TIMELINE_AREA_END_SECONDS,
+    TIMELINE_AREA_MIDPOINT_PERCENT,
+    TIMELINE_AREA_START_SECONDS,
+    DEFAULT_SUBTITLE_LANGUAGE,
+    SUBTITLE_LANGUAGE_CHOICES,
+    SUBTITLE_LANGUAGE_LABELS,
+    ExportSettings,
+    ProgressEvent,
+    normalize_subtitle_language,
+)
 from ..music_tracks import normalize_music_tracks
+from ..opening_effects import OPENING_EFFECTS, normalize_opening_effect
 from ..project_order import natural_order, natural_sort_key, randomize_order
 from ..project_assets import probe_audio
-from ..quote_artwork import quote_artwork_path
 from ..quality import QUALITY_KEYS, QUALITY_PRESETS, quality_label
-from ..subtitles import ANIMATION_OPTIONS, clamp_font_size_percent
+from ..short_groups import build_short_plan
+from ..subtitles import (
+    DEFAULT_LONG_ANIMATION,
+    DEFAULT_SHORT_ANIMATION,
+    LONG_ANIMATION_OPTIONS,
+    SHORT_ANIMATION_OPTIONS,
+    clamp_font_size_percent,
+    normalize_subtitle_animation,
+)
+from ..timeline_areas import TIMELINE_AREA_LABELS, normalize_timeline_area, timeline_area_label
 from ..paths import ensure_project_directories, locate_ffmpeg, project_root
 from ..project_order import ProjectOrderStore
 from ..settings_store import SettingsStore
@@ -37,7 +68,7 @@ from ..subtitle_modes import (
     SUBTITLE_OUTPUT_WITHOUT,
     normalize_subtitle_output_mode,
 )
-from ..subtitle_preview import ImageInsertionPreviewCanvas, QuotePreviewCanvas, SubtitlePreviewCanvas, sample_subtitle_text
+from ..subtitle_preview import ImageInsertionPreviewCanvas, SubtitlePreviewCanvas, sample_subtitle_text
 from ..timeline import duration_before_merge_value
 from ..video_pool import (
     VIDEO_ORDER_ALPHABETICAL,
@@ -56,6 +87,9 @@ from ..youtube_outputs import (
     EXPORT_MODE_LONG_FORM,
     EXPORT_MODE_SHORTS,
     normalize_export_mode,
+    output_music_volume,
+    output_transition_duration,
+    output_transition_type,
 )
 from .style import APP_STYLE
 from .workers import ProcessingWorker
@@ -66,6 +100,79 @@ def _format_time(seconds: float | None) -> str:
         return "--:--:--"
     value = int(round(seconds))
     return f"{value // 3600:02d}:{(value % 3600) // 60:02d}:{value % 60:02d}"
+
+
+def _spin_seconds(spin, default: float = 0.0) -> float:
+    """Return a non-negative spin-box value in seconds.
+
+    Tolerates an unreadable widget so the pool status can never raise while the
+    user is editing several duration controls at once.
+    """
+    try:
+        return max(0.0, float(spin.value()))
+    except Exception:
+        return default
+
+
+def _visual_section_spin(default: float, tooltip: str) -> QDoubleSpinBox:
+    """One spin box for a visual-only intro/outro section.
+
+    0.0 s is a valid explicit "no section"; negative values cannot be entered.
+    The upper bound is only the widget range, never an artificial model limit.
+    """
+    spin = QDoubleSpinBox()
+    spin.setRange(0.0, MAX_VISUAL_SECTION_SECONDS)
+    spin.setSingleStep(0.1)
+    spin.setDecimals(1)
+    spin.setSuffix(" sec")
+    spin.setToolTip(tooltip)
+    spin.setValue(default)
+    return spin
+
+
+#: Authoritative folder path and its soft timeline area role travel in item
+#: data; the visible text additionally shows the role so it stays understandable.
+#: Plain integers (32 == ``Qt.UserRole``, 33 == ``Qt.UserRole + 1``) instead of
+#: enum arithmetic, so the roles work with every PySide6 enum flavor.
+FOLDER_PATH_ROLE = 32
+FOLDER_AREA_ROLE = 33
+
+
+def _timeline_area_spin(default: float, tooltip: str, suffix: str, maximum: float) -> QDoubleSpinBox:
+    """One spin box for a soft timeline-area target (seconds or percent)."""
+    spin = QDoubleSpinBox()
+    spin.setRange(0.0, maximum)
+    spin.setSingleStep(1.0 if suffix == " %" else 0.5)
+    spin.setDecimals(0 if suffix == " %" else 1)
+    spin.setSuffix(suffix)
+    spin.setToolTip(tooltip)
+    spin.setValue(default)
+    return spin
+
+
+def _transition_duration_spin(default: float, tooltip: str) -> QDoubleSpinBox:
+    """One spin box for an output-specific transition duration.
+
+    The widget range matches the historical shared control (0.05-5.00 s); the
+    model itself accepts any finite value >= 0 and the timeline logic still
+    bounds the effective duration by the real clip lengths.
+    """
+    spin = QDoubleSpinBox()
+    spin.setRange(0.05, 5.0)
+    spin.setSingleStep(0.25)
+    spin.setDecimals(2)
+    spin.setSuffix(" sec")
+    spin.setToolTip(tooltip)
+    spin.setValue(default)
+    return spin
+
+
+def _coerce_percent(value: object) -> int | None:
+    """Tolerant music-volume percent for hand-edited project files."""
+    try:
+        return max(0, min(MAX_MUSIC_VOLUME_PERCENT, int(str(value).strip())))
+    except (TypeError, ValueError):
+        return None
 
 
 class ReorderTableWidget(QTableWidget):
@@ -154,7 +261,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.setStyleSheet(APP_STYLE)
         self._load_settings()
-        self._append_log("VideoMerger 1.5.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Before/After Merge, Quote/Flyer-Artwork, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
+        self._append_log("VideoMerger 1.5.0 gestartet – Video-Pool (Required-Only), Smart Stretch, Before/After Merge, echte Subtitle-Preview, sauberer Output + YouTube-Metadaten. Alle Videodaten bleiben lokal.")
 
     def _build_ui(self) -> None:
         scroll = QScrollArea()
@@ -170,7 +277,7 @@ class MainWindow(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel("VideoMerger")
         title.setObjectName("title")
-        subtitle = QLabel("Zwei Stufen · Voiceover · Musik · Wort-Sync · Untertitel · Video-Pool · Quote/Flyer · Smart Stretch · Before/After Merge · lokal")
+        subtitle = QLabel("Zwei Stufen · Voiceover · Musik · Wort-Sync · Untertitel · Video-Pool · Add Image · Smart Stretch · Before/After Merge · lokal")
         subtitle.setObjectName("subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -203,10 +310,33 @@ class MainWindow(QMainWindow):
         self.add_folder_button.clicked.connect(self._add_source_folder)
         self.remove_folder_button.clicked.connect(self._remove_source_folder)
         self.clear_folders_button.clicked.connect(self._clear_source_folders)
+        # Soft timeline area role of the selected folder. The role only decides
+        # which approximate part of the timeline a folder is used for; the order
+        # inside the role stays exactly the configured project order.
+        self.folder_area_combo = QComboBox()
+        self.folder_area_combo.addItem("No area role", "")
+        for area_key, area_label in TIMELINE_AREA_LABELS.items():
+            self.folder_area_combo.addItem(area_label, area_key)
+        self.folder_area_combo.setToolTip(
+            "Timeline area role of the selected configured folder.\n"
+            "1. Start & End: beginning and ending of the Long-Form video.\n"
+            "2. Start to Middle: earlier/main portion up to the midpoint target.\n"
+            "3. Middle to End: later/main portion up to the end reserve.\n"
+            "All boundaries are soft targets - a clip always completes first and "
+            "is never cut. YouTube Shorts use Area 1 + Area 2 only."
+        )
+        self.set_folder_area_button = QPushButton("Set Role")
+        self.set_folder_area_button.setToolTip(
+            "Assign the selected role to the folder highlighted in the list above."
+        )
+        self.set_folder_area_button.clicked.connect(self._apply_folder_area)
         folder_buttons = QHBoxLayout()
         folder_buttons.addWidget(self.add_folder_button)
         folder_buttons.addWidget(self.remove_folder_button)
         folder_buttons.addWidget(self.clear_folders_button)
+        folder_buttons.addWidget(QLabel("Role:"))
+        folder_buttons.addWidget(self.folder_area_combo)
+        folder_buttons.addWidget(self.set_folder_area_button)
         io_layout.addWidget(QLabel("Configured Video Folders"), 1, 0, Qt.AlignTop)
         io_layout.addWidget(self.source_folders_list, 1, 1, 1, 2)
         io_layout.addLayout(folder_buttons, 2, 1, 1, 2)
@@ -225,9 +355,48 @@ class MainWindow(QMainWindow):
         io_layout.addWidget(QLabel("Output Folder"), 4, 0)
         io_layout.addWidget(self.output_edit, 4, 1)
         io_layout.addWidget(browse_output, 4, 2)
+        # Soft timeline-area targets for the configured folder roles.
+        self.area_start_spin = _timeline_area_spin(
+            TIMELINE_AREA_START_SECONDS,
+            "Start Zone Target: approximate length of the leading "
+            "'1. Start & End' zone. Soft target - the current clip always "
+            "completes first, so the zone may end later and no clip is cut.",
+            " sec", MAX_TIMELINE_AREA_SECONDS,
+        )
+        self.area_midpoint_spin = _timeline_area_spin(
+            TIMELINE_AREA_MIDPOINT_PERCENT,
+            "Midpoint Target: approximate position (percent of the output "
+            "duration) where '2. Start to Middle' hands over to "
+            "'3. Middle to End'. Soft target only.",
+            " %", 100.0,
+        )
+        self.area_end_spin = _timeline_area_spin(
+            TIMELINE_AREA_END_SECONDS,
+            "End Zone Target: approximate length of the trailing "
+            "'1. Start & End' zone. Soft target - clips are never cut to fit it.",
+            " sec", MAX_TIMELINE_AREA_SECONDS,
+        )
+        self.shorts_allow_area3_check = QCheckBox("Allow '3. Middle to End' material in Shorts")
+        self.shorts_allow_area3_check.setChecked(SHORTS_ALLOW_AREA_MIDDLE_END)
+        self.shorts_allow_area3_check.setToolTip(
+            "By default every YouTube Short draws only from '1. Start & End' and "
+            "'2. Start to Middle'. Enable this to let Shorts also use the later "
+            "main pool. Long-Form ordering is never affected by this checkbox."
+        )
+        area_row = QHBoxLayout()
+        area_row.addWidget(QLabel("Start Zone"))
+        area_row.addWidget(self.area_start_spin)
+        area_row.addWidget(QLabel("Midpoint"))
+        area_row.addWidget(self.area_midpoint_spin)
+        area_row.addWidget(QLabel("End Zone"))
+        area_row.addWidget(self.area_end_spin)
+        area_row.addStretch(1)
+        io_layout.addWidget(QLabel("Timeline Areas"), 5, 0, Qt.AlignTop)
+        io_layout.addLayout(area_row, 5, 1, 1, 2)
+        io_layout.addWidget(self.shorts_allow_area3_check, 6, 1, 1, 2)
         drop_hint = QLabel("Add one or more configured folders; the legacy root scans its immediate files only. MP4, MOV, MKV, AVI, WebM, M4V …")
         drop_hint.setObjectName("dropHint")
-        io_layout.addWidget(drop_hint, 5, 0, 1, 3)
+        io_layout.addWidget(drop_hint, 7, 0, 1, 3)
         outer.addWidget(io_group)
 
         audio_group = QGroupBox("2 · Audio & Script")
@@ -238,20 +407,57 @@ class MainWindow(QMainWindow):
         # hidden legacy field for compatibility with older save files.
         self.music_edit = QLineEdit()
         self.music_edit.hide()
+        self.music_edit.setToolTip(
+            "First/current Long-Form background music track (legacy single-track "
+            "field kept for compatibility with older save files)."
+        )
+        # Separate Shorts music: strictly its own selection, never inherited
+        # from the Long-Form track. Empty means the Short has no music. The
+        # QLineEdit stays as the hidden legacy mirror of the first Shorts track.
+        self.short_music_edit = QLineEdit()
+        self.short_music_edit.hide()
+        self.short_music_edit.setPlaceholderText(
+            "Own track for every YouTube Short; empty = no music in Shorts …"
+        )
+        self.short_music_edit.setToolTip(
+            "First/current Shorts background music track (legacy single-track "
+            "field kept for compatibility with older save files)."
+        )
+        # Phase 27: multiple music tracks per output profile, each with an
+        # explicit ordered sequence. The whole sequence loops as one unit
+        # (A → B → C → A → B → C …); one track is the historical one-item
+        # sequence. The Long-Form and Shorts sequences are completely
+        # independent — changing one never changes the other.
         self.music_tracks_list = QListWidget()
         self.music_tracks_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.music_tracks_list.setToolTip(
-            "Ordered background music sequence. The ENTIRE sequence loops as one "
-            "unit during rendering. A single track keeps the classic behavior."
+            "Ordered Long-Form background music sequence. The ENTIRE sequence "
+            "loops as one unit during rendering. A single track keeps the "
+            "classic behavior. Never plays in a YouTube Short."
         )
         music_add_button = QPushButton("Add Track …")
-        music_add_button.clicked.connect(self._add_music_track)
+        music_add_button.clicked.connect(lambda: self._add_music_track(self.music_tracks_list))
         music_remove_button = QPushButton("Remove")
-        music_remove_button.clicked.connect(self._remove_music_track)
+        music_remove_button.clicked.connect(lambda: self._remove_music_track(self.music_tracks_list))
         music_up_button = QPushButton("Up")
-        music_up_button.clicked.connect(lambda: self._move_music_track(-1))
+        music_up_button.clicked.connect(lambda: self._move_music_track(self.music_tracks_list, -1))
         music_down_button = QPushButton("Down")
-        music_down_button.clicked.connect(lambda: self._move_music_track(1))
+        music_down_button.clicked.connect(lambda: self._move_music_track(self.music_tracks_list, 1))
+        self.short_music_tracks_list = QListWidget()
+        self.short_music_tracks_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.short_music_tracks_list.setToolTip(
+            "Ordered YouTube Shorts background music sequence. The ENTIRE "
+            "sequence loops as one unit during rendering. Empty = no music in "
+            "Shorts. The Long-Form sequence above is never mixed into a Short."
+        )
+        short_music_add_button = QPushButton("Add Track …")
+        short_music_add_button.clicked.connect(lambda: self._add_music_track(self.short_music_tracks_list))
+        short_music_remove_button = QPushButton("Remove")
+        short_music_remove_button.clicked.connect(lambda: self._remove_music_track(self.short_music_tracks_list))
+        short_music_up_button = QPushButton("Up")
+        short_music_up_button.clicked.connect(lambda: self._move_music_track(self.short_music_tracks_list, -1))
+        short_music_down_button = QPushButton("Down")
+        short_music_down_button.clicked.connect(lambda: self._move_music_track(self.short_music_tracks_list, 1))
         self.script_mode_combo = QComboBox()
         self.script_mode_combo.addItem("One Global Script (eine Textdatei für die komplette Voiceover-Timeline)", "single")
         self.script_mode_combo.addItem("Individual Scripts (Basename-Matching pro Voiceover)", "matched")
@@ -283,11 +489,21 @@ class MainWindow(QMainWindow):
         self.voiceover_pause_spin.setSuffix(" sec")
         self.voiceover_pause_spin.setValue(0.7)
         self.voiceover_pause_spin.valueChanged.connect(self._update_pool_status)
-        self.voiceover_table = ReorderTableWidget(0, 3)
-        self.voiceover_table.setHorizontalHeaderLabels(["#", "Voiceover", "Script"])
+        # The fourth column shows which Short a row renders into, so the
+        # script-to-Short mapping (including groups) is visible before the run.
+        self.voiceover_table = ReorderTableWidget(0, 4)
+        self.voiceover_table.setHorizontalHeaderLabels(["#", "Voiceover", "Script", "Short"])
         self.voiceover_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.voiceover_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.voiceover_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.voiceover_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        # Grouping needs several rows at once. Every existing handler keeps
+        # working on the current row, so single-row behaviour is unchanged.
+        self.voiceover_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.voiceover_table.setToolTip(
+            "One row = one voiceover/script unit. Select several rows (Ctrl/Shift + click) "
+            "and use 'Group Selected' to render them as ONE Short."
+        )
         self.voiceover_table.setMaximumHeight(150)
         self.voiceover_table.row_move_requested.connect(self._move_voiceover_row)
         self.voiceover_add_button = QPushButton("Add Voiceover Files …")
@@ -300,6 +516,25 @@ class MainWindow(QMainWindow):
         self.voiceover_top_button = QPushButton("Move to Top")
         self.voiceover_bottom_button = QPushButton("Move to Bottom")
         self.voiceover_reset_button = QPushButton("Reset to Default Order")
+        self.voiceover_group_button = QPushButton("Group Selected → 1 Short")
+        self.voiceover_group_button.setToolTip(
+            "Render the selected voiceovers/scripts as ONE Short: one video, voiceover, "
+            "subtitle and music timeline, one MP4 and one transcript. The list order stays "
+            "authoritative (the topmost selected unit plays first)."
+        )
+        self.voiceover_ungroup_button = QPushButton("Ungroup Selected")
+        self.voiceover_ungroup_button.setToolTip(
+            "Dissolve the Short group of the selected rows: every unit becomes its own Short again."
+        )
+        self.short_own_music_button = QPushButton("Short Music for Selected …")
+        self.short_own_music_button.setToolTip(
+            "Give exactly this Short its own background track (a grouped Short owns one track). "
+            "All other Shorts keep the shared Shorts music above."
+        )
+        self.short_own_music_clear_button = QPushButton("Clear Short Music")
+        self.short_own_music_clear_button.setToolTip(
+            "Remove the own track of the selected Short; it uses the shared Shorts music again."
+        )
         self.voiceover_add_button.clicked.connect(self._add_voiceovers)
         self.voiceover_remove_button.clicked.connect(self._remove_voiceover)
         self.voiceover_delete_all_button.clicked.connect(self._delete_all_voiceovers)
@@ -310,6 +545,10 @@ class MainWindow(QMainWindow):
         self.voiceover_top_button.clicked.connect(lambda: self._move_voiceover_selected_to(-10_000))
         self.voiceover_bottom_button.clicked.connect(lambda: self._move_voiceover_selected_to(10_000))
         self.voiceover_reset_button.clicked.connect(self._reset_voiceover_order)
+        self.voiceover_group_button.clicked.connect(self._group_selected_voiceovers)
+        self.voiceover_ungroup_button.clicked.connect(self._ungroup_selected_voiceovers)
+        self.short_own_music_button.clicked.connect(self._choose_short_music)
+        self.short_own_music_clear_button.clicked.connect(self._clear_short_music)
         audio_layout.addWidget(QLabel("Script Mode"), 0, 0)
         audio_layout.addWidget(self.script_mode_combo, 0, 1, 1, 2)
         audio_layout.addWidget(QLabel("Voiceover Order"), 1, 0)
@@ -326,7 +565,18 @@ class MainWindow(QMainWindow):
         voice_buttons.addWidget(self.voiceover_top_button)
         voice_buttons.addWidget(self.voiceover_bottom_button)
         voice_buttons.addWidget(self.voiceover_reset_button)
-        audio_layout.addLayout(voice_buttons, 3, 0, 1, 3)
+        # Second button row for the Short mapping. Both rows share grid row 3 so
+        # no existing row index (and no unrelated widget) has to move.
+        short_buttons = QHBoxLayout()
+        short_buttons.addWidget(self.voiceover_group_button)
+        short_buttons.addWidget(self.voiceover_ungroup_button)
+        short_buttons.addWidget(self.short_own_music_button)
+        short_buttons.addWidget(self.short_own_music_clear_button)
+        short_buttons.addStretch(1)
+        voice_button_rows = QVBoxLayout()
+        voice_button_rows.addLayout(voice_buttons)
+        voice_button_rows.addLayout(short_buttons)
+        audio_layout.addLayout(voice_button_rows, 3, 0, 1, 3)
         audio_layout.addWidget(QLabel("Global Script File"), 4, 0)
         audio_layout.addWidget(self.global_script_edit, 4, 1)
         audio_layout.addWidget(self.global_script_button, 4, 2)
@@ -335,32 +585,42 @@ class MainWindow(QMainWindow):
         pause_row.addWidget(self.voiceover_pause_combo)
         pause_row.addWidget(self.voiceover_pause_spin)
         audio_layout.addLayout(pause_row, 5, 1, 1, 2)
-        audio_layout.addWidget(QLabel("Background Music"), 6, 0)
+        audio_layout.addWidget(QLabel("Background Music (Long-Form)"), 6, 0)
         music_tracks_box = QVBoxLayout()
-        self.music_tracks_list.setMinimumHeight(64)
-        self.music_tracks_list.setMaximumHeight(110)
+        self.music_tracks_list.setMinimumHeight(56)
+        self.music_tracks_list.setMaximumHeight(96)
         music_tracks_box.addWidget(self.music_tracks_list)
         music_track_buttons = QHBoxLayout()
         for button in (music_add_button, music_remove_button, music_up_button, music_down_button):
             music_track_buttons.addWidget(button)
         music_tracks_box.addLayout(music_track_buttons)
         audio_layout.addLayout(music_tracks_box, 6, 1)
+        audio_layout.addWidget(QLabel("Background Music (Shorts)"), 7, 0)
+        short_music_tracks_box = QVBoxLayout()
+        self.short_music_tracks_list.setMinimumHeight(56)
+        self.short_music_tracks_list.setMaximumHeight(96)
+        short_music_tracks_box.addWidget(self.short_music_tracks_list)
+        short_music_track_buttons = QHBoxLayout()
+        for button in (short_music_add_button, short_music_remove_button, short_music_up_button, short_music_down_button):
+            short_music_track_buttons.addWidget(button)
+        short_music_tracks_box.addLayout(short_music_track_buttons)
+        audio_layout.addLayout(short_music_tracks_box, 7, 1)
         # 1.2.4 Default: Original Audio (Mute/Low bleiben unabhängig wählbar).
         self.original_audio_combo = QComboBox()
         self.original_audio_combo.addItem("Original (Standard)", "original")
         self.original_audio_combo.addItem("Low", "low")
         self.original_audio_combo.addItem("Mute", "mute")
-        audio_layout.addWidget(QLabel("Original Video Audio"), 7, 0)
-        audio_layout.addWidget(self.original_audio_combo, 7, 1)
+        audio_layout.addWidget(QLabel("Original Video Audio"), 8, 0)
+        audio_layout.addWidget(self.original_audio_combo, 8, 1)
         self.voice_volume_slider = QSlider(Qt.Horizontal)
         self.voice_volume_slider.setRange(0, 125)
         self.voice_volume_value = QLabel()
         self.voice_volume_slider.valueChanged.connect(
             lambda value: self.voice_volume_value.setText(f"{value} %")
         )
-        audio_layout.addWidget(QLabel("Voiceover Volume"), 8, 0)
-        audio_layout.addWidget(self.voice_volume_slider, 8, 1)
-        audio_layout.addWidget(self.voice_volume_value, 8, 2)
+        audio_layout.addWidget(QLabel("Voiceover Volume"), 9, 0)
+        audio_layout.addWidget(self.voice_volume_slider, 9, 1)
+        audio_layout.addWidget(self.voice_volume_value, 9, 2)
         self.music_preset_combo = QComboBox()
         for label, key, value in (
             ("Very Quiet", "very_quiet", 10), ("Quiet / Background", "quiet", 22),
@@ -368,25 +628,102 @@ class MainWindow(QMainWindow):
         ):
             self.music_preset_combo.addItem(label, (key, value))
         self.music_preset_combo.currentIndexChanged.connect(self._music_preset_changed)
+        self.music_preset_combo.setToolTip(
+            "Loudness preset of the LONG-FORM background music. The YouTube Shorts "
+            "volume below is independent and is never changed by this preset."
+        )
         self.music_volume_slider = QSlider(Qt.Horizontal)
         self.music_volume_slider.setRange(0, 100)
+        self.music_volume_slider.setValue(LONG_FORM_MUSIC_VOLUME)
         self.music_volume_value = QLabel()
         self.music_volume_slider.valueChanged.connect(self._music_volume_changed)
-        audio_layout.addWidget(QLabel("Music Preset"), 9, 0)
-        audio_layout.addWidget(self.music_preset_combo, 9, 1)
-        audio_layout.addWidget(QLabel("Music Volume"), 10, 0)
-        audio_layout.addWidget(self.music_volume_slider, 10, 1)
-        audio_layout.addWidget(self.music_volume_value, 10, 2)
+        self.music_volume_slider.setToolTip(
+            "LONG-FORM background music volume in percent. The track starts at "
+            "0.000 s with the very first frame, plays under the voiceover and "
+            "continues through the visual outro until the final frame. This value "
+            "is independent from the Shorts music volume below."
+        )
+        # YouTube Shorts own their music volume completely: moving this slider
+        # never changes the Long-Form value, and vice versa.
+        self.short_music_volume_slider = QSlider(Qt.Horizontal)
+        self.short_music_volume_slider.setRange(0, 100)
+        self.short_music_volume_slider.setValue(SHORTS_MUSIC_VOLUME)
+        self.short_music_volume_value = QLabel(f"{SHORTS_MUSIC_VOLUME} %")
+        self.short_music_volume_slider.valueChanged.connect(
+            lambda value: self.short_music_volume_value.setText(f"{value} %")
+        )
+        self.short_music_volume_slider.setToolTip(
+            "SHORTS background music volume in percent, applied to the Short's own "
+            "music track only (a Short never plays the Long-Form track). The music "
+            "starts at 0.000 s, plays under the voiceover and continues through the "
+            "0.7 s visual outro until the final frame. Independent from the "
+            "Long-Form volume above."
+        )
+        audio_layout.addWidget(QLabel("Music Preset (Long-Form)"), 10, 0)
+        audio_layout.addWidget(self.music_preset_combo, 10, 1)
+        audio_layout.addWidget(QLabel("Music Volume (Long-Form)"), 11, 0)
+        audio_layout.addWidget(self.music_volume_slider, 11, 1)
+        audio_layout.addWidget(self.music_volume_value, 11, 2)
+        audio_layout.addWidget(QLabel("Music Volume (Shorts)"), 12, 0)
+        audio_layout.addWidget(self.short_music_volume_slider, 12, 1)
+        audio_layout.addWidget(self.short_music_volume_value, 12, 2)
         self.ducking_check = QCheckBox("Voiceover Ducking – Musik weich unter Sprache absenken")
-        audio_layout.addWidget(self.ducking_check, 11, 0, 1, 3)
-        # 1.3.0 Main Video End Padding: manual, free setting (0.0–5.0 s);
-        # the existing ~1 second default is preserved exactly.
-        self.end_padding_spin = QDoubleSpinBox()
-        self.end_padding_spin.setRange(0.0, 5.0)
-        self.end_padding_spin.setSingleStep(0.1)
-        self.end_padding_spin.setDecimals(1)
-        self.end_padding_spin.setSuffix(" sec")
-        self.end_padding_spin.setValue(1.0)
+        audio_layout.addWidget(self.ducking_check, 13, 0, 1, 3)
+        music_timeline_hint = QLabel(
+            "Background music always starts at 0.000 s with the first frame: it already "
+            "plays during the visual intro, continues under the voiceover and keeps "
+            "playing through the visual outro until the very end of the video - there is "
+            "no silent gap before the first spoken word and no silent ending. The "
+            "voiceover itself starts after the visual intro, and subtitles run exactly "
+            "from the voiceover start to the end of the spoken content. Without a "
+            "selected track nothing is invented: the video stays silent outside the "
+            "spoken audio."
+        )
+        music_timeline_hint.setWordWrap(True)
+        music_timeline_hint.setObjectName("subtitle")
+        audio_layout.addWidget(music_timeline_hint, 14, 0, 1, 3)
+        # Explicit visual-only timeline sections. The Long-Form outro IS the
+        # former "Main Video End Padding": one control, one canonical value
+        # (``final_pause``), so the tail after the spoken audio can never be
+        # applied twice. All four controls live in group "4d · Timeline".
+        self.end_padding_spin = _visual_section_spin(
+            LONG_FORM_OUTRO_SECONDS,
+            "Long-Form Outro (visual after voiceover): the picture keeps moving "
+            "after the last spoken word, with no voiceover audio and no subtitle. "
+            "This is the former Main Video End Padding - the same single timeline "
+            "section, so it is never added twice. 0.0 disables it.",
+        )
+        self.long_intro_spin = _visual_section_spin(
+            LONG_FORM_INTRO_SECONDS,
+            "Long-Form Intro (visual before voiceover): the video already shows "
+            "moving material before the first spoken word. Background music may "
+            "already play, subtitles start exactly with the voiceover. "
+            "0.0 disables it.",
+        )
+        self.short_intro_spin = _visual_section_spin(
+            SHORT_INTRO_SECONDS,
+            "Short Intro (visual before voiceover): every YouTube Short starts "
+            "with this much moving picture before its own voiceover begins. No "
+            "subtitle is visible inside it. 0.0 disables it.",
+        )
+        self.short_outro_spin = _visual_section_spin(
+            SHORT_OUTRO_SECONDS,
+            "Short Outro (visual after voiceover): every YouTube Short keeps "
+            "showing moving picture after its spoken content ends, without audio "
+            "or subtitles. It replaces the historical fixed 0.7 s Short ending and "
+            "is never added on top of it. 0.0 disables it.",
+        )
+        self.opening_effect_combo = QComboBox()
+        for effect_key, effect_label in OPENING_EFFECTS:
+            self.opening_effect_combo.addItem(effect_label, effect_key)
+        self.opening_effect_combo.setToolTip(
+            "Optional subtle Main Video opening effect (gentle zoom). It covers the "
+            "opening visual portion only - the visual intro, or 3 s when no intro "
+            "is set - and always returns to a neutral 1.00x frame, so the rest of "
+            "the video is untouched. It never changes the timeline, the voiceover "
+            "synchronization or the subtitle timing, and captions are burned in "
+            "afterwards, so they stay unscaled. Long-Form only."
+        )
         self.short_video_combo = QComboBox()
         self.short_video_combo.addItem("Hold Last Frame – finalen Frame halten", "hold")
         self.short_video_combo.addItem("Full-Timeline Loop – komplette manuelle Reihenfolge wiederholen", "loop")
@@ -443,6 +780,11 @@ class MainWindow(QMainWindow):
         )
         # 1.2.4/1.3.0: Zieldauer-Einflüsse sofort im Video-Pool-Status zeigen.
         self.end_padding_spin.valueChanged.connect(self._update_pool_status)
+        # A visual intro needs real video material too, so the pool status has
+        # to react to it exactly like the outro does.
+        self.long_intro_spin.valueChanged.connect(self._update_pool_status)
+        self.short_intro_spin.valueChanged.connect(self._update_pool_status)
+        self.short_outro_spin.valueChanged.connect(self._update_pool_status)
         self.short_video_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_fit_combo.currentIndexChanged.connect(self._update_pool_status)
         self.max_stretch_combo.currentIndexChanged.connect(self._update_pool_status)
@@ -451,26 +793,26 @@ class MainWindow(QMainWindow):
         self.duration_before_merge_shorts_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_check.toggled.connect(self._update_pool_status)
-        audio_layout.addWidget(QLabel("Main Video End Padding (nach Voiceover)"), 12, 0)
-        audio_layout.addWidget(self.end_padding_spin, 12, 1)
-        audio_layout.addWidget(QLabel("If Video Is Too Short"), 13, 0)
-        audio_layout.addWidget(self.short_video_combo, 13, 1)
-        audio_layout.addWidget(QLabel("Duration Fit Mode"), 14, 0)
-        audio_layout.addWidget(self.duration_fit_combo, 14, 1)
-        audio_layout.addWidget(QLabel("Maximum Stretch"), 15, 0)
+        # Row 13 moved to group "4d · Timeline" (Long-Form Outro); the rows
+        # below keep their relative order without a gap.
+        audio_layout.addWidget(QLabel("If Video Is Too Short"), 15, 0)
+        audio_layout.addWidget(self.short_video_combo, 15, 1)
+        audio_layout.addWidget(QLabel("Duration Fit Mode"), 16, 0)
+        audio_layout.addWidget(self.duration_fit_combo, 16, 1)
+        audio_layout.addWidget(QLabel("Maximum Stretch"), 17, 0)
         stretch_row = QHBoxLayout()
         stretch_row.addWidget(self.max_stretch_combo)
         stretch_row.addWidget(self.max_stretch_spin)
-        audio_layout.addLayout(stretch_row, 15, 1)
-        audio_layout.addWidget(QLabel("Duration Before Merge (Long-Form)"), 16, 0)
-        audio_layout.addWidget(self.duration_before_merge_combo, 16, 1)
-        audio_layout.addWidget(QLabel("Duration Before Merge (Shorts)"), 17, 0)
-        audio_layout.addWidget(self.duration_before_merge_shorts_combo, 17, 1)
-        audio_layout.addWidget(QLabel("Duration After Merge"), 18, 0)
+        audio_layout.addLayout(stretch_row, 17, 1)
+        audio_layout.addWidget(QLabel("Duration Before Merge (Long-Form)"), 18, 0)
+        audio_layout.addWidget(self.duration_before_merge_combo, 18, 1)
+        audio_layout.addWidget(QLabel("Duration Before Merge (Shorts)"), 19, 0)
+        audio_layout.addWidget(self.duration_before_merge_shorts_combo, 19, 1)
+        audio_layout.addWidget(QLabel("Duration After Merge"), 20, 0)
         after_row = QHBoxLayout()
         after_row.addWidget(self.duration_after_merge_check)
         after_row.addWidget(self.duration_after_merge_combo)
-        audio_layout.addLayout(after_row, 18, 1, 1, 2)
+        audio_layout.addLayout(after_row, 20, 1, 1, 2)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -489,8 +831,18 @@ class MainWindow(QMainWindow):
         self.subtitle_output_combo.currentIndexChanged.connect(self._subtitle_output_mode_changed)
         subtitle_layout.addWidget(QLabel("Output Mode"), 1, 0)
         subtitle_layout.addWidget(self.subtitle_output_combo, 1, 1, 1, 2)
+        # Speech/subtitle language: exactly two user-facing choices, Deutsch
+        # (the default) and English. The item data is the canonical stored value,
+        # so project files keep their historical "German"/"English" form while
+        # the selector shows the language in its own spelling.
         self.subtitle_language_combo = QComboBox()
-        self.subtitle_language_combo.addItems(["German", "English", "Auto"])
+        for language in SUBTITLE_LANGUAGE_CHOICES:
+            self.subtitle_language_combo.addItem(SUBTITLE_LANGUAGE_LABELS[language], language)
+        self.subtitle_language_combo.setToolTip(
+            "One language for the whole speech/subtitle pipeline: it is forced onto the "
+            "local ASR (faster-whisper), the script alignment and the YouTube metadata. "
+            "Deutsch transcribes as German (de), English as English (en)."
+        )
         subtitle_layout.addWidget(QLabel("Speech Language"), 2, 0)
         subtitle_layout.addWidget(self.subtitle_language_combo, 2, 1)
 
@@ -506,8 +858,13 @@ class MainWindow(QMainWindow):
                 self.subtitle_style_combo.count() - 1, preset.description, Qt.ToolTipRole
             )
         self.subtitle_animation_combo = QComboBox()
-        for key, label in ANIMATION_OPTIONS:
+        # Long-Form keeps every safe animation; the deprecated Outline Highlight
+        # is not selectable any more and saved values are migrated on load.
+        for key, label in LONG_ANIMATION_OPTIONS:
             self.subtitle_animation_combo.addItem(label, key)
+        self.subtitle_animation_combo.setCurrentIndex(
+            max(0, self.subtitle_animation_combo.findData(DEFAULT_LONG_ANIMATION))
+        )
         self.subtitle_font_combo = QComboBox()
         for key, label in FONT_OPTIONS:
             self.subtitle_font_combo.addItem(label, key)
@@ -552,8 +909,13 @@ class MainWindow(QMainWindow):
             if preset.collection == "short":
                 self.short_subtitle_style_combo.addItem(preset.label, preset.key)
         self.short_subtitle_animation_combo = QComboBox()
-        for key, label in ANIMATION_OPTIONS:
+        # Shorts: Word Highlight is removed and Outline Highlight is deprecated,
+        # so neither can be selected; the clean phrase-level default is first.
+        for key, label in SHORT_ANIMATION_OPTIONS:
             self.short_subtitle_animation_combo.addItem(label, key)
+        self.short_subtitle_animation_combo.setCurrentIndex(
+            max(0, self.short_subtitle_animation_combo.findData(DEFAULT_SHORT_ANIMATION))
+        )
         self.short_subtitle_font_combo = QComboBox()
         for key, label in FONT_OPTIONS:
             self.short_subtitle_font_combo.addItem(label, key)
@@ -637,16 +999,14 @@ class MainWindow(QMainWindow):
         self.radio_16 = QRadioButton("16:9 · YouTube / Landscape")
         self.radio_9 = QRadioButton("9:16 · Shorts / Reels / TikTok")
         self.radio_16.toggled.connect(self._update_resolution_choices)
-        self.radio_16.toggled.connect(self._update_quote_preview)
         self.radio_16.toggled.connect(self._update_image_preview)
-        self.radio_9.toggled.connect(self._update_quote_preview)
         self.radio_9.toggled.connect(self._update_image_preview)
         format_layout.addWidget(self.radio_16, 0, 0)
         format_layout.addWidget(self.radio_9, 0, 1)
         format_layout.addWidget(QLabel("Resolution"), 1, 0)
         self.resolution_combo = QComboBox()
         self.resolution_combo.currentIndexChanged.connect(self._mark_preset_custom)
-        self.resolution_combo.currentIndexChanged.connect(self._update_quote_preview)
+        self.resolution_combo.currentIndexChanged.connect(self._update_image_preview)
         format_layout.addWidget(self.resolution_combo, 1, 1)
         format_layout.addWidget(QLabel("Fit Mode"), 2, 0)
         self.fit_combo = QComboBox()
@@ -661,53 +1021,94 @@ class MainWindow(QMainWindow):
         format_layout.addWidget(self.export_mode_combo, 3, 1)
         outer.addWidget(format_group)
 
-        effect_group = QGroupBox("4b · Transition & Background")
+        effect_group = QGroupBox("4b · Transition (Long-Form / Shorts) & Background")
         effect_layout = QGridLayout(effect_group)
-        effect_layout.addWidget(QLabel("Transition"), 0, 0)
+        effect_layout.addWidget(QLabel("Transition (Long-Form)"), 0, 0)
         self.transition_combo = QComboBox()
         for key, label, description in TRANSITION_OPTIONS:
             self.transition_combo.addItem(label, key)
             self.transition_combo.setItemData(self.transition_combo.count() - 1, description, Qt.ToolTipRole)
         self.transition_combo.currentIndexChanged.connect(self._update_transition_description)
+        self.transition_combo.setToolTip(
+            "Transition family of the YouTube LONG-FORM video (and of the basic Main "
+            "Video merge). Every YouTube Short uses its own transition below - "
+            "changing one output never changes the other. All existing transition "
+            "types stay available."
+        )
         effect_layout.addWidget(self.transition_combo, 0, 1)
         self.transition_description = QLabel()
         self.transition_description.setWordWrap(True)
         self.transition_description.setObjectName("subtitle")
         effect_layout.addWidget(self.transition_description, 1, 1, 1, 2)
-        effect_layout.addWidget(QLabel("Duration"), 2, 0)
-        self.transition_spin = QDoubleSpinBox()
-        self.transition_spin.setRange(0.05, 5.0)
-        self.transition_spin.setSingleStep(0.25)
-        self.transition_spin.setDecimals(2)
-        self.transition_spin.setSuffix(" sec")
+        effect_layout.addWidget(QLabel("Duration (Long-Form)"), 2, 0)
+        self.transition_spin = _transition_duration_spin(
+            LONG_FORM_TRANSITION_DURATION,
+            "LONG-FORM transition duration in seconds (default 2.00 s). It applies "
+            "between the clips of the Long-Form timeline only - including the clips "
+            "shown during the visual intro and the visual outro - and is independent "
+            "from the Shorts duration below. The timeline logic still bounds the "
+            "effective value by the real clip lengths.",
+        )
         self.transition_spin.valueChanged.connect(self._update_pool_status)
         effect_layout.addWidget(self.transition_spin, 2, 1)
+        # YouTube Shorts own their transition completely: family and duration are
+        # separate controls, so a 1.0 s Short dissolve never changes the 2.0 s
+        # Long-Form dissolve (and vice versa), in Combined mode and One-Click too.
+        effect_layout.addWidget(QLabel("Transition (Shorts)"), 3, 0)
+        self.short_transition_combo = QComboBox()
+        for key, label, description in TRANSITION_OPTIONS:
+            self.short_transition_combo.addItem(label, key)
+            self.short_transition_combo.setItemData(
+                self.short_transition_combo.count() - 1, description, Qt.ToolTipRole
+            )
+        self.short_transition_combo.setToolTip(
+            "Transition family of every YouTube Short (default Cross Dissolve). "
+            "Independent from the Long-Form transition above; all existing "
+            "transition types stay available."
+        )
+        effect_layout.addWidget(self.short_transition_combo, 3, 1)
+        effect_layout.addWidget(QLabel("Duration (Shorts)"), 4, 0)
+        self.short_transition_spin = _transition_duration_spin(
+            SHORTS_TRANSITION_DURATION,
+            "SHORTS transition duration in seconds (default 2.00 s). It applies "
+            "between the clips of every Short only and is independent from the "
+            "Long-Form duration above.",
+        )
+        effect_layout.addWidget(self.short_transition_spin, 4, 1)
+        transition_hint = QLabel(
+            "Long-Form and Shorts keep independent transitions; both default to "
+            "Cross Dissolve / 2.00 s. Combined mode and One-Click use the Long-Form "
+            "pair for the Long-Form video and the Shorts pair for every Short."
+        )
+        transition_hint.setWordWrap(True)
+        transition_hint.setObjectName("subtitle")
+        effect_layout.addWidget(transition_hint, 5, 0, 1, 3)
 
         self.blur_slider = QSlider(Qt.Horizontal)
         self.blur_slider.setRange(0, 50)
         self.blur_value = QLabel()
         self.blur_slider.valueChanged.connect(lambda value: self.blur_value.setText(str(value)))
-        effect_layout.addWidget(QLabel("Background Blur"), 3, 0)
-        effect_layout.addWidget(self.blur_slider, 3, 1)
-        effect_layout.addWidget(self.blur_value, 3, 2)
+        effect_layout.addWidget(QLabel("Background Blur"), 6, 0)
+        effect_layout.addWidget(self.blur_slider, 6, 1)
+        effect_layout.addWidget(self.blur_value, 6, 2)
 
         self.dark_slider = QSlider(Qt.Horizontal)
         self.dark_slider.setRange(0, 30)
         self.dark_value = QLabel()
         self.dark_slider.valueChanged.connect(lambda value: self.dark_value.setText(f"{value} %"))
-        effect_layout.addWidget(QLabel("Background Darkness"), 4, 0)
-        effect_layout.addWidget(self.dark_slider, 4, 1)
-        effect_layout.addWidget(self.dark_value, 4, 2)
+        effect_layout.addWidget(QLabel("Background Darkness"), 7, 0)
+        effect_layout.addWidget(self.dark_slider, 7, 1)
+        effect_layout.addWidget(self.dark_value, 7, 2)
 
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setRange(100, 120)
         self.zoom_value = QLabel()
         self.zoom_slider.valueChanged.connect(lambda value: self.zoom_value.setText(f"{value} %"))
-        effect_layout.addWidget(QLabel("Background Zoom"), 5, 0)
-        effect_layout.addWidget(self.zoom_slider, 5, 1)
-        effect_layout.addWidget(self.zoom_value, 5, 2)
+        effect_layout.addWidget(QLabel("Background Zoom"), 8, 0)
+        effect_layout.addWidget(self.zoom_slider, 8, 1)
+        effect_layout.addWidget(self.zoom_value, 8, 2)
         self.normalize_check = QCheckBox("Audio sanft auf −16 LUFS normalisieren")
-        effect_layout.addWidget(self.normalize_check, 6, 0, 1, 3)
+        effect_layout.addWidget(self.normalize_check, 9, 0, 1, 3)
         outer.addWidget(effect_group)
 
         preset_group = QGroupBox("4c · Output Preset & Quality (1.2.3)")
@@ -732,6 +1133,32 @@ class MainWindow(QMainWindow):
         preset_layout.addWidget(self.quality_combo, 1, 1)
         preset_layout.addWidget(self.quality_description, 2, 0, 1, 2)
         outer.addWidget(preset_group)
+
+        timeline_group = QGroupBox("4d · Timeline – Visual Intro / Outro / Opening Effect")
+        timeline_layout = QGridLayout(timeline_group)
+        timeline_layout.addWidget(QLabel("Long-Form Intro (visual before voiceover)"), 0, 0)
+        timeline_layout.addWidget(self.long_intro_spin, 0, 1)
+        timeline_layout.addWidget(QLabel("Long-Form Outro (visual after voiceover)"), 1, 0)
+        timeline_layout.addWidget(self.end_padding_spin, 1, 1)
+        timeline_layout.addWidget(QLabel("Short Intro (visual before voiceover)"), 2, 0)
+        timeline_layout.addWidget(self.short_intro_spin, 2, 1)
+        timeline_layout.addWidget(QLabel("Short Outro (visual after voiceover)"), 3, 0)
+        timeline_layout.addWidget(self.short_outro_spin, 3, 1)
+        timeline_layout.addWidget(QLabel("Main Video Opening Effect"), 4, 0)
+        timeline_layout.addWidget(self.opening_effect_combo, 4, 1)
+        timeline_hint = QLabel(
+            "One Main Video is always [visual intro + music] [voiceover + subtitles + music] "
+            "[visual outro + music]. Both visual sections are real moving material from the "
+            "normal video timeline — no black or frozen frames, no voiceover audio and no "
+            "subtitle: captions run exactly from the voiceover start to the end of the spoken "
+            "content. Configured background music is different: it starts at 0.000 s with the "
+            "first frame, plays under the voiceover and continues through the visual outro "
+            "until the final frame, so neither visual section is silent."
+        )
+        timeline_hint.setWordWrap(True)
+        timeline_hint.setObjectName("subtitle")
+        timeline_layout.addWidget(timeline_hint, 5, 0, 1, 2)
+        outer.addWidget(timeline_group)
 
         self.advanced_toggle = QPushButton("▸ Advanced Settings")
         self.advanced_toggle.setCheckable(True)
@@ -844,7 +1271,7 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.cancel_button)
         outer.addLayout(action_layout)
 
-        outro_group = QGroupBox("7 · Optional Stage 2 – Intro / Add Image / Quote-Flyer / Outro")
+        outro_group = QGroupBox("7 · Optional Stage 2 – Intro / Add Image / Outro")
         outro_layout = QGridLayout(outro_group)
         self.intro_edit = QLineEdit()
         self.main_video_edit = QLineEdit()
@@ -864,44 +1291,9 @@ class MainWindow(QMainWindow):
         self.outro_audio_combo.addItem("Low", "low")
         self.outro_audio_combo.addItem("Mute", "mute")
         self.outro_transition_check = QCheckBox("Use selected visual transition between sections")
-        # Optional, silent Stage-2 artwork between Intro and Main Video.
-        # The finished visual is created outside VideoMerger; there is no
-        # Uploaded Quote/Flyer artwork is the only Quote workflow in the GUI.
-        self.quote_check = QCheckBox("Include Quote / Flyer")
-        self.quote_artwork_path_edit = QLineEdit()
-        self.quote_artwork_path_edit.setPlaceholderText(
-            "PDF, PNG, JPG, JPEG oder WEBP auswählen …"
-        )
-        self.quote_artwork_choose = QPushButton("Choose File …")
-        self.quote_artwork_choose.clicked.connect(
-            lambda: self._browse_asset(self.quote_artwork_path_edit, "quote_artwork")
-        )
-        self.quote_pdf_page_spin = QSpinBox()
-        self.quote_pdf_page_spin.setRange(1, 9999)
-        self.quote_pdf_page_spin.setValue(1)
-        self.quote_pdf_page_spin.setToolTip("One-based page number for a multi-page PDF.")
-        self.quote_artwork_fit_combo = QComboBox()
-        self.quote_artwork_fit_combo.addItem("Fit", "fit")
-        self.quote_artwork_fit_combo.addItem("Fill", "fill")
-        self.quote_artwork_fit_combo.addItem("Crop", "crop")
-        self.quote_duration_spin = QDoubleSpinBox()
-        self.quote_duration_spin.setRange(0.5, 5.0)
-        self.quote_duration_spin.setSingleStep(0.1)
-        self.quote_duration_spin.setDecimals(1)
-        self.quote_duration_spin.setSuffix(" sec")
-        self.quote_duration_spin.setValue(4.0)
-        self.quote_preview = QuotePreviewCanvas()
-        self.quote_preview.setMinimumHeight(180)
-        self.quote_check.toggled.connect(self._sync_quote_visibility)
-        self.quote_artwork_path_edit.textChanged.connect(self._sync_quote_artwork_controls)
-        self.quote_pdf_page_spin.valueChanged.connect(self._update_quote_preview)
-        self.quote_artwork_fit_combo.currentIndexChanged.connect(self._update_quote_preview)
-        self.quote_duration_spin.valueChanged.connect(self._update_quote_preview)
-
-        # Add Image (Stage 2 only). This is intentionally a separate control
-        # namespace from Quote/Flyer, including its own framing, zoom, look,
-        # duration, boundary transition and position state. Image Insertion is
-        # retained as the legacy API/persistence name.
+        # Add Image (Stage 2 only) has its own control namespace, including its
+        # own framing, zoom, look, duration, boundary transition and position
+        # state. Image Insertion is retained as the legacy API/persistence name.
         self.image_group = QGroupBox("Add Image (silent Stage 2)")
         image_layout = QGridLayout(self.image_group)
         self.image_check = QCheckBox("Include Image")
@@ -981,7 +1373,7 @@ class MainWindow(QMainWindow):
         outro_layout.addWidget(QLabel("Outro Original Audio"), 5, 0)
         outro_layout.addWidget(self.outro_audio_combo, 5, 1)
         # Add Image is deliberately the first Stage-2 section directly below
-        # Add Intro. Quote/Flyer remains a separate section below it.
+        # Add Intro.
         image_layout.addWidget(self.image_check, 0, 0, 1, 3)
         image_layout.addWidget(QLabel("Image File"), 1, 0)
         image_layout.addWidget(self.image_path_edit, 1, 1)
@@ -1007,19 +1399,7 @@ class MainWindow(QMainWindow):
         image_layout.addWidget(self.image_preview, 9, 1, 1, 2)
         outro_layout.addWidget(self.image_group, 1, 0, 1, 3)
         outro_layout.addWidget(self.outro_transition_check, 6, 0, 1, 2)
-        outro_layout.addWidget(self.quote_check, 7, 0, 1, 3)
-        outro_layout.addWidget(QLabel("Quote / Flyer File"), 8, 0)
-        outro_layout.addWidget(self.quote_artwork_path_edit, 8, 1)
-        outro_layout.addWidget(self.quote_artwork_choose, 8, 2)
-        outro_layout.addWidget(QLabel("PDF Page"), 9, 0)
-        outro_layout.addWidget(self.quote_pdf_page_spin, 9, 1)
-        outro_layout.addWidget(QLabel("Artwork Fit"), 10, 0)
-        outro_layout.addWidget(self.quote_artwork_fit_combo, 10, 1, 1, 2)
-        outro_layout.addWidget(QLabel("Duration"), 11, 0)
-        outro_layout.addWidget(self.quote_duration_spin, 11, 1)
-        outro_layout.addWidget(QLabel("Preview"), 12, 0)
-        outro_layout.addWidget(self.quote_preview, 12, 1, 1, 2)
-        outro_layout.addWidget(self.final_button, 13, 1)
+        outro_layout.addWidget(self.final_button, 7, 1)
         outer.addWidget(outro_group)
 
         summary_group = QGroupBox("Projekt-Reihenfolge · Videos – Natural, Alphabetical, Random oder Manual")
@@ -1120,9 +1500,19 @@ class MainWindow(QMainWindow):
     def _load_settings_inner(self) -> None:
         self.input_edit.setText(str(self.root / "input"))
         self.source_folders_list.clear()
+        saved_areas = dict(getattr(self.saved, "source_folder_areas", {}) or {})
         for value in list(getattr(self.saved, "source_folders", []) or []):
             path = Path(value).expanduser().resolve()
-            self.source_folders_list.addItem(QListWidgetItem(str(path)))
+            area = saved_areas.get(str(path), saved_areas.get(str(value), ""))
+            self.source_folders_list.addItem(self._folder_item(str(path), area))
+        self.area_start_spin.setValue(float(getattr(
+            self.saved, "timeline_area_start_seconds", TIMELINE_AREA_START_SECONDS)))
+        self.area_midpoint_spin.setValue(float(getattr(
+            self.saved, "timeline_area_midpoint_percent", TIMELINE_AREA_MIDPOINT_PERCENT)))
+        self.area_end_spin.setValue(float(getattr(
+            self.saved, "timeline_area_end_seconds", TIMELINE_AREA_END_SECONDS)))
+        self.shorts_allow_area3_check.setChecked(bool(getattr(
+            self.saved, "shorts_allow_area_middle_end", SHORTS_ALLOW_AREA_MIDDLE_END)))
         saved_mode = normalize_video_order_mode(
             getattr(self.saved, "video_order_mode", VIDEO_ORDER_NATURAL)
         )
@@ -1165,12 +1555,36 @@ class MainWindow(QMainWindow):
         self.resolution_combo.setCurrentIndex(max(0, index))
         index = self.fit_combo.findData(self.saved.fit_mode)
         self.fit_combo.setCurrentIndex(max(0, index))
-        index = self.transition_combo.findData(self.saved.transition_type)
+        # Output-specific transition settings. The shared resolvers in
+        # ``youtube_outputs`` are the single source of truth for the migration
+        # fallback (an old project keeps its saved shared transition, a project
+        # without one receives Cross Dissolve / 2.00 s for both outputs), so the
+        # widgets show exactly what the Long-Form job and every Short will render.
+        long_transition = output_transition_type(
+            self.saved, getattr(self.saved, "long_form_transition_type", ""),
+            label="Long-Form Transition",
+        )
+        index = self.transition_combo.findData(long_transition)
         self.transition_combo.setCurrentIndex(max(0, index))
         self._update_transition_description()
+        short_transition = output_transition_type(
+            self.saved, getattr(self.saved, "shorts_transition_type", ""),
+            label="Shorts Transition",
+        )
+        index = self.short_transition_combo.findData(short_transition)
+        self.short_transition_combo.setCurrentIndex(max(0, index))
         index = self.ease_combo.findData(self.saved.transition_ease)
         self.ease_combo.setCurrentIndex(max(0, index))
-        self.transition_spin.setValue(self.saved.transition_duration)
+        self.transition_spin.setValue(output_transition_duration(
+            self.saved, getattr(self.saved, "long_form_transition_duration", None),
+            label="Long-Form Transition Duration",
+            default=LONG_FORM_TRANSITION_DURATION,
+        ))
+        self.short_transition_spin.setValue(output_transition_duration(
+            self.saved, getattr(self.saved, "shorts_transition_duration", None),
+            label="Shorts Transition Duration",
+            default=SHORTS_TRANSITION_DURATION,
+        ))
         self.blur_slider.setValue(self.saved.background_blur)
         self.dark_slider.setValue(self.saved.background_darkness)
         self.zoom_slider.setValue(self.saved.background_zoom)
@@ -1180,23 +1594,22 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(max(0, index))
         self.crf_spin.setValue(self.saved.crf)
         self.output_name_edit.setText(self.saved.output_name)
-        # Phase 27: restore the ordered music sequence; older projects with
-        # only ``music_path`` migrate to the equivalent one-track sequence.
-        self.music_tracks_list.clear()
-        tracks = normalize_music_tracks(list(getattr(self.saved, "music_tracks", None) or []))
-        if tracks:
-            for track in tracks:
-                path = str(track["path"])
-                item = QListWidgetItem(Path(path).name)
-                item.setData(Qt.UserRole, path)
-                item.setToolTip(path)
-                self.music_tracks_list.addItem(item)
-        elif self.saved.music_path:
-            item = QListWidgetItem(Path(self.saved.music_path).name)
-            item.setData(Qt.UserRole, self.saved.music_path)
-            item.setToolTip(self.saved.music_path)
-            self.music_tracks_list.addItem(item)
+        # Phase 27: restore BOTH ordered music sequences; older projects with
+        # only ``music_path``/``short_music_path`` migrate to the equivalent
+        # one-track sequence of their profile. The two profiles stay strictly
+        # independent — restoring one never touches the other.
+        self._populate_music_tracks(
+            self.music_tracks_list,
+            list(getattr(self.saved, "music_tracks", None) or []),
+            self.saved.music_path,
+        )
+        self._populate_music_tracks(
+            self.short_music_tracks_list,
+            list(getattr(self.saved, "short_music_tracks", None) or []),
+            str(getattr(self.saved, "short_music_path", "") or ""),
+        )
         self.music_edit.setText(self.saved.music_path)
+        self.short_music_edit.setText(getattr(self.saved, "short_music_path", ""))
         self.main_video_edit.setText(self.saved.main_video_path)
         self.intro_edit.setText(self.saved.intro_path)
         self.outro_edit.setText(self.saved.outro_path)
@@ -1218,6 +1631,25 @@ class MainWindow(QMainWindow):
             script_units = [self.saved.script_path]
         self.voiceover_paths_list: list[str] = voiceover_units
         self.voiceover_scripts_list: list[str] = script_units
+        # Script-to-Short mapping of the loaded project. Older project files
+        # carry none of these keys, so the defaults keep their exact behaviour:
+        # one voiceover = one Short and one shared Shorts music track.
+        self.short_group_lists: list[list[str]] = [
+            [str(member) for member in group]
+            for group in (getattr(self.saved, "short_script_groups", []) or [])
+            if isinstance(group, (list, tuple))
+        ]
+        self.short_music_map: dict[str, str] = {
+            str(key): str(value)
+            for key, value in (getattr(self.saved, "short_music_overrides", {}) or {}).items()
+            if str(value or "").strip()
+        }
+        self.short_music_volume_map: dict[str, int] = {
+            str(key): percent
+            for key, value in (getattr(self.saved, "short_music_volume_overrides", {}) or {}).items()
+            if (percent := _coerce_percent(value)) is not None
+        }
+        self._prune_short_state(voiceover_units)
         saved_global_script = getattr(self.saved, "global_script_path", "") or ""
         if not saved_global_script and self.saved.script_mode == "single" and script_units:
             # Migration fallback for projects created before the explicit
@@ -1247,7 +1679,10 @@ class MainWindow(QMainWindow):
             (self.outro_audio_combo, self.saved.outro_audio_mode),
             (self.short_video_combo, self.saved.short_video_mode),
             (self.subtitle_style_combo, self.saved.subtitle_style),
-            (self.subtitle_animation_combo, self.saved.subtitle_animation),
+            # A deprecated Outline Highlight from an old project migrates to a
+            # clean animation instead of falling back to the first combo entry.
+            (self.subtitle_animation_combo,
+             normalize_subtitle_animation(self.saved.subtitle_animation, "long")),
             (self.subtitle_font_combo, self.saved.subtitle_font),
             (self.watermark_position_combo, self.saved.watermark_position),
             (self.watermark_scope_combo, self.saved.watermark_scope),
@@ -1256,7 +1691,13 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(index if index >= 0 else 0)
         for combo, value in (
             (self.short_subtitle_style_combo, getattr(self.saved, "short_subtitle_style", "short_1")),
-            (self.short_subtitle_animation_combo, getattr(self.saved, "short_subtitle_animation", "word_highlight")),
+            # Word Highlight is not available for Shorts any more: a saved value
+            # migrates to the clean Short default instead of crashing or silently
+            # selecting an unavailable entry.
+            (self.short_subtitle_animation_combo,
+             normalize_subtitle_animation(
+                 getattr(self.saved, "short_subtitle_animation", ""), "short"
+             )),
             (self.short_subtitle_font_combo, getattr(self.saved, "short_subtitle_font", "inter")),
         ):
             index = combo.findData(value)
@@ -1287,10 +1728,50 @@ class MainWindow(QMainWindow):
         self.music_preset_combo.blockSignals(True)
         self.music_preset_combo.setCurrentIndex(preset_index)
         self.music_preset_combo.blockSignals(False)
-        self.music_volume_slider.setValue(self.saved.music_volume)
+        # Independent per-output music volumes, resolved by the same helper the
+        # render planners use: an old project keeps its saved shared loudness for
+        # both outputs, a new project shows 44 % for each.
+        long_music_volume = output_music_volume(
+            self.saved, getattr(self.saved, "long_form_music_volume", None),
+            label="Long-Form Music Volume", default=LONG_FORM_MUSIC_VOLUME,
+        )
+        self.music_volume_slider.setValue(long_music_volume)
+        self.music_volume_value.setText(f"{long_music_volume} %")
+        short_music_volume = output_music_volume(
+            self.saved, getattr(self.saved, "shorts_music_volume", None),
+            label="Shorts Music Volume", default=SHORTS_MUSIC_VOLUME,
+        )
+        self.short_music_volume_slider.setValue(short_music_volume)
+        self.short_music_volume_value.setText(f"{short_music_volume} %")
         self.ducking_check.setChecked(self.saved.ducking_enabled)
-        # 1.3.0 Main Video End Padding (freie Eingabe, Standard bleibt 1.0 s).
-        self.end_padding_spin.setValue(float(self.saved.final_pause))
+        # Explicit visual-only sections. An older project has no Long-Form Outro
+        # field, so its saved Main Video End Padding migrates into that control
+        # (both are the same single timeline section) instead of being replaced
+        # by the new default; every other new field simply uses its default.
+        self.long_intro_spin.setValue(
+            float(getattr(self.saved, "long_form_intro_seconds", LONG_FORM_INTRO_SECONDS))
+        )
+        self.end_padding_spin.setValue(
+            float(self.saved.long_form_outro_seconds)
+            if "long_form_outro_seconds" in saved_keys
+            # An old project carries only the Main Video end padding, which IS
+            # this section; a project without any saved value at all receives the
+            # new Long-Form outro default instead of the neutral model fallback.
+            else (
+                float(self.saved.final_pause)
+                if "final_pause" in saved_keys
+                else LONG_FORM_OUTRO_SECONDS
+            )
+        )
+        self.short_intro_spin.setValue(
+            float(getattr(self.saved, "short_intro_seconds", SHORT_INTRO_SECONDS))
+        )
+        self.short_outro_spin.setValue(
+            float(getattr(self.saved, "short_outro_seconds", SHORT_OUTRO_SECONDS))
+        )
+        self.opening_effect_combo.setCurrentIndex(max(0, self.opening_effect_combo.findData(
+            normalize_opening_effect(getattr(self.saved, "opening_effect", ""))
+        )))
         # Duration Fit / Smart Stretch / independent merge durations.
         fit_index = self.duration_fit_combo.findData(
             self.saved.duration_fit_mode if self.saved.duration_fit_mode in {"cut", "stretch"} else "cut"
@@ -1348,7 +1829,7 @@ class MainWindow(QMainWindow):
             subtitle_mode_index if subtitle_mode_index >= 0 else 0
         )
         self.alignment_warning_check.setChecked(self.saved.allow_alignment_warnings)
-        self.subtitle_language_combo.setCurrentText(self.saved.subtitle_language)
+        self._load_subtitle_language(self.saved.subtitle_language)
         self.subtitle_position_combo.setCurrentText(self.saved.subtitle_position)
         self.subtitle_debug_check.setChecked(self.saved.subtitle_debug_overlay)
         self.watermark_check.setChecked(self.saved.watermark_enabled)
@@ -1359,18 +1840,6 @@ class MainWindow(QMainWindow):
         self.duck_attack_spin.setValue(self.saved.ducking_attack_ms)
         self.duck_release_spin.setValue(self.saved.ducking_release_ms)
         self.subtitle_model_combo.setCurrentText(self.saved.subtitle_model)
-        # Quote / Flyer artwork. Legacy text Quote fields are intentionally
-        # not copied into the new UI; they remain harmlessly loadable in the
-        # settings model, but can never trigger text rendering.
-        self.quote_check.setChecked(bool(self.saved.quote_enabled))
-        self.quote_artwork_path_edit.setText(getattr(self.saved, "quote_artwork_path", ""))
-        self.quote_pdf_page_spin.setValue(max(1, int(getattr(self.saved, "quote_pdf_page", 1) or 1)))
-        fit_index = self.quote_artwork_fit_combo.findData(
-            getattr(self.saved, "quote_artwork_fit_mode", "fit")
-        )
-        self.quote_artwork_fit_combo.setCurrentIndex(fit_index if fit_index >= 0 else 0)
-        self.quote_duration_spin.setValue(max(0.5, min(5.0, float(self.saved.quote_duration))))
-        self._sync_quote_visibility()
         self.image_check.setChecked(bool(getattr(self.saved, "image_enabled", False)))
         self.image_path_edit.setText(getattr(self.saved, "image_path", ""))
         image_position_index = self.image_position_combo.findData(
@@ -1398,8 +1867,25 @@ class MainWindow(QMainWindow):
         self._sync_image_visibility()
         self._sync_subtitle_request()
         self._update_subtitle_live_preview()
-        self._update_quote_preview()
         self._update_pool_status()
+
+    def _load_subtitle_language(self, stored: object) -> None:
+        """Select the stored speech/subtitle language in the two-choice selector.
+
+        Tolerant like every other loaded value: a hand-edited project file can
+        never crash the GUI. A legacy project that still stores automatic
+        detection keeps it (the entry is added on demand) instead of being
+        silently rewritten into another language.
+        """
+        try:
+            language = normalize_subtitle_language(stored)
+        except VideoMergerError:
+            language = DEFAULT_SUBTITLE_LANGUAGE
+        index = self.subtitle_language_combo.findData(language)
+        if index < 0:
+            self.subtitle_language_combo.addItem(SUBTITLE_LANGUAGE_LABELS[language], language)
+            index = self.subtitle_language_combo.findData(language)
+        self.subtitle_language_combo.setCurrentIndex(max(0, index))
 
     def _settings(self) -> ExportSettings:
         voiceover_units = list(getattr(self, "voiceover_paths_list", []))
@@ -1415,6 +1901,13 @@ class MainWindow(QMainWindow):
         return ExportSettings(
             export_mode=export_mode,
             source_folders=self._configured_source_folders(),
+            # Soft timeline-area source ordering. An empty mapping keeps the
+            # historical project order byte-identical.
+            source_folder_areas=self._configured_folder_areas(),
+            timeline_area_start_seconds=float(self.area_start_spin.value()),
+            timeline_area_end_seconds=float(self.area_end_spin.value()),
+            timeline_area_midpoint_percent=float(self.area_midpoint_spin.value()),
+            shorts_allow_area_middle_end=bool(self.shorts_allow_area3_check.isChecked()),
             video_order_mode=normalize_video_order_mode(
                 getattr(self, "video_order_mode", self.video_order_combo.currentData())
             ),
@@ -1423,9 +1916,16 @@ class MainWindow(QMainWindow):
             aspect="16:9" if self.radio_16.isChecked() else "9:16",
             resolution=self.resolution_combo.currentText(),
             fit_mode=str(self.fit_combo.currentData()),
+            # The Long-Form transition pair is written to the canonical fields as
+            # well (they drive the basic Main Video merge and every direct
+            # render); the Shorts pair below is completely independent.
             transition_type=str(self.transition_combo.currentData()),
             transition_ease=str(self.ease_combo.currentData()),
             transition_duration=self.transition_spin.value(),
+            long_form_transition_type=str(self.transition_combo.currentData()),
+            long_form_transition_duration=float(self.transition_spin.value()),
+            shorts_transition_type=str(self.short_transition_combo.currentData()),
+            shorts_transition_duration=float(self.short_transition_spin.value()),
             background_blur=self.blur_slider.value(),
             background_darkness=self.dark_slider.value(),
             background_zoom=self.zoom_slider.value(),
@@ -1445,13 +1945,19 @@ class MainWindow(QMainWindow):
             global_script_path=effective_global_script,
             voiceover_order_mode=normalize_voiceover_order_mode(self.voiceover_order_combo.currentData()),
             voiceover_pause=float(self.voiceover_pause_spin.value()),
-            music_path=self.music_edit.text().strip(),
-            # Phase 27: the ordered multi-track sequence. A single entry is the
-            # legacy one-track configuration; ``music_path`` stays the
-            # first/current track so historic validation keeps working.
+            music_path=self._legacy_music_path(self.music_edit, self.music_tracks_list),
+            # Phase 27: the ordered multi-track sequences, one per output
+            # profile. A single entry is the legacy one-track configuration;
+            # ``music_path``/``short_music_path`` stay the first/current track
+            # of each profile so historic validation keeps working.
             music_tracks=[
                 {"path": path, "trim_start": 0.0, "trim_duration": 0.0}
-                for path in self._music_track_paths()
+                for path in self._music_track_paths(self.music_tracks_list)
+            ],
+            short_music_path=self._legacy_music_path(self.short_music_edit, self.short_music_tracks_list),
+            short_music_tracks=[
+                {"path": path, "trim_start": 0.0, "trim_duration": 0.0}
+                for path in self._music_track_paths(self.short_music_tracks_list)
             ],
             main_video_path=self.main_video_edit.text().strip(),
             intro_path=self.intro_edit.text().strip(),
@@ -1461,11 +1967,34 @@ class MainWindow(QMainWindow):
             outro_audio_mode=str(self.outro_audio_combo.currentData()),
             voiceover_volume=self.voice_volume_slider.value(),
             music_volume=self.music_volume_slider.value(),
+            # Independent per-output music volumes. Each applies from 0.000 s to
+            # the final frame of its own output, and each output still plays only
+            # its own selected track.
+            long_form_music_volume=int(self.music_volume_slider.value()),
+            shorts_music_volume=int(self.short_music_volume_slider.value()),
+            # Phase 25 script-to-Short mapping. Both stay empty by default, so a
+            # project without groups and without per-Short music renders exactly
+            # like before (one voiceover = one Short, shared Shorts music).
+            short_script_groups=[list(group) for group in (getattr(self, "short_group_lists", []) or [])],
+            short_music_overrides=dict(getattr(self, "short_music_map", {}) or {}),
+            short_music_volume_overrides=dict(getattr(self, "short_music_volume_map", {}) or {}),
             music_preset=str((self.music_preset_combo.currentData() or ("custom", 0))[0]),
             ducking_enabled=self.ducking_check.isChecked(),
             ducking_attack_ms=self.duck_attack_spin.value(),
             ducking_release_ms=self.duck_release_spin.value(),
+            # ``final_pause`` IS the Long-Form visual outro: one control writes
+            # both names, so the tail after the spoken audio exists exactly once.
             final_pause=float(self.end_padding_spin.value()),
+            long_form_outro_seconds=float(self.end_padding_spin.value()),
+            long_form_intro_seconds=float(self.long_intro_spin.value()),
+            short_intro_seconds=float(self.short_intro_spin.value()),
+            short_outro_seconds=float(self.short_outro_spin.value()),
+            # Canonical render-time intro for direct (non-orchestrated) renders;
+            # the Shorts planner replaces it with the Short intro per job.
+            visual_intro_seconds=float(self.long_intro_spin.value()),
+            opening_effect=str(self.opening_effect_combo.currentData()),
+            # Random order reserves its first three clips from this root.
+            legacy_input_root=self.input_edit.text().strip(),
             short_video_mode=str(self.short_video_combo.currentData()),
             duration_fit_mode=str(self.duration_fit_combo.currentData()),
             max_stretch_percent=self._max_stretch_value(),
@@ -1475,7 +2004,7 @@ class MainWindow(QMainWindow):
             duration_after_merge_enabled=self.duration_after_merge_check.isChecked(),
             video_speed=1.0,
             subtitle_enabled=self.subtitle_check.isChecked(),
-            subtitle_language=self.subtitle_language_combo.currentText(),
+            subtitle_language=str(self.subtitle_language_combo.currentData()),
             subtitle_style=str(self.subtitle_style_combo.currentData()),
             subtitle_animation=str(self.subtitle_animation_combo.currentData()),
             subtitle_font=str(self.subtitle_font_combo.currentData()),
@@ -1497,14 +2026,6 @@ class MainWindow(QMainWindow):
             watermark_margin=self.watermark_margin_spin.value(),
             watermark_scope=str(self.watermark_scope_combo.currentData()),
             outro_transition_enabled=self.outro_transition_check.isChecked(),
-            # Stage-2 Quote / Flyer artwork. Legacy text settings are not
-            # written from the GUI and cannot produce a generated card.
-            quote_enabled=self.quote_check.isChecked(),
-            quote_input_mode="artwork",
-            quote_artwork_path=self.quote_artwork_path_edit.text().strip(),
-            quote_pdf_page=int(self.quote_pdf_page_spin.value()),
-            quote_artwork_fit_mode=str(self.quote_artwork_fit_combo.currentData()),
-            quote_duration=float(self.quote_duration_spin.value()),
             image_enabled=self.image_check.isChecked(),
             image_path=self.image_path_edit.text().strip(),
             image_position=normalize_image_position(self.image_position_combo.currentData()),
@@ -1709,15 +2230,19 @@ class MainWindow(QMainWindow):
                 self.subtitle_position_combo.setCurrentText(
                     "Center" if self.radio_16.isChecked() else "Bottom Center"
                 )
-            # Long-form uses a stable phrase; Shorts retain word highlight.
+            # Long-Form keeps the stable Static White Reveal; Shorts switch to
+            # their own clean phrase-level default (Word Highlight is removed).
             if not self._subtitle_animation_overridden:
-                animation_key = "static_phrase" if self.radio_16.isChecked() else "word_highlight"
+                animation_key = (
+                    DEFAULT_LONG_ANIMATION if self.radio_16.isChecked()
+                    else DEFAULT_SHORT_ANIMATION
+                )
                 animation_index = self.subtitle_animation_combo.findData(animation_key)
                 if animation_index >= 0:
                     self.subtitle_animation_combo.setCurrentIndex(animation_index)
             self._update_subtitle_live_preview()
         self._mark_preset_custom()
-        self._update_quote_preview()
+        self._update_image_preview()
 
     def _toggle_advanced(self, checked: bool) -> None:
         self.advanced_box.setVisible(checked)
@@ -1750,7 +2275,6 @@ class MainWindow(QMainWindow):
             "audio": "Audio (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.opus);;All files (*)",
             "script": "Text Script (*.txt *.text *.md);;All files (*)",
             "image": "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff);;All files (*)",
-            "quote_artwork": "Quote/Flyer (*.pdf *.png *.jpg *.jpeg *.webp);;All files (*)",
             "image_insertion": "Image Insertion (*.png *.jpg *.jpeg *.webp);;All files (*)",
             "video": "Videos (*.mp4 *.mov *.mkv *.m4v *.avi *.webm);;All files (*)",
         }
@@ -1797,67 +2321,104 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Phase 27 – multiple music tracks (explicit sequence, whole-sequence loop)
     # ------------------------------------------------------------------
-    def _music_track_paths(self) -> list[str]:
-        """The user-defined ordered list of music file paths."""
+    def _music_track_paths(self, list_widget: QListWidget) -> list[str]:
+        """The user-defined ordered list of music file paths in one profile."""
         return [
-            str(self.music_tracks_list.item(index).data(Qt.UserRole))
-            for index in range(self.music_tracks_list.count())
+            str(list_widget.item(index).data(Qt.UserRole))
+            for index in range(list_widget.count())
         ]
 
-    def _add_music_track(self) -> None:
-        start_dir = str(self.music_edit.text() or "") or str(project_root())
+    def _legacy_music_path(self, line_edit: QLineEdit, list_widget: QListWidget) -> str:
+        """The legacy single-track field of one profile.
+
+        An explicitly typed/browsed path in the line edit wins (manual
+        override stays available); otherwise the first track of the ordered
+        sequence mirrors into the legacy field so historic persistence and
+        validation never see an empty track while the list is populated.
+        """
+        text = line_edit.text().strip()
+        if text:
+            return text
+        paths = self._music_track_paths(list_widget)
+        return paths[0] if paths else ""
+
+    def _add_music_track(self, list_widget: QListWidget) -> None:
+        mirror = self.music_edit if list_widget is self.music_tracks_list else self.short_music_edit
+        label = "Long-Form" if list_widget is self.music_tracks_list else "Shorts"
+        start_dir = str(mirror.text() or "") or str(project_root())
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Add Music Track",
+            f"Add {label} Music Track",
             start_dir,
             "Audio Files (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus)",
         )
         if not path:
             return
-        paths = self._music_track_paths()
+        paths = self._music_track_paths(list_widget)
         if path in paths:
             # Keep the sequence free of duplicate entries; just focus it.
-            self.music_tracks_list.setCurrentRow(paths.index(path))
-            self._append_log("Music track already present in the sequence.")
+            list_widget.setCurrentRow(paths.index(path))
+            self._append_log(f"{label} music track already present in the sequence.")
         else:
             item = QListWidgetItem(Path(path).name)
             item.setData(Qt.UserRole, path)
             item.setToolTip(path)
-            self.music_tracks_list.addItem(item)
-            self.music_tracks_list.setCurrentRow(self.music_tracks_list.count() - 1)
+            list_widget.addItem(item)
+            list_widget.setCurrentRow(list_widget.count() - 1)
         self._sync_music_state()
 
-    def _remove_music_track(self) -> None:
-        row = self.music_tracks_list.currentRow()
+    def _remove_music_track(self, list_widget: QListWidget) -> None:
+        row = list_widget.currentRow()
         if row < 0:
             return
-        removed = self.music_tracks_list.takeItem(row)
-        self._append_log(f"Music track removed: {removed.text()}")
+        label = "Long-Form" if list_widget is self.music_tracks_list else "Shorts"
+        removed = list_widget.takeItem(row)
+        self._append_log(f"{label} music track removed: {removed.text()}")
         self._sync_music_state()
 
-    def _move_music_track(self, delta: int) -> None:
-        row = self.music_tracks_list.currentRow()
+    def _move_music_track(self, list_widget: QListWidget, delta: int) -> None:
+        row = list_widget.currentRow()
         if row < 0:
             return
         target = row + delta
-        if target < 0 or target >= self.music_tracks_list.count():
+        if target < 0 or target >= list_widget.count():
             return
-        item = self.music_tracks_list.takeItem(row)
-        self.music_tracks_list.insertItem(target, item)
-        self.music_tracks_list.setCurrentRow(target)
+        item = list_widget.takeItem(row)
+        list_widget.insertItem(target, item)
+        list_widget.setCurrentRow(target)
         self._sync_music_state()
 
     def _sync_music_state(self) -> None:
-        """Mirror the visible sequence into the legacy single-track field.
+        """Mirror each visible sequence into its legacy single-track field.
 
-        ``music_edit`` stays the canonical "first/current" path so all
-        historic persistence and validation paths keep working; the full
-        ordered list is added in ``_settings()``.
+        ``music_edit`` / ``short_music_edit`` stay the canonical
+        "first/current" path of their profile so all historic persistence and
+        validation paths keep working; the full ordered lists are added in
+        ``_settings()``.
         """
-        paths = self._music_track_paths()
-        self.music_edit.setText(paths[0] if paths else "")
+        long_paths = self._music_track_paths(self.music_tracks_list)
+        self.music_edit.setText(long_paths[0] if long_paths else "")
+        short_paths = self._music_track_paths(self.short_music_tracks_list)
+        self.short_music_edit.setText(short_paths[0] if short_paths else "")
         if not getattr(self, "_loading", False):
             self._save_project()
+
+    def _populate_music_tracks(self, list_widget: QListWidget, tracks: list[dict], legacy_path: str) -> None:
+        """Restore one profile's ordered sequence (legacy path migrates)."""
+        list_widget.clear()
+        normalized = normalize_music_tracks(list(tracks or []))
+        if normalized:
+            for track in normalized:
+                path = str(track["path"])
+                item = QListWidgetItem(Path(path).name)
+                item.setData(Qt.UserRole, path)
+                item.setToolTip(path)
+                list_widget.addItem(item)
+        elif legacy_path:
+            item = QListWidgetItem(Path(legacy_path).name)
+            item.setData(Qt.UserRole, legacy_path)
+            item.setToolTip(legacy_path)
+            list_widget.addItem(item)
 
     def _music_preset_changed(self) -> None:
         data = self.music_preset_combo.currentData()
@@ -1869,14 +2430,20 @@ class MainWindow(QMainWindow):
 
     def _music_volume_changed(self, value: int) -> None:
         self.music_volume_value.setText(f"{value} %")
-        data = self.music_preset_combo.currentData()
-        if data and data[1] >= 0 and int(data[1]) != value:
-            custom = next(
-                (i for i in range(self.music_preset_combo.count())
-                 if (self.music_preset_combo.itemData(i) or (None,))[0] == "custom"), 0
-            )
+        # Keep the preset selector in sync both ways: a volume that lands on
+        # a preset value shows that preset again, any other value shows Custom.
+        matching = next(
+            (i for i in range(self.music_preset_combo.count())
+             if (self.music_preset_combo.itemData(i) or (None, -1))[1] == int(value)), None
+        )
+        custom = next(
+            (i for i in range(self.music_preset_combo.count())
+             if (self.music_preset_combo.itemData(i) or (None,))[0] == "custom"), 0
+        )
+        target = matching if matching is not None else custom
+        if self.music_preset_combo.currentIndex() != target:
             self.music_preset_combo.blockSignals(True)
-            self.music_preset_combo.setCurrentIndex(custom)
+            self.music_preset_combo.setCurrentIndex(target)
             self.music_preset_combo.blockSignals(False)
 
     def _subtitle_preview_background_path(self) -> str:
@@ -1901,7 +2468,7 @@ class MainWindow(QMainWindow):
         """
         if not hasattr(self, "subtitle_live_preview") or not hasattr(self.subtitle_live_preview, "set_state"):
             return
-        language = self.subtitle_language_combo.currentText()
+        language = str(self.subtitle_language_combo.currentData())
         background = self._subtitle_preview_background_path()
         sample = sample_subtitle_text(language)
         if self.subtitle_debug_check.isChecked():
@@ -1933,71 +2500,6 @@ class MainWindow(QMainWindow):
             if hasattr(self.short_subtitle_live_preview, "set_background_image"):
                 self.short_subtitle_live_preview.set_background_image(background)
 
-    # ------------------------------------------------------------------ #
-    # Quote / Flyer artwork preview
-    # ------------------------------------------------------------------ #
-    def _quote_dimensions(self) -> tuple[int, int]:
-        """Return the selected output canvas for the artwork preview."""
-        value = self.resolution_combo.currentText().strip().lower().replace("×", "x")
-        if "x" in value:
-            try:
-                width, height = (int(part) for part in value.split("x", 1))
-                if width > 0 and height > 0:
-                    return width, height
-            except ValueError:
-                pass
-        return (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
-
-    def _update_quote_preview(self, *_args) -> None:
-        if not hasattr(self, "quote_preview"):
-            return
-        width, height = self._quote_dimensions()
-        self.quote_preview.set_artwork(
-            self.quote_artwork_path_edit.text().strip(),
-            int(self.quote_pdf_page_spin.value()),
-            str(self.quote_artwork_fit_combo.currentData()),
-            width,
-            height,
-        )
-
-    def _sync_quote_artwork_controls(self, *_args) -> None:
-        enabled = self.quote_check.isChecked()
-        artwork_path = self.quote_artwork_path_edit.text().strip()
-        is_pdf = artwork_path.casefold().endswith(".pdf")
-        if is_pdf:
-            try:
-                from ..quote_artwork import pdf_page_count
-                page_count = max(1, pdf_page_count(artwork_path))
-                self.quote_pdf_page_spin.setMaximum(page_count)
-                self.quote_pdf_page_spin.setValue(
-                    min(self.quote_pdf_page_spin.value(), page_count)
-                )
-            except Exception:
-                # Export performs the authoritative validation and reports the
-                # dependency, corruption, or invalid-page error clearly.
-                self.quote_pdf_page_spin.setMaximum(9999)
-        else:
-            self.quote_pdf_page_spin.setMaximum(9999)
-        self.quote_artwork_path_edit.setEnabled(enabled)
-        self.quote_artwork_choose.setEnabled(enabled)
-        self.quote_pdf_page_spin.setEnabled(enabled and is_pdf)
-        self.quote_artwork_fit_combo.setEnabled(enabled)
-        self.quote_duration_spin.setEnabled(enabled)
-        self._update_quote_preview()
-
-    def _sync_quote_visibility(self, *_args) -> None:
-        enabled = self.quote_check.isChecked()
-        for widget in (
-            self.quote_artwork_path_edit,
-            self.quote_artwork_choose,
-            self.quote_pdf_page_spin,
-            self.quote_artwork_fit_combo,
-            self.quote_duration_spin,
-            self.quote_preview,
-        ):
-            widget.setEnabled(enabled)
-        self._sync_quote_artwork_controls()
-
     def _preview_subtitle_style(self) -> None:
         """1.3.0: größere Untertitel-Vorschau mit DER Renderer-Logik.
 
@@ -2021,7 +2523,7 @@ class MainWindow(QMainWindow):
         position = self.subtitle_position_combo.currentText()
         font_key = str(self.subtitle_font_combo.currentData())
         width, height = (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
-        language = self.subtitle_language_combo.currentText()
+        language = str(self.subtitle_language_combo.currentData())
         text = sample_subtitle_text(language)
         if self.subtitle_debug_check.isChecked():
             text += " [DEBUG Overlay aktiv]"
@@ -2100,16 +2602,67 @@ class MainWindow(QMainWindow):
         layout.addWidget(close, alignment=Qt.AlignRight)
         dialog.exec()
 
+    @staticmethod
+    def _folder_display_text(folder: str, area: str) -> str:
+        return f"{folder}   ·   {timeline_area_label(area)}"
+
+    def _folder_item(self, folder: str, area: object = "") -> QListWidgetItem:
+        """One configured folder row; path and role travel in item data.
+
+        The item is fully populated *before* it is added to the list, so no
+        ``itemChanged`` signal fires while settings are being loaded.
+        """
+        role = normalize_timeline_area(area)
+        item = QListWidgetItem(self._folder_display_text(folder, role))
+        item.setData(FOLDER_PATH_ROLE, str(folder))
+        item.setData(FOLDER_AREA_ROLE, role)
+        item.setToolTip(f"{folder}\nRole: {timeline_area_label(role)}")
+        return item
+
     def _configured_source_folders(self) -> list[str]:
         """Return the persisted GUI folder list in visible order."""
         if not hasattr(self, "source_folders_list"):
             return []
         values: list[str] = []
         for row in range(self.source_folders_list.count()):
-            value = self.source_folders_list.item(row).text().strip()
+            item = self.source_folders_list.item(row)
+            # The authoritative path lives in the item data; the visible text
+            # additionally carries the role label.
+            value = str(item.data(FOLDER_PATH_ROLE) or item.text()).strip()
             if value:
                 values.append(str(Path(value).expanduser().resolve()))
         return values
+
+    def _configured_folder_areas(self) -> dict[str, str]:
+        """Folder → soft timeline area role, exactly as shown in the list."""
+        if not hasattr(self, "source_folders_list"):
+            return {}
+        areas: dict[str, str] = {}
+        for row in range(self.source_folders_list.count()):
+            item = self.source_folders_list.item(row)
+            folder = str(item.data(FOLDER_PATH_ROLE) or "").strip()
+            area = normalize_timeline_area(item.data(FOLDER_AREA_ROLE))
+            if folder and area:
+                areas[str(Path(folder).expanduser().resolve())] = area
+        return areas
+
+    def _apply_folder_area(self) -> None:
+        """Assign the selected role to the folder highlighted in the list."""
+        if self.busy:
+            return
+        row = self.source_folders_list.currentRow()
+        if row < 0:
+            return
+        item = self.source_folders_list.item(row)
+        folder = str(item.data(FOLDER_PATH_ROLE) or "").strip()
+        if not folder:
+            return
+        area = normalize_timeline_area(self.folder_area_combo.currentData())
+        item.setData(FOLDER_AREA_ROLE, area)
+        item.setText(self._folder_display_text(folder, area))
+        item.setToolTip(f"{folder}\nRole: {timeline_area_label(area)}")
+        self._save_project()
+        self._update_pool_status()
 
     def _add_source_folder(self) -> None:
         if self.busy:
@@ -2119,7 +2672,11 @@ class MainWindow(QMainWindow):
             return
         value = str(Path(selected).expanduser().resolve())
         if value not in self._configured_source_folders():
-            self.source_folders_list.addItem(QListWidgetItem(value))
+            # A newly added folder receives the role currently selected in the
+            # combo, so "pick role → Add Folder" needs no second click.
+            self.source_folders_list.addItem(
+                self._folder_item(value, self.folder_area_combo.currentData())
+            )
             self._save_project()
             self._clear_stale_analysis(self.input_edit.text())
 
@@ -2228,19 +2785,204 @@ class MainWindow(QMainWindow):
     def _render_voiceover_table(self, selected_row: int | None = None) -> None:
         units = list(getattr(self, "voiceover_paths_list", []))
         scripts = list(getattr(self, "voiceover_scripts_list", []))
+        # Which Short does this row render into? By default one row is one Short;
+        # grouped rows share one Short name (e.g. "003-004") and are highlighted,
+        # so the script-to-Short mapping is visible before the run starts.
+        short_by_row: dict[int, tuple[str, bool]] = {}
+        for plan in build_short_plan(units, getattr(self, "short_group_lists", [])):
+            for position in plan.positions:
+                short_by_row[position - 1] = (
+                    f"{plan.output_name} (group)" if plan.grouped else plan.output_name,
+                    plan.grouped,
+                )
         self.voiceover_table.setRowCount(len(units))
         for row, path_text in enumerate(units):
             name = Path(path_text).name
             script_text = scripts[row] if row < len(scripts) else ""
-            values = [str(row + 1), name, script_text or "— no script —"]
+            short_label, grouped = short_by_row.get(row, ("—", False))
+            values = [str(row + 1), name, script_text or "— no script —", short_label]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if column == 0:
+                if column in (0, 3):
                     item.setTextAlignment(Qt.AlignCenter)
+                if grouped:
+                    item.setBackground(QBrush(QColor(214, 232, 250)))
+                    item.setToolTip(
+                        f"Renders together with the other rows of Short {short_label.split(' ')[0]} "
+                        "as ONE Short (list order: topmost selected unit first)."
+                    )
                 self.voiceover_table.setItem(row, column, item)
         if selected_row is not None and units:
             self.voiceover_table.selectRow(max(0, min(selected_row, len(units) - 1)))
         self._sync_subtitle_request()
+
+    # ------------------------------------------------------------------ #
+    # Phase 25: script-to-Short mapping (grouping + per-Short music)      #
+    # ------------------------------------------------------------------ #
+    def _prune_short_state(self, keep: list[str] | None = None) -> None:
+        """Drop group members and per-Short music of voiceovers that are gone.
+
+        Grouping is stored by voiceover path, so it survives reordering. A unit
+        that leaves the list also leaves its group, and a group that drops below
+        two members is no group at all (its unit renders as its own Short again).
+        """
+        allowed = {
+            str(value) for value in (
+                list(getattr(self, "voiceover_paths_list", [])) if keep is None else keep
+            )
+        }
+        groups = [
+            [str(member) for member in group if str(member) in allowed]
+            for group in (getattr(self, "short_group_lists", []) or [])
+        ]
+        self.short_group_lists = [group for group in groups if len(group) > 1]
+        self.short_music_map = {
+            str(key): str(value)
+            for key, value in (getattr(self, "short_music_map", {}) or {}).items()
+            if str(key) in allowed and str(value or "").strip()
+        }
+        self.short_music_volume_map = {
+            str(key): percent
+            for key, value in (getattr(self, "short_music_volume_map", {}) or {}).items()
+            if str(key) in allowed and (percent := _coerce_percent(value)) is not None
+        }
+
+    def _selected_voiceover_rows(self) -> list[int]:
+        """Rows the user selected, in list order (the authoritative order)."""
+        units = list(getattr(self, "voiceover_paths_list", []))
+        model = self.voiceover_table.selectionModel()
+        rows = {index.row() for index in model.selectedRows()} if model is not None else set()
+        if not rows and self.voiceover_table.currentRow() >= 0:
+            rows = {self.voiceover_table.currentRow()}
+        return sorted(row for row in rows if 0 <= row < len(units))
+
+    def _group_selected_voiceovers(self) -> None:
+        """Render the selected voiceovers/scripts as ONE Short."""
+        if self.busy:
+            return
+        units = list(getattr(self, "voiceover_paths_list", []))
+        rows = self._selected_voiceover_rows()
+        if len(rows) < 2:
+            QMessageBox.information(
+                self, "Short group",
+                "Select at least two rows (Ctrl/Shift + click) that should render as ONE Short.",
+            )
+            return
+        members = [units[row] for row in rows]
+        self._prune_short_state()
+        # A unit belongs to exactly one group: the new group wins.
+        groups = [
+            [member for member in group if member not in members]
+            for group in (getattr(self, "short_group_lists", []) or [])
+        ]
+        groups = [group for group in groups if len(group) > 1]
+        groups.append(members)
+        self.short_group_lists = groups
+        self._render_voiceover_table()
+        self._append_log(
+            "Short-Gruppe: " + " + ".join(Path(member).name for member in members)
+            + " = EIN Short (" + ", ".join(f"Zeile {row + 1}" for row in rows)
+            + "; Reihenfolge = Listenreihenfolge)"
+        )
+        self._save_project()
+        self._update_pool_status()
+
+    def _ungroup_selected_voiceovers(self) -> None:
+        """Dissolve the group of the selected rows: one Short per unit again."""
+        if self.busy:
+            return
+        units = list(getattr(self, "voiceover_paths_list", []))
+        rows = self._selected_voiceover_rows()
+        selected = {units[row] for row in rows}
+        groups = [
+            [member for member in group if member not in selected]
+            for group in (getattr(self, "short_group_lists", []) or [])
+        ]
+        kept = [group for group in groups if len(group) > 1]
+        if len(kept) == len([group for group in (getattr(self, "short_group_lists", []) or [])]):
+            QMessageBox.information(
+                self, "Short group",
+                "The selected rows are not part of a Short group.",
+            )
+            return
+        self.short_group_lists = kept
+        self._render_voiceover_table()
+        self._append_log(
+            "Short-Gruppe aufgelöst: "
+            + ", ".join(Path(member).name for member in sorted(selected))
+            + " -> wieder jeweils EIN eigener Short"
+        )
+        self._save_project()
+        self._update_pool_status()
+
+    def _short_anchor(self, row: int) -> str | None:
+        """First voiceover of the Short this row belongs to (its override key)."""
+        units = list(getattr(self, "voiceover_paths_list", []))
+        if not 0 <= row < len(units):
+            return None
+        for plan in build_short_plan(units, getattr(self, "short_group_lists", [])):
+            if row + 1 in plan.positions:
+                return str(plan.units[0])
+        return str(units[row])
+
+    def _choose_short_music(self) -> None:
+        """Give exactly ONE Short its own background track."""
+        if self.busy:
+            return
+        rows = self._selected_voiceover_rows()
+        if len(rows) != 1:
+            QMessageBox.information(
+                self, "Short music",
+                "Select exactly one row: its Short (including a grouped Short) gets one own track.",
+            )
+            return
+        anchor = self._short_anchor(rows[0])
+        if anchor is None:
+            return
+        current = str((getattr(self, "short_music_map", {}) or {}).get(anchor, "") or "")
+        selected, _ = QFileDialog.getOpenFileName(
+            self, "Choose Music for This Short", current or str(self.root),
+            "Audio (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.opus);;All files (*)",
+        )
+        if not selected:
+            return
+        music = str(Path(selected).expanduser().resolve())
+        mapping = dict(getattr(self, "short_music_map", {}) or {})
+        mapping[anchor] = music
+        self.short_music_map = mapping
+        self._render_voiceover_table()
+        self._append_log(
+            f"Short-Musik (eigen): Short {Path(anchor).name} -> {Path(music).name} "
+            "(alle anderen Shorts behalten die gemeinsame Shorts-Musik)"
+        )
+        self._save_project()
+
+    def _clear_short_music(self) -> None:
+        """Remove the own track of the selected Short(s)."""
+        if self.busy:
+            return
+        rows = self._selected_voiceover_rows()
+        anchors = {anchor for anchor in (self._short_anchor(row) for row in rows) if anchor}
+        mapping = dict(getattr(self, "short_music_map", {}) or {})
+        volumes = dict(getattr(self, "short_music_volume_map", {}) or {})
+        removed = [anchor for anchor in anchors if mapping.pop(anchor, None) is not None]
+        for anchor in anchors:
+            volumes.pop(anchor, None)
+        if not removed:
+            QMessageBox.information(
+                self, "Short music",
+                "The selected Short(s) have no own track; they already use the shared Shorts music.",
+            )
+            return
+        self.short_music_map = mapping
+        self.short_music_volume_map = volumes
+        self._render_voiceover_table()
+        self._append_log(
+            "Short-Musik (eigen) entfernt für "
+            + ", ".join(Path(anchor).name for anchor in sorted(removed))
+            + "; diese Shorts nutzen wieder die gemeinsame Shorts-Musik."
+        )
+        self._save_project()
 
     def _add_voiceovers(self) -> None:
         if self.busy:
@@ -2284,6 +3026,8 @@ class MainWindow(QMainWindow):
         scripts.pop(row)
         self.voiceover_paths_list = units
         self.voiceover_scripts_list = scripts
+        # A removed unit also leaves its Short group and its own music override.
+        self._prune_short_state(units)
         self._render_voiceover_table()
         self._save_project()
         self._update_pool_status()
@@ -2294,6 +3038,9 @@ class MainWindow(QMainWindow):
             return
         self.voiceover_paths_list = []
         self.voiceover_scripts_list = []
+        self.short_group_lists = []
+        self.short_music_map = {}
+        self.short_music_volume_map = {}
         # Reset all state that belongs to the deleted voiceover set. In
         # particular, a subsequent add starts in the same mode/order/pause
         # state as a fresh project and cannot inherit a stale subtitle request.
@@ -2504,13 +3251,15 @@ class MainWindow(QMainWindow):
             pause = max(0.0, min(10.0, float(self.voiceover_pause_spin.value())))
         except Exception:
             pause = 0.7
-        try:
-            end_padding = max(0.0, float(self.end_padding_spin.value()))
-        except Exception:
-            end_padding = 0.0
+        end_padding = _spin_seconds(self.end_padding_spin)
+        visual_intro = _spin_seconds(self.long_intro_spin)
         # Only actual, probeable files are timeline units. The pause is added
-        # exactly between those units, never after the final one.
-        return sum(durations) + pause * max(0, len(durations) - 1) + end_padding
+        # exactly between those units, never after the final one. The visual
+        # intro and outro need real video material as well, so the pool status
+        # reserves exactly what the render target requires.
+        return (
+            visual_intro + sum(durations) + pause * max(0, len(durations) - 1) + end_padding
+        )
 
     def _update_pool_status(self, *_args) -> None:
         """Video-Pool-Status: Videos / Required / Selected / Not Used / Ziel.
@@ -2543,6 +3292,9 @@ class MainWindow(QMainWindow):
             # the folder alternator again would make pool status disagree with
             # the sequence that Stage 1 receives.
             folder_aware=False,
+            # The same soft timeline-area ordering the render applies, so the
+            # status line and the Stage-1 sequence never disagree.
+            timeline_area_settings=settings,
         )
         self.pool_status_label.setText(status.summary_line)
 
@@ -2672,23 +3424,8 @@ class MainWindow(QMainWindow):
             if settings.watermark_enabled and not settings.watermark_path:
                 QMessageBox.warning(self, "Watermark fehlt", "Bitte ein Watermark-Bild wählen oder Watermark deaktivieren.")
                 return
-        # Quote / Flyer is artwork-only. Validate it before starting Stage 1
-        # so a missing or unsupported Stage-2 asset does not waste a render.
-        quote_active = False
-        if settings.quote_enabled:
-            artwork_value = (settings.quote_artwork_path or "").strip()
-            if not artwork_value:
-                QMessageBox.warning(
-                    self, "Quote / Flyer File fehlt",
-                    "Include Quote / Flyer ist aktiviert, aber keine Datei ausgewählt.",
-                )
-                return
-            try:
-                quote_artwork_path(artwork_value)
-            except VideoMergerError as exc:
-                QMessageBox.warning(self, "Quote / Flyer ungültig", str(exc))
-                return
-            quote_active = True
+        # Add Image is validated before starting Stage 1 so a missing or
+        # unsupported Stage-2 asset does not waste a render.
         image_active = False
         if settings.image_enabled:
             image_value = (settings.image_path or "").strip()
@@ -2705,10 +3442,10 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Image Insertion ungültig", str(exc))
                 return
             image_active = True
-        if mode == "complete" and not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active and not image_active:
+        if mode == "complete" and not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not image_active:
             QMessageBox.warning(
-                self, "Intro/Outro/Quote fehlen",
-                "One-Click benötigt mindestens ein gültiges Intro- oder Outro-Video oder eine aktive Quote-/Flyer-Datei.",
+                self, "Intro/Outro/Image fehlen",
+                "One-Click benötigt mindestens ein gültiges Intro- oder Outro-Video oder eine aktive Add-Image-Datei.",
             )
             return
         if mode == "outro":
@@ -2717,10 +3454,10 @@ class MainWindow(QMainWindow):
                     self, "Stage 2 Inputs fehlen", "Bitte ein gültiges MainVideo auswählen."
                 )
                 return
-            if not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not quote_active and not image_active:
+            if not Path(settings.intro_path).is_file() and not Path(settings.outro_path).is_file() and not image_active:
                 QMessageBox.warning(
                     self, "Stage 2 Inputs fehlen",
-                    "Bitte mindestens ein Intro- oder Outro-Video auswählen oder eine aktive Quote-/Flyer-/Image-Datei auswählen.",
+                    "Bitte mindestens ein Intro- oder Outro-Video auswählen oder eine aktive Add-Image-Datei auswählen.",
                 )
                 return
         self.store.save(settings)
@@ -2779,9 +3516,6 @@ class MainWindow(QMainWindow):
             self.source_folders_list, self.video_order_combo, self.export_mode_combo,
             self.duration_before_merge_combo, self.duration_after_merge_check,
             self.duration_after_merge_combo,
-            self.quote_check, self.quote_artwork_path_edit, self.quote_artwork_choose,
-            self.quote_pdf_page_spin, self.quote_artwork_fit_combo,
-            self.quote_duration_spin, self.quote_preview,
             self.image_check, self.image_path_edit, self.image_choose,
             self.image_position_combo, self.image_duration_combo,
             self.image_duration_spin, self.image_transition_combo,
@@ -2794,7 +3528,6 @@ class MainWindow(QMainWindow):
             widget.setEnabled(not busy)
         if not busy:
             self._sync_script_mode_controls()
-            self._sync_quote_visibility()
             self._sync_image_visibility()
 
     def _cancel(self) -> None:

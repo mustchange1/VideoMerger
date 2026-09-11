@@ -88,19 +88,19 @@ def test_stage1_fingerprint_is_deterministic_and_excludes_stage2(tmp_path):
     second, _ = stage1_fingerprint(media, settings, _resolved(), **kwargs)
     assert first == second
     assert "intro_path" not in payload["settings"]
-    assert "quote_text" not in payload["settings"]
+    assert not any("quote" in key for key in payload["settings"])
     assert "outro_path" not in payload["settings"]
 
     stage2_changed = replace(
         settings,
         intro_path=str(tmp_path / "intro.mp4"),
         outro_path=str(tmp_path / "outro.mp4"),
-        quote_enabled=True,
-        quote_duration=4.0,
-        quote_input_mode="artwork",
-        quote_artwork_path=str(tmp_path / "flyer.pdf"),
-        quote_pdf_page=3,
-        quote_artwork_fit_mode="crop",
+        image_enabled=True,
+        image_duration=4.0,
+        image_position="before_main",
+        image_path=str(tmp_path / "add-image.png"),
+        image_fit_mode="fill",
+        image_zoom=140,
     )
     stage2_digest, _ = stage1_fingerprint(media, stage2_changed, _resolved(), **kwargs)
     assert stage2_digest == first

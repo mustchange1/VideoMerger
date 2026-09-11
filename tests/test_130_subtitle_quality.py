@@ -165,8 +165,13 @@ def test_word_style_for_matches_the_ass_animation_semantics():
     # color_change: everything up to the active word is accented.
     assert word_style_for(layout, "color_change", 0, 4, 2)[0] == accent
     assert word_style_for(layout, "color_change", 3, 4, 2)[0] == white
-    # outline_highlight: only the active word gets the accent outline flag.
-    assert word_style_for(layout, "outline_highlight", 2, 4, 2)[2] is True
+    # A deprecated Outline Highlight migrates to Colour Change before the preview
+    # is styled, so the removed accent-outline flag can never be raised again and
+    # every preview word stays glyph-aligned (third tuple element always False).
+    assert word_style_for(layout, "outline_highlight", 2, 4, 2) == word_style_for(
+        layout, "color_change", 2, 4, 2
+    )
+    assert word_style_for(layout, "outline_highlight", 2, 4, 2)[2] is False
     assert word_style_for(layout, "outline_highlight", 1, 4, 2)[2] is False
     # static_phrase: one calm block, no per-word state changes.
     for index in range(4):

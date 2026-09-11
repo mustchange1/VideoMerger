@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.video_merger.models import ExportSettings
+from app.video_merger.models import ExportSettings, MediaInfo
 
 
 def test_audio_mode_defaults_remain_original():
@@ -40,14 +40,30 @@ def test_global_video_speed_default_is_one():
     assert ExportSettings().video_speed == 1.0
 
 
-def test_quote_flyer_defaults():
+def test_quote_flyer_section_is_removed_and_add_image_remains():
+    """The Quote/Flyer PDF feature is gone; Add Image keeps its full control set."""
     settings = ExportSettings()
-    assert settings.quote_enabled is False
-    assert settings.quote_input_mode == "artwork"
-    assert settings.quote_artwork_path == ""
-    assert settings.quote_pdf_page == 1
-    assert settings.quote_artwork_fit_mode == "fit"
-    assert settings.quote_duration == 4.0
+    for removed in (
+        "quote_enabled", "quote_input_mode", "quote_artwork_path",
+        "quote_pdf_page", "quote_artwork_fit_mode", "quote_duration",
+    ):
+        assert not hasattr(settings, removed)
+    assert not any("quote" in name for name in ExportSettings.__dataclass_fields__)
+    assert not any("quote" in name for name in MediaInfo.__dataclass_fields__)
+    assert settings.image_enabled is False
+    assert settings.image_path == ""
+    assert settings.image_position == "after_intro"
+    assert settings.image_duration == 4.0
+    assert settings.image_fit_mode == "fit"
+
+
+def test_long_form_and_shorts_music_are_separate_settings():
+    """Two independent tracks; an empty Shorts track means a silent Short."""
+    settings = ExportSettings()
+    assert settings.music_path == ""
+    assert settings.short_music_path == ""
+    assert settings.music_volume == 44
+    assert settings.music_preset == "balanced"
 
 
 def test_transition_and_music_defaults_are_cinematic_but_safe():

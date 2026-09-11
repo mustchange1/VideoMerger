@@ -171,8 +171,7 @@ class VideoMergerEngine:
         # sequence that already carries per-occurrence playback rates.
         before_merge = duration_before_merge_value(settings)
         has_per_occurrence_rate = any(
-            not item.is_quote_artwork
-            and not item.is_image_insertion
+            not item.is_image_insertion
             and abs(float(getattr(item, "playback_rate", 1.0) or 1.0) - 1.0) > 1e-6
             for item in media
         )
@@ -184,6 +183,7 @@ class VideoMergerEngine:
                 getattr(settings, "video_order_mode", "natural"),
                 rng=video_order_rng,
                 seed=video_order_seed,
+                legacy_root=getattr(settings, "legacy_input_root", ""),
             )
             if [item.path for item in media] != original_paths:
                 # Transition math depends on neighboring durations. Re-resolve
@@ -193,7 +193,7 @@ class VideoMergerEngine:
         if settings.workflow_stage != "outro" and abs(before_merge - 1.0) > 1e-6 and not has_per_occurrence_rate:
             prepared_media = []
             for item in media:
-                if item.is_quote_artwork or item.is_image_insertion:
+                if item.is_image_insertion:
                     prepared_media.append(item)
                     continue
                 source = item.source_duration or item.duration

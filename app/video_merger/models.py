@@ -4,8 +4,164 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
+from .errors import VideoMergerError
+
 
 _SUBTITLE_DEFAULT = object()
+
+#: Explicit visual-only timeline sections. Every voiceover-driven Main Video is
+#: built as ``[visual intro][voiceover + normal video][visual outro]``. Both
+#: sections show moving material from the normal video timeline (never black or
+#: unintentionally frozen frames), carry no voiceover audio and show no
+#: subtitle: the spoken audio stays the timing authority, so captions run from
+#: the voiceover start to the spoken end only.
+#:
+#: Long-Form and Shorts have independent defaults; the values below are the
+#: user-facing settings. :mod:`youtube_outputs` copies the collection-appropriate
+#: pair into the canonical render-time fields (``visual_intro_seconds`` and
+#: ``final_pause``) for every Long-Form/Short job, so the timeline mathematics,
+#: the subtitle offset and the cache fingerprint each read exactly one value.
+#:
+#: Both visual sections are ``[visual + music]``: configured background music
+#: already plays from video time 0.000 s and keeps playing through the outro
+#: until the final video endpoint, while voiceover and subtitles are confined to
+#: the spoken part in between.
+LONG_FORM_INTRO_SECONDS = 1.5
+LONG_FORM_OUTRO_SECONDS = 1.5
+SHORT_INTRO_SECONDS = 0.7
+SHORT_OUTRO_SECONDS = 0.7
+#: Upper bound used by the GUI spin boxes. The model itself accepts any finite
+#: value >= 0; 0.0 disables a section completely.
+MAX_VISUAL_SECTION_SECONDS = 60.0
+
+#: Output-specific audio and transition defaults. Long-Form and Shorts keep
+#: fully independent music volume and transition settings: changing one output
+#: never changes the other. The values below are what a new project, a new GUI
+#: session, the CLI defaults and a project file without these keys receive.
+DEFAULT_TRANSITION_TYPE = "cross_dissolve"
+LONG_FORM_TRANSITION_DURATION = 2.0
+SHORTS_TRANSITION_DURATION = 2.0
+#: Historic shared transition duration. It remains the canonical field default
+#: for the basic/Main-Video merge path and doubles as the "was never set"
+#: marker when resolving an output-specific duration (see
+#: :func:`app.video_merger.youtube_outputs.output_transition_duration`).
+TRANSITION_DURATION_LEGACY_DEFAULT = 1.0
+#: Background music gain in percent. 44 % is approximately +6 dB over the
+#: former 22 % linear gain and stays below the 100 % voiceover gain.
+MUSIC_VOLUME_PERCENT = 44
+LONG_FORM_MUSIC_VOLUME = MUSIC_VOLUME_PERCENT
+SHORTS_MUSIC_VOLUME = MUSIC_VOLUME_PERCENT
+#: Upper bound of the music gain accepted by the render graph
+#: (``command_builder._percent_gain`` clamps to 1.5 == 150 %).
+MAX_MUSIC_VOLUME_PERCENT = 150
+
+#: Soft timeline-based source ordering ("timeline areas"). Each configured video
+#: folder can carry one of three roles - ``1. Start & End``,
+#: ``2. Start to Middle``, ``3. Middle to End`` - and the values below describe
+#: where those roles are *approximately* used on the output timeline. They are
+#: guidance for source ordering only: a clip always completes before the next
+#: role takes over, so a zone may end later than its target and no clip is ever
+#: cut to satisfy one. See :mod:`app.video_merger.timeline_areas`.
+TIMELINE_AREA_START_SECONDS = 20.0
+TIMELINE_AREA_END_SECONDS = 20.0
+TIMELINE_AREA_MIDPOINT_PERCENT = 50.0
+#: Upper bound used by the GUI spin boxes; the model accepts any finite value >= 0.
+MAX_TIMELINE_AREA_SECONDS = 600.0
+#: YouTube Shorts draw from ``1. Start & End`` + ``2. Start to Middle``. The
+#: later/main pool stays out of every Short unless this is explicitly enabled.
+SHORTS_ALLOW_AREA_MIDDLE_END = False
+
+#: Speech/subtitle language. One canonical vocabulary drives the whole pipeline:
+#: GUI, CLI, project files, ASR (faster-whisper), script alignment, diagnostics
+#: and cache identity all resolve through :func:`normalize_subtitle_language`.
+#:
+#: The canonical stored values deliberately stay the historical ``"German"`` /
+#: ``"English"`` strings, so every existing project file, settings payload and
+#: Stage-1 render fingerprint keeps its exact identity - a German project that
+#: changes nothing renders byte-identically. Only the user-facing labels
+#: ("Deutsch"/"English") and the accepted aliases are new.
+SUBTITLE_LANGUAGE_GERMAN = "German"
+SUBTITLE_LANGUAGE_ENGLISH = "English"
+#: Automatic detection stays supported for legacy projects and third-party
+#: callers, but it is no longer a user-facing choice: handing Whisper an
+#: explicit language is what stops German and English from drifting into each
+#: other on calm narration, where detection can pick the wrong language and
+#: every script word then falls back to interpolated timing.
+SUBTITLE_LANGUAGE_AUTO = "Auto"
+#: The two choices the language selector offers, in display order.
+SUBTITLE_LANGUAGE_CHOICES = (SUBTITLE_LANGUAGE_GERMAN, SUBTITLE_LANGUAGE_ENGLISH)
+#: German is the default: doing nothing must keep the historical behaviour.
+DEFAULT_SUBTITLE_LANGUAGE = SUBTITLE_LANGUAGE_GERMAN
+SUBTITLE_LANGUAGE_LABELS = {
+    SUBTITLE_LANGUAGE_GERMAN: "Deutsch",
+    SUBTITLE_LANGUAGE_ENGLISH: "English",
+    SUBTITLE_LANGUAGE_AUTO: "Auto",
+}
+#: ISO 639-1 code handed to faster-whisper. ``None`` means "detect automatically".
+SUBTITLE_LANGUAGE_CODES = {
+    SUBTITLE_LANGUAGE_GERMAN: "de",
+    SUBTITLE_LANGUAGE_ENGLISH: "en",
+    SUBTITLE_LANGUAGE_AUTO: None,
+}
+#: Accepted spellings, so ``--language en``, a hand-edited project file and the
+#: GUI selector all resolve to the same canonical value.
+_SUBTITLE_LANGUAGE_ALIASES = {
+    "german": SUBTITLE_LANGUAGE_GERMAN,
+    "deutsch": SUBTITLE_LANGUAGE_GERMAN,
+    "de": SUBTITLE_LANGUAGE_GERMAN,
+    "deu": SUBTITLE_LANGUAGE_GERMAN,
+    "ger": SUBTITLE_LANGUAGE_GERMAN,
+    "english": SUBTITLE_LANGUAGE_ENGLISH,
+    "englisch": SUBTITLE_LANGUAGE_ENGLISH,
+    "en": SUBTITLE_LANGUAGE_ENGLISH,
+    "eng": SUBTITLE_LANGUAGE_ENGLISH,
+    "auto": SUBTITLE_LANGUAGE_AUTO,
+    "automatic": SUBTITLE_LANGUAGE_AUTO,
+    "auto-detect": SUBTITLE_LANGUAGE_AUTO,
+    "detect": SUBTITLE_LANGUAGE_AUTO,
+}
+
+
+#: Below this measured script/voiceover compatibility the alignment carries no
+#: real lexical correspondence at all, so every caption timestamp would be
+#: interpolated guesswork rather than acoustics. That is exactly what a language
+#: drift looks like (English audio forced through German ASR measured 0.04, while
+#: a correct English run measures 1.00 and a noisy but correct one still 0.91),
+#: so an explicitly selected language other than the historical default fails
+#: closed with ``allow_alignment_warnings=False`` (the default) instead of
+#: publishing misleading subtitles. German and Auto keep the long-standing
+#: behaviour - warn, then render - so existing projects stay byte- and
+#: stage-compatible. Ordinary partial matches (a reworded sentence, a few
+#: unmatched words) stay far above this floor for every language.
+LANGUAGE_MISMATCH_COMPATIBILITY = 0.20
+
+
+def normalize_subtitle_language(value: object) -> str:
+    """Return the canonical language for any accepted spelling.
+
+    Missing/empty values fall back to the historical default (German) so old
+    project files and hand-edited configurations keep loading. An unusable
+    value fails closed instead of silently becoming auto-detection.
+    """
+    if value is None:
+        return DEFAULT_SUBTITLE_LANGUAGE
+    text = str(value).strip()
+    if not text:
+        return DEFAULT_SUBTITLE_LANGUAGE
+    canonical = _SUBTITLE_LANGUAGE_ALIASES.get(text.casefold())
+    if canonical is None:
+        raise VideoMergerError(f"Unbekannte Untertitelsprache: {value}")
+    return canonical
+
+
+def subtitle_language_code(value: object) -> str | None:
+    """ISO code for faster-whisper: ``"de"``, ``"en"`` or ``None`` (detect)."""
+    return SUBTITLE_LANGUAGE_CODES[normalize_subtitle_language(value)]
+
+
+def subtitle_language_label(value: object) -> str:
+    """User-facing label ("Deutsch"/"English") for logs, GUI and diagnostics."""
+    return SUBTITLE_LANGUAGE_LABELS[normalize_subtitle_language(value)]
 
 
 @dataclass(slots=True)
@@ -51,11 +207,8 @@ class MediaInfo:
     # clip down (stretch), > 1.0 speeds it up. The render graph applies this
     # via setpts on the video chain and atempo on the clip's own audio.
     playback_rate: float = 1.0
-    # Quote/Flyer artwork is a real, silent Stage-2 image input.
-    is_quote_artwork: bool = False
-    quote_fit_mode: str = "fit"  # fit | fill | crop
-    # Add Image is a different Stage-2 input. Keeping a distinct flag/settings
-    # payload prevents Quote/Flyer changes from being silently applied to it.
+    # Add Image is a real, silent Stage-2 image input with its own flag and
+    # settings payload, so image composition changes are always explicit.
     is_image_insertion: bool = False
     image_fit_mode: str = "fit"  # fit | fill | crop
     image_zoom: int = 100
@@ -77,9 +230,25 @@ class ExportSettings:
     aspect: str = "16:9"
     resolution: str = "Auto"
     fit_mode: str = "contain_blur"
-    transition_type: str = "cross_dissolve"
+    # Canonical transition of the render that is currently being planned. The
+    # basic/Main-Video merge path keeps these shared values, while every YouTube
+    # job receives its own output-specific pair below (``youtube_outputs`` copies
+    # the resolved value into these canonical fields before the render, the cache
+    # fingerprint and the timeline mathematics read them).
+    transition_type: str = DEFAULT_TRANSITION_TYPE
     transition_ease: str = "ease_in_out"
-    transition_duration: float = 1.0
+    transition_duration: float = TRANSITION_DURATION_LEGACY_DEFAULT
+    # Output-specific transition settings (Long-Form and Shorts are fully
+    # independent). An empty string / ``None`` means "not configured": the
+    # shared value of an existing project or API caller is used as the migration
+    # fallback, and a project without any of them receives the new defaults
+    # Cross Dissolve / 2.0 s for both outputs. Combined mode and One-Click use
+    # the Long-Form pair for the Long-Form job and the Shorts pair for every
+    # Short, so changing one output never changes the other.
+    long_form_transition_type: str = ""
+    long_form_transition_duration: float | None = None
+    shorts_transition_type: str = ""
+    shorts_transition_duration: float | None = None
     background_blur: int = 30
     background_darkness: int = 10
     background_zoom: int = 100
@@ -104,7 +273,13 @@ class ExportSettings:
     workflow_stage: str = "basic"  # basic | main | outro
     voiceover_path: str = ""
     script_path: str = ""
+    # ``music_path`` is the Long-Form/basic background music. YouTube Shorts
+    # use their own track: the two selections are strictly separate, so the
+    # Long-Form music never plays in a Short and an empty Shorts track means
+    # that Short simply has no background music. Volume, preset, ducking,
+    # looping and trimming stay shared behavior for whichever track is active.
     music_path: str = ""
+    short_music_path: str = ""
     main_video_path: str = ""
     outro_path: str = ""
     intro_path: str = ""
@@ -122,7 +297,7 @@ class ExportSettings:
     # Phase 4: the global script is stored once, independently of the ordered
     # voiceover list. ``script_paths[0]`` remains the migration fallback for
     # older projects. The pause is inserted between units, never after the
-    # final unit; ``final_pause`` below remains Main Video end padding.
+    # final unit; ``final_pause`` below remains the visual outro after it.
     global_script_path: str = ""
     voiceover_pause: float = 0.7
     voiceover_order_mode: str = "natural"  # natural | mtime_oldest | mtime_newest | manual
@@ -131,10 +306,41 @@ class ExportSettings:
     intro_audio_mode: str = "original"  # mute | low | original
     outro_audio_mode: str = "original"
     voiceover_volume: int = 100
-    # 44 % is approximately +6 dB over the former 22 % linear gain. It stays
-    # below the 100 % voiceover gain while the limiter and ducking remain the
-    # final safety net in the mixed graph.
-    music_volume: int = 44
+    # Canonical music gain of the render that is currently being planned
+    # (44 % ≈ +6 dB over the former 22 % linear gain; it stays below the 100 %
+    # voiceover gain while the limiter and ducking remain the final safety net
+    # in the mixed graph). The basic/Main-Video merge path keeps this shared
+    # value; every YouTube job receives its own output-specific volume below.
+    music_volume: int = MUSIC_VOLUME_PERCENT
+    # Output-specific background music volume in percent, fully independent for
+    # Long-Form and Shorts (44 % each by default). ``None`` means "not
+    # configured": the shared ``music_volume`` of an existing project or API
+    # caller is used as the migration fallback, so an old project never loses
+    # its saved loudness. The volume applies through the complete video —
+    # visual intro, spoken part and visual outro — because the music itself
+    # plays from 0.000 s to the final video endpoint. Voiceover volume stays
+    # independent, and a Short still plays only its own Shorts track.
+    long_form_music_volume: int | None = None
+    shorts_music_volume: int | None = None
+    # Phase 25 script-to-Short mapping. ``short_script_groups`` lists the
+    # voiceover units that render as ONE Short: every inner list holds voiceover
+    # paths, and the members are always rendered in the authoritative
+    # voiceover/script list order (Script 3 before Script 4, never the reverse).
+    # The default — no groups — keeps the historical mapping of one voiceover
+    # unit == one Short, including byte-identical output names and cache keys.
+    # Grouping is pure planning data: a grouped Short is rendered by the
+    # existing multi-voiceover pipeline on ONE video, voiceover, subtitle and
+    # music timeline and produces ONE MP4 plus ONE transcript file. Rendered
+    # Shorts are never concatenated afterwards.
+    short_script_groups: list[list[str]] = field(default_factory=list)
+    # Per-Short background music. Both maps are keyed by the FIRST voiceover
+    # path of a Short (its anchor), so a grouped Short owns exactly one track
+    # and one volume. An entry overrides that one Short only; every other Short
+    # keeps ``short_music_path``/``shorts_music_volume``. The strict
+    # Long-Form/Shorts music separation stays intact: a Short without a Shorts
+    # track remains silent and never inherits the Long-Form music.
+    short_music_overrides: dict[str, str] = field(default_factory=dict)
+    short_music_volume_overrides: dict[str, int] = field(default_factory=dict)
     music_preset: str = "balanced"
     # Phase 27 multiple music tracks. Each entry is a plain JSON-friendly
     # dict: {"path": str, "trim_start": float, "trim_duration": float}.
@@ -142,11 +348,38 @@ class ExportSettings:
     # the explicit playback sequence; the ENTIRE sequence loops as one unit
     # (A → B → C → A → B → C …). An empty list with a non-empty legacy
     # ``music_path`` is treated as the historical one-track sequence.
+    # ``music_tracks`` is the LONG-FORM (and basic merge) sequence;
+    # ``short_music_tracks`` is the strictly separate YouTube Shorts sequence
+    # (empty list + non-empty legacy ``short_music_path`` migrates to the
+    # historical one-track Shorts sequence; both empty means Shorts stay
+    # silent exactly like before).
     music_tracks: list[dict] = field(default_factory=list)
+    short_music_tracks: list[dict] = field(default_factory=list)
     ducking_enabled: bool = True
     ducking_attack_ms: int = 25
     ducking_release_ms: int = 450
+    # Main Video end padding == the Long-Form visual outro. One single tail
+    # field on purpose: the legacy "Main Video End Padding" control and the new
+    # explicit outro setting are the same timeline section, so they can never
+    # stack into a duplicated visible ending. ``youtube_outputs`` writes the
+    # collection-appropriate value here (Long-Form outro for landscape jobs,
+    # Short outro for vertical jobs).
     final_pause: float = 1.0
+    # User-facing visual-only section settings (see the module constants above).
+    long_form_intro_seconds: float = LONG_FORM_INTRO_SECONDS
+    long_form_outro_seconds: float = LONG_FORM_OUTRO_SECONDS
+    short_intro_seconds: float = SHORT_INTRO_SECONDS
+    short_outro_seconds: float = SHORT_OUTRO_SECONDS
+    # Canonical render-time intro. Filled by ``long_form_settings()`` /
+    # ``short_settings()`` for every YouTube job (and by the GUI for direct
+    # renders); a raw ``ExportSettings()`` built by a legacy API caller keeps
+    # the neutral 0.0 == "no visual-only intro", which preserves the historical
+    # timeline of direct ``create_main`` callers.
+    visual_intro_seconds: float = 0.0
+    # Optional subtle Main Video opening effect: none | zoom_in | zoom_out.
+    # It touches the opening visual portion only, always returns to a neutral
+    # 1.0x frame, and never changes timeline, audio or subtitle timing.
+    opening_effect: str = "none"
     short_video_mode: str = "hold"  # hold | loop
     # 1.3.0 smart duration fit: how the last selected clip reaches an exact
     # voiceover-derived target. ``cut`` keeps the proven 1.2.4 trimming
@@ -175,7 +408,10 @@ class ExportSettings:
     video_speed: float = 1.0
 
     subtitle_enabled: bool = False
-    subtitle_language: str = "German"  # German | English | Auto
+    # Canonical speech/subtitle language: "German" (default, UI label "Deutsch")
+    # or "English". "Auto" is still accepted for legacy projects but is no
+    # longer offered as a user-facing choice.
+    subtitle_language: str = DEFAULT_SUBTITLE_LANGUAGE
     subtitle_style: str = "long_1"
     subtitle_animation: str = "static_phrase"  # Long-Form default: Static White Reveal
     subtitle_font: str = "modern_sans_bold"
@@ -201,19 +437,10 @@ class ExportSettings:
     watermark_scope: str = "both"  # main | outro | both
     outro_transition_enabled: bool = True
 
-    # Optional Quote/Flyer artwork between Intro and Main (Stage 2 only).
-    # The legacy text fields were intentionally removed from the active model;
-    # SettingsStore ignores them when loading older project JSON files.
-    quote_enabled: bool = False
-    quote_input_mode: str = "artwork"  # retained as a migration marker
-    quote_artwork_path: str = ""
-    quote_pdf_page: int = 1  # one-based page number for a multi-page PDF
-    quote_artwork_fit_mode: str = "fit"  # fit | fill | crop
-    quote_duration: float = 4.0  # seconds; new Flyer default
-
-    # Independent optional Stage-2 Add Image section (legacy API name:
-    # Image Insertion). It is always silent and is intentionally separate from
-    # Quote/Flyer. The position aliases keep existing saved projects usable.
+    # Optional Stage-2 Add Image section (legacy API name: Image Insertion).
+    # It is always silent. The position aliases keep existing saved projects
+    # usable. The former Quote/Flyer PDF artwork section was removed; its keys
+    # are ignored when an older project JSON file is loaded.
     image_enabled: bool = False
     image_path: str = ""
     image_position: str = "after_intro"  # before_main/after_main; legacy aliases accepted
@@ -241,8 +468,12 @@ class ExportSettings:
 
     # Shorts have their own safe mobile subtitle profile. The long-form
     # controls above remain untouched when a project also creates Shorts.
+    # ``short_subtitle_animation`` defaults to the clean phrase-level Short
+    # animation (``subtitles.DEFAULT_SHORT_ANIMATION``); the former Word
+    # Highlight default is no longer selectable for Shorts and saved values are
+    # migrated (see ``subtitles.normalize_subtitle_animation``).
     short_subtitle_style: str = "short_1"
-    short_subtitle_animation: str = "word_highlight"
+    short_subtitle_animation: str = "phrase_focus"
     short_subtitle_font: str = "inter"
     short_subtitle_position: str = "Bottom Center"
     # Independent Shorts font size (percent of the preset base size; 100 % =
@@ -260,7 +491,26 @@ class ExportSettings:
     # populated list is the complete configured source set.
     source_folders: list[str] = field(default_factory=list)
     video_order_mode: str = "natural"  # natural | alphabetical | random | manual; legacy folder_alternating accepted
+    # Legacy Input Root ("1 · Ordner" → Legacy Input Root). When Random order is
+    # active, the first three selected clips are reserved from this folder
+    # (themselves randomized), and clip 4+ returns to the normal full random
+    # pool. An empty value keeps the historical unbiased shuffle untouched. The
+    # timeline areas below are the primary mechanism for source ordering; this
+    # field stays available for backward compatibility and keeps working as
+    # before wherever it already worked.
+    legacy_input_root: str = ""
 
+    # Soft timeline-based source ordering. ``source_folder_areas`` maps a
+    # configured folder path to one timeline area role ("area_1_start_end",
+    # "area_2_start_middle", "area_3_middle_end"); several folders may share a
+    # role. An empty mapping - the default and the state of every project saved
+    # before this feature - leaves the historical project order byte-identical,
+    # and no clip is ever cut, dropped or ranked to satisfy a zone target.
+    source_folder_areas: dict[str, str] = field(default_factory=dict)
+    timeline_area_start_seconds: float = TIMELINE_AREA_START_SECONDS
+    timeline_area_end_seconds: float = TIMELINE_AREA_END_SECONDS
+    timeline_area_midpoint_percent: float = TIMELINE_AREA_MIDPOINT_PERCENT
+    shorts_allow_area_middle_end: bool = SHORTS_ALLOW_AREA_MIDDLE_END
 
     # Render-time values filled by MainProjectEngine; they are harmless if
     # persisted and are recalculated before every Stage-1 render.
@@ -271,10 +521,10 @@ class ExportSettings:
     # Empty means the legacy single ``music_path`` graph stays authoritative.
     music_track_plan: list[dict] = field(default_factory=list)
     # Stage-2 only: per-clip original-audio gains in composition order
-    # (intro/quote/main/outro). Filled by MainProjectEngine.add_outro().
+    # (intro/image/main/outro). Filled by MainProjectEngine.add_outro().
     stage2_audio_modes: list[str] = field(default_factory=list)
     # Stage-2 only: per-section role names in composition order
-    # ("intro"/"quote"/"main"/"outro"). Filled by MainProjectEngine.add_outro().
+    # ("intro"/"image"/"main"/"outro"). Filled by MainProjectEngine.add_outro().
     stage2_roles: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -371,6 +621,10 @@ class MainVideoResult:
     warnings: list[str] = field(default_factory=list)
     canonical_timeline: Path | None = None
     verification_frames: list[Path] = field(default_factory=list)
+    # Optional internal quality evidence, classified separately from the render
+    # result: PASS / DEGRADED / FAIL / SKIPPED. A FAIL never invalidates the
+    # successfully rendered, probed and validated output video.
+    verification_status: str = "SKIPPED"
     timings: dict[str, float | str | bool] = field(default_factory=dict)
     # 1.3.0: additional user-facing output WITHOUT burned-in subtitles. None
     # when no subtitles were generated; otherwise this file always exists.

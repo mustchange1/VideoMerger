@@ -38,11 +38,11 @@ Add any number of configured video folders with **Add Folder**, **Remove Folder*
 
 ### Independent merge-duration controls
 
-**Duration Before Merge** defaults to `0.70x` and applies to each normal selected visual clip (`timeline_duration = source_duration / 0.70`) before timeline construction. **Duration After Merge** defaults to disabled / `1.00x` and runs as a separate post-merge operation on the complete Stage-1 master. Smart Last-Clip Stretch remains after timeline construction and before rendering; Stage-2 Intro, Flyer, and Outro are not altered by Before Merge.
+**Duration Before Merge** defaults to `0.70x` and applies to each normal selected visual clip (`timeline_duration = source_duration / 0.70`) before timeline construction. **Duration After Merge** defaults to disabled / `1.00x` and runs as a separate post-merge operation on the complete Stage-1 master. Smart Last-Clip Stretch remains after timeline construction and before rendering; Stage-2 Intro, Add Image, and Outro are not altered by Before Merge.
 
-### Flyer, Add Image and subtitle output defaults
+### Add Image and subtitle output defaults
 
-Quote/Flyer remains an independent artwork-only Stage-2 section and defaults to 4.0 seconds. **Add Image** is a separate optional, silent Stage-2 section: PNG/JPG/JPEG/WEBP, Before Main Video by default, 4.0 seconds, Fit, 100% zoom, Natural look, and the existing Cross Dissolve transition with a 1.0 second boundary request. The legacy Image Insertion names and position aliases remain accepted. Its complete file identity and settings are included in the independent Stage-2 composition fingerprint.
+**Add Image** is an optional, silent Stage-2 section: PNG/JPG/JPEG/WEBP, Before Main Video by default, 4.0 seconds, Fit, 100% zoom, Natural look, and the existing Cross Dissolve transition with a 1.0 second boundary request. The legacy Image Insertion names and position aliases remain accepted. Its complete file identity and settings are included in the independent Stage-2 composition fingerprint.
 
 Subtitle output is explicit and defaults to **With Subtitles** whenever a subtitle source is requested. It burns the aligned ASS timeline and writes SRT/VTT but creates no clean sibling. **With and Without Subtitles** additionally retains the clean variant. **Without Subtitles** skips alignment, burn-in, SRT and VTT generation while preserving voiceover/audio timing. Landscape long-form subtitles default to **Center**; vertical short-form subtitles default to **Bottom Center**. Saved/manual position overrides remain authoritative.
 
@@ -66,17 +66,11 @@ New **Duration Fit Mode**: `Cut Last Clip` (default, exactly the proven behavior
 
 ### Main Video End Padding (manual)
 
-The short visual gap after the voiceover is now a free manual setting (0.0–5.0 s). The existing default of ~1 second is preserved exactly.
-
-### Quote / Flyer artwork (optional, silent)
-
-The optional Stage-2 section is composed as `Intro → Cross Dissolve → Quote/Flyer → Cross Dissolve → Main → Cross Dissolve → Outro`. It is disabled by default. Enable it and choose a finished PDF, PNG, JPG, JPEG, or WEBP artwork. PDFs expose their page count and selected page; Fit, Fill, and Crop preserve the artwork aspect ratio for 16:9, 9:16, 1080p, and 4K outputs. The artwork duration defaults to 4.0 seconds and uses the existing transition safety/clamping logic.
-
-The Quote/Flyer is visual-only: no voiceover, music, subtitles, or Main Video audio is routed into that section. PDF pages are rasterized internally with PyMuPDF into render-time temporary files, which are removed automatically and never written to the normal Output folder. The live preview updates for artwork, PDF page, Fit/Fill/Crop, aspect ratio, and output resolution.
+The short visual gap after the voiceover is now a free manual setting (0.0–5.0 s). This control is today the **Long-Form Outro (visual after voiceover)** in group `4d · Timeline – Visual Intro / Outro / Opening Effect`; its user-facing default is `2.5 s`, and it remains the *single* visual tail after the spoken audio, so it can never be applied twice. See *Visual intro/outro sections* below.
 
 ### Add Image (optional, silent Stage 2)
 
-Add Image is independent of Quote/Flyer/PDF. The dedicated section appears directly below Add Intro. Choose one PNG, JPG, JPEG, or WEBP and place it immediately **Before Main Video** or **After Main Video**. The image uses an editable duration with a 4.0 second default, the shared transition selector with Cross Dissolve as its default, a separately clamped 1.0 second boundary duration, Fit/Fill/Crop sizing, optional zoom, and five deterministic looks: Natural, Cinematic, Moody, Film, and Dark Editorial. The live preview updates for the selected file, aspect, sizing, zoom, and look.
+The dedicated section appears directly below Add Intro. Choose one PNG, JPG, JPEG, or WEBP and place it immediately **Before Main Video** or **After Main Video**. The image uses an editable duration with a 4.0 second default, the shared transition selector with Cross Dissolve as its default, a separately clamped 1.0 second boundary duration, Fit/Fill/Crop sizing, optional zoom, and five deterministic looks: Natural, Cinematic, Moody, Film, and Dark Editorial. The live preview updates for the selected file, aspect, sizing, zoom, and look.
 
 The effective Stage-2 sequence is always `Intro → optional Add Image Before Main → Main Video → optional Add Image After Main → Outro`; with no Intro/Outro the selected image becomes the first/last section. The image section receives no voiceover, music, original audio, or subtitle timing; the graph supplies matching silence and keeps each relevant transition boundary gap-free. One-Click, normal Stage-2 export, preview/basic hand-off, landscape/portrait, 1080p/4K, subtitles, and chunked rendering use the same timeline. Settings are persisted and the complete file identity/content plus all image settings participate in the independent Stage-2 composition fingerprint; Stage-1 remains reusable when only Add Image changes. Legacy Image Insertion CLI/config names remain compatible.
 
@@ -94,11 +88,11 @@ Every successful one-click final video automatically produces `FinalVideo_16x9_Y
 
 ### One-Click workflow (Video Pool + everything)
 
-`CREATE FINAL VIDEO – ONE CLICK` produces Video Pool + Voiceover(s) + Script(s) + Background Music + Subtitles + Watermark + Intro + optional Quote/Flyer + optional Image Insertion + Main Video + Outro = **FinalVideo** in one click; the rendered Main Video flows into Stage 2 automatically (no manual Stage-1→Stage-2 selection). Stage 1 and Stage 2 remain separately usable.
+`CREATE FINAL VIDEO – ONE CLICK` produces Video Pool + Voiceover(s) + Script(s) + Background Music + Subtitles + Watermark + Intro + optional Add Image + Main Video + Outro = **FinalVideo** in one click; the rendered Main Video flows into Stage 2 automatically (no manual Stage-1→Stage-2 selection). Stage 1 and Stage 2 remain separately usable.
 
 ### Current defaults
 
-Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static White Reveal · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant) · End Padding ≈ 1 s · Quote/Flyer disabled unless enabled (4.0 s, Fit) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
+Intro/Main/Outro Original Audio = Original · Subtitle Animation = Static White Reveal · YouTube Landscape · Maximum Quality · Cross Dissolve = 1.0 s default · Music = 44 % Balanced default (voiceover remains dominant), selected separately for Long-Form and Shorts · End Padding ≈ 1 s (Long-Form; every Short ends with its own fixed 0.7 s video-only ending) · Duration Fit = Cut Last Clip · Maximum Stretch = 10 % · Duration Before Merge = 0.70x · Duration After Merge = disabled / 1.00x. All existing features (transitions, ordering, loops, hold, caching, fonts, 4K, watermark, ducking, multi-voiceover) are unchanged; explicit saved transition and audio values remain authoritative.
 
 # VideoMerger 1.3.0 for Windows
 
@@ -108,13 +102,7 @@ VideoMerger 1.3.0 is an additive local release built directly from the tested 1.
 
 ### Large Video Pool — Required-Only processing
 
-The Input Folder is a source library, not a render queue. Discovery uses lightweight `ffprobe` metadata only (duration, resolution, fps, codec, audio presence, size — never a full decode of every file) and caches the result. The project-level **Video Order** selector offers **Natural**, **Alphabetical**, **Random**, and **Manual**. The selected order is resolved before Required-Only duration selection, so the GUI table, pool counts, preview, One-Click, chunked rendering, and final timeline all consume the same effective sequence. Natural uses numeric-aware filenames and the existing source-folder alternation; Alphabetical uses filename order; Random performs a fresh Fisher-Yates permutation and then applies folder alternation without saving it as Manual; Manual preserves the explicitly persisted drag/move sequence. The selection stops as soon as the active order covers the voiceover-derived target duration: only the required clips are rendered. With 300 available and ~14 needed, exactly ~14 clips enter the pipeline and the rest never appear in any decode, filter, transition or encode stage. The final clip is trimmed to fit; if the material is still short, the Full-Timeline Loop repeats the selected A-B-C sequence and Hold Last Frame holds only the final frame. Pre-processing time does not scale with the unused pool size, and changing subtitle style/Quote/Flyer/Intro/Outro never re-analyzes the pool. The GUI shows `Videos in Input Folder / Required / Selected / Not Used / Target Duration` and updates after Analyze, voiceover changes, order-mode changes, Randomize and manual reorder.
-
-### Quote / Flyer artwork (optional, silent)
-
-The optional section is composed as `Intro → (Cross Dissolve) → Quote/Flyer → (Cross Dissolve) → Main → (Cross Dissolve) → Outro`. Enable it with `[ ] Include Quote / Flyer`; it is disabled by default and lasts 0.5–5.0 seconds (default 4.0 seconds). The GUI has no text Quote field and no generated-text mode. It accepts PDF, PNG, JPG, JPEG, and WEBP artwork, with selected PDF page, Fit/Fill/Crop framing, and output-aware preview. PDF pages are rasterized internally with PyMuPDF and temporary rasters are removed after export.
-
-**Quote/Flyer Audio is silent by design**: no voiceover, music, subtitles, or Main Video audio is routed into the section. It never enters the SRT/VTT/burn-in timeline. The live GUI preview updates for artwork, PDF page, Fit/Fill/Crop, aspect ratio, and output resolution.
+The Input Folder is a source library, not a render queue. Discovery uses lightweight `ffprobe` metadata only (duration, resolution, fps, codec, audio presence, size — never a full decode of every file) and caches the result. The project-level **Video Order** selector offers **Natural**, **Alphabetical**, **Random**, and **Manual**. The selected order is resolved before Required-Only duration selection, so the GUI table, pool counts, preview, One-Click, chunked rendering, and final timeline all consume the same effective sequence. Natural uses numeric-aware filenames and the existing source-folder alternation; Alphabetical uses filename order; Random performs a fresh Fisher-Yates permutation and then applies folder alternation without saving it as Manual; Manual preserves the explicitly persisted drag/move sequence. The selection stops as soon as the active order covers the voiceover-derived target duration: only the required clips are rendered. With 300 available and ~14 needed, exactly ~14 clips enter the pipeline and the rest never appear in any decode, filter, transition or encode stage. The final clip is trimmed to fit; if the material is still short, the Full-Timeline Loop repeats the selected A-B-C sequence and Hold Last Frame holds only the final frame. Pre-processing time does not scale with the unused pool size, and changing subtitle style/Add Image/Intro/Outro never re-analyzes the pool. The GUI shows `Videos in Input Folder / Required / Selected / Not Used / Target Duration` and updates after Analyze, voiceover changes, order-mode changes, Randomize and manual reorder.
 
 ### Real subtitle preview (Preview ≈ Final Render)
 
@@ -126,7 +114,7 @@ Inter, Manrope, Lora and Roboto (Regular + Bold) join the existing Noto Sans fal
 
 ### 1.2.4 defaults
 
-Intro/Main/Outro Original Audio all default to **Original** (Mute/Low/Original remain, independently settable); subtitle animation default is **Static White Reveal** (Long-Form / YouTube Landscape, all 5 animations still selectable); Output Preset **YouTube Landscape** + Quality **Maximum** are unchanged. The one-click workflow now covers Video Pool + Voiceovers + Scripts + Music + Intro + optional Quote + Main + Outro + Subtitles + Watermark → FinalVideo, still handing the actual rendered `MainVideo.mp4` to Stage 2.
+Intro/Main/Outro Original Audio all default to **Original** (Mute/Low/Original remain, independently settable); subtitle animation default is **Static White Reveal** (Long-Form / YouTube Landscape, all 5 animations still selectable); Output Preset **YouTube Landscape** + Quality **Maximum** are unchanged. The one-click workflow now covers Video Pool + Voiceovers + Scripts + Music + Intro + optional Add Image + Main + Outro + Subtitles + Watermark → FinalVideo, still handing the actual rendered `MainVideo.mp4` to Stage 2.
 
 ## New in 1.2.3
 
@@ -167,13 +155,15 @@ The 16:9 defaults are **Clean Editorial + Type Reveal + Bottom**. The subtitle e
 
 Every visual event retains the complete final phrase and canonical line break. Reveal/highlight changes therefore do not resize, recenter or reflow the caption region.
 
-Animations:
+Animations (Long-Form):
 
 - Type Reveal
 - Color Change
 - Word Highlight
-- Outline Highlight
+- Phrase Focus
 - Static White Reveal
+
+Shorts offer the same list without **Word Highlight** and default to **Phrase Focus** — a calm, conservative phrase-level entrance that stays readable on a 9:16 mobile frame. **Outline Highlight is removed**: it drew a heavy per-word outline colour and produced filled rectangular areas outside the glyphs. Saved projects migrate automatically and deterministically (Outline Highlight → Color Change, a Shorts Word Highlight → Phrase Focus, unknown values → the collection default), and no selectable animation emits outline, shadow, clip or vector-drawing overrides any more — every effect stays glyph-aligned.
 
 For synchronized animations, event boundaries come only from the canonical acoustic voiceover word timeline. The authoritative script still controls visible spelling, punctuation and umlauts. There is no character-count or equal-duration timing.
 
@@ -250,8 +240,368 @@ The export mode is an actual pipeline setting, not a cosmetic aspect toggle:
 - **YouTube Shorts** renders one independent 9:16 Short per available voiceover. A shared without-replacement media pool assigns each Short the next required prefix; clips are reused only after the complete pool is exhausted. Script count does not determine output count. One global script with ten voiceovers therefore still produces ten Shorts.
 - **YouTube Long-Form + YouTube Shorts** renders both sets.
 
-Outputs are separated into `Output/LongForm/` and `Output/Shorts/` (`YouTube_LongForm.mp4`, `001.mp4`, `002.mp4`, …). Intro, Outro, Quote/Flyer, Add Image, music, original audio, transitions, ordering and One-Click use the existing render pipeline for every job. Each Short has its own cache identity.
+Outputs are separated into `Output/LongForm/` and `Output/Shorts/` (`YouTube_LongForm.mp4`, `001.mp4`, `002.mp4`, …). Intro, Outro, Add Image, music, original audio, transitions, ordering and One-Click use the existing render pipeline for every job. Each Short has its own cache identity.
+
+**Separate background music, separate volume.** Long-Form and Shorts use two independent music selections: **Background Music (Long-Form)** and **Background Music (Shorts)**. The two tracks are strictly separate — the Long-Form track is never mixed into a Short, and a Short whose own track is empty simply has no background music (no artificial audio is ever generated). Each output type also owns its **music volume**: `Long-Form Music Volume` and `Shorts Music Volume`, both `44 %` by default and independently adjustable from `0 %` to `150 %`; changing one never changes the other. A selected track **starts at `0.000 s`**, plays continuously through the visual intro, the voiceover and the visual outro, and is looped/trimmed to the **final video end** — never to the spoken end — so a configured track can never leave a silent intro or a silent ending. Preset, ducking and looping behave exactly as before for whichever track is active, and in the combined mode (and in One-Click) each output type uses only its own track at its own volume.
+
+**Video-only Short intro and outro.** Every Short is `[0.7 s visual intro][its own voiceover][0.7 s visual outro]`. The spoken audio stays the authoritative duration and is never extended; intro and outro contain no speech, no voiceover audio and no subtitles — the caption timeline is shifted by the intro inside the timeline model and ends with the voiceover, so no cue from this or any other Short can appear in either section. The material comes from the regular timeline logic (clip selection, transitions, Hold/Loop, chunking and the without-replacement Shorts pool, which reserves intro, spoken part and outro up front). The former fixed `0.7 s` ending is *replaced* by the configurable Short outro, never stacked behind it — the new Short outro default is exactly that `0.7 s`, so the visible result is one single ending; `0.7 s` also survives as the guaranteed floor for settings objects that carry no explicit Short outro. The Long-Form keeps its freely configurable **Long-Form Outro** (the former Main Video End Padding).
+
+**One script text file per Short.** Beside every rendered Short, VideoMerger automatically writes `<same name>.txt` (`001.mp4` → `001.txt`) containing exactly the script text that Short uses: its own section of a global script, or its matched/individual script. Nothing is transcribed again — the file reuses the already derived content, so it always matches the spoken/captioned words of that Short and never contains text from another Short. An explicit audio-only Short (a voiceover that speaks no part of the global script) has no text and therefore no sidecar.
 
 Subtitle output is **With Subtitles** by default. It burns the selected profile and writes SRT/VTT without creating an extra clean video. **Without Subtitles** skips subtitle rendering; **With and Without Subtitles** writes both variants. Long-Form and Shorts use separate subtitle profile settings: Long-Form defaults to 16:9 Static White Reveal, while Shorts use a larger Inter mobile profile, a safe Bottom Center position, and word-synchronized animation.
 
-The CLI equivalents are `--export-mode long_form|shorts|long_form_and_shorts`, `--subtitle-output-mode with_subtitles|without_subtitles|with_and_without_subtitles`, and `--short-subtitle-style`, `--short-subtitle-animation`, `--short-subtitle-font`, `--short-subtitle-position`.
+With one global script and several voiceovers, the Long-Form still uses the complete script over the complete timeline while each Short receives only the section its own voiceover speaks — derived acoustically from one shared global mapping, never by aligning the complete script against every Short.
+
+The CLI equivalents are `--export-mode long_form|shorts|long_form_and_shorts`, `--music` (Long-Form), `--short-music` (Shorts), `--subtitle-output-mode with_subtitles|without_subtitles|with_and_without_subtitles`, and `--short-subtitle-style`, `--short-subtitle-animation`, `--short-subtitle-font`, `--short-subtitle-position`.
+
+## Visual intro/outro sections, opening effect and Legacy Input Root priority
+
+Every voiceover-driven Main Video now has an explicit, unambiguous structure:
+`[visual intro][voiceover + normal video][visual outro]`. Both visual sections
+play moving material from the regular timeline (never black or unintentionally
+frozen frames) and contain no voiceover audio and no subtitles. Background music
+starts at `0.000 s` and runs through **both** visual sections to the final frame
+(see *Continuous output music*), so neither the opening nor the ending is silent
+when a track is configured.
+
+- **Long-Form Intro (visual before voiceover)** — default `1.5 s`, `0` disables it, any positive value is accepted (the GUI spin is capped at `60 s`, the model itself has no artificial limit). The voiceover starts exactly after the intro and the subtitles never start before it.
+- **Long-Form Outro (visual after voiceover)** — default `1.5 s`. This *is* the former Main Video End Padding: one control, one canonical timeline tail, so the two can never double. An old project file keeps its saved padding.
+- **Short Intro / Short Outro** — default `0.7 s` each, per Short, with the same rules; the Short outro replaces the legacy `0.7 s` ending instead of stacking a second one.
+- **Subtitles only while spoken** — the whole caption timeline is shifted by the intro in the timeline model (not by a post-render delay), starts exactly with the voiceover and ends exactly with the spoken audio. Word-level timing, global-script sections, SRT/VTT, burn-in and the strict cue validation are unchanged.
+- **Opening Effect (Main Video)** — an optional subtle entrance in group `4d`: `None` (default), `Gentle Zoom In`, `Gentle Zoom Out`. Peak magnification is 5 %, centred, covering the opening portion only (the visual intro, or `3 s` when there is none, never longer than the program), applied to the assembled timeline *before* the subtitle burn-in so captions stay crisp, continuous across chunked rendering, and identity afterwards. It adds and drops no frame, so the voiceover-driven duration, sync and captions are untouched. Shorts never use it. There is no animation editor by design.
+- **Legacy Input Root priority (Random order only)** — while **Random** is active, the first three clips of the effective sequence are always drawn from the Legacy Input Root (the configured input folder): distinct where possible, shuffled among themselves, and reserved *before* the rest of the sequence is built. Clip 4 onwards keeps the unchanged full random pool (folder-aware alternation, duplicate/exhaustion rules, seeded determinism). Fewer than three eligible clips reserve what exists and then fill normally; an empty or missing root changes nothing at all — not even the random sequence, so existing projects stay bit-identical. Natural, Alphabetical and Manual are not affected. One log line names the reserved clips.
+
+GUI: group **`4d · Timeline – Visual Intro / Outro / Opening Effect`** holds the four duration spins and the opening-effect selection; the subtitle animation combos are built per collection (Long-Form / Shorts) with their own defaults, and switching to 9:16 selects the Shorts default automatically. All new values persist in the project file, survive old project files (missing fields fall back to the documented defaults, deprecated animations migrate, unknown fields are ignored) and are part of the render-cache identity (fingerprint schema `5`), so changing any of them — including the per-output music volumes and transition values below — re-renders instead of reusing a stale cache entry.
+
+CLI: `--long-intro`, `--long-outro` (alias of `--pause`/`--end-padding`), `--short-intro`, `--short-outro` and `--opening-effect none|zoom_in|zoom_out`.
+
+## Continuous output music, per-output volumes and transitions
+
+The canonical timeline of every voiceover-driven output is fully explicit, and the
+audio follows it rather than the spoken program:
+
+| | Long-Form default | Shorts default |
+| --- | --- | --- |
+| Visual intro (no voiceover, no subtitles) | `1.5 s` | `0.7 s` |
+| Voiceover + subtitles | the spoken audio | the spoken audio |
+| Visual outro (no voiceover, no subtitles) | `1.5 s` | `0.7 s` |
+| Music window | `0.000 s` → video end | `0.000 s` → video end |
+| Music volume | `44 %` (`long_form_music_volume`) | `44 %` (`shorts_music_volume`) |
+| Transition | Cross Dissolve / `2.0 s` | Cross Dissolve / `2.0 s` |
+
+So a default Long-Form with a 3.0 s voiceover is exactly `6.000 s`
+(`1.5 + 3.0 + 1.5`) and a default Short is exactly `4.400 s` (`0.7 + 3.0 + 0.7`).
+
+- **Music covers the complete video.** The music duration is derived from the
+  final video length (intro + spoken + outro), never from the spoken timeline
+  alone. The existing loop/trim architecture is unchanged: the track is streamed
+  with `-stream_loop -1` and gains its volume **before** it is trimmed. The
+  looped *input* is read only for the spoken program, and the visual outro is
+  covered inside the filter graph by repeating the tail of that trimmed music
+  (`aloop`, window bounded to 15 s so a long voiceover is never buffered
+  completely). The repeated window starts exactly where the program ends, so the
+  outro continues the track seamlessly, and it is cut exactly at the video end.
+  This shape is also the only safe one: making a `-stream_loop -1` input feed a
+  branch right up to the output end deadlocks FFmpeg 6.0 at 0 % CPU (measured on
+  the same 0.6 s track — `atrim=duration=<target>` stalls, `<target − 0.1 s>`
+  finishes in 0.4 s). The voiceover is untouched: it still starts after the
+  configured intro, still ends with the spoken audio, and the outro carries no
+  speech. Without a selected track the output stays silent.
+- **Subtitles follow the voiceover, not the music.** Captions start with the
+  voiceover (at the intro length), end with the spoken content, and never appear
+  in a visual section. Word-level alignment, global-script section splitting,
+  per-voiceover scripts, SRT/VTT, burn-in and the strict overlap validation are
+  unchanged.
+- **Independent transitions.** `long_form_transition_type` /
+  `long_form_transition_duration` and `shorts_transition_type` /
+  `shorts_transition_duration` are resolved per output; every existing transition
+  type stays available, and Combined mode plus One-Click apply the Long-Form
+  values to the Long-Form render and the Shorts values to every Short.
+- **Backward compatibility.** An old project keeps its explicit values. A saved
+  shared `music_volume` is copied into **both** output volumes only when those are
+  missing, and saved shared transition values act as the migration fallback for
+  both outputs; unknown fields are ignored.
+- **Cache identity.** All four section durations, both music volumes, all four
+  transition values, the opening effect, the subtitle animation/profile values
+  and the effective media order are part of the Stage-1 fingerprint
+  (`FINGERPRINT_SCHEMA = 5`). Entries written by an older schema are never reused
+  (fail-closed), so a music-volume or transition change always re-renders.
+- **Logging, once per job:** `Timeline: Intro 1.500 s (visual only) · Voiceover
+  start 1.500 s · Spoken 3.000 s · Spoken end 4.500 s · Outro 1.500 s (visual
+  only) · Video start 0.000 s · Video end 6.000 s`, `Music: start 0.000 s · end
+  6.000 s (video end) · continuous through the visual intro, the voiceover and
+  the visual outro`, `Subtitles: start 1.500 s · end 4.500 s · no caption in the
+  visual intro or outro` and `Output settings (Long-Form): Music volume 44 % ·
+  Voiceover volume 100 % · Ducking off · Transition Cross Dissolve / 2.000 s`.
+
+GUI: the Long-Form and Shorts groups each hold their own **Timeline** (visual
+before/after voiceover, plus the opening effect for Long-Form), **Audio**
+(track + music volume slider) and **Transitions** (type + duration) rows, with a
+hint line stating that music starts immediately and runs to the end while the
+voiceover and its captions start after the intro. No control exists twice.
+
+CLI: `--long-intro`, `--long-outro`, `--short-intro`, `--short-outro`,
+`--long-music-volume`, `--short-music-volume`, `--long-transition`,
+`--short-transition`, `--long-transition-effect`, `--short-transition-effect` and
+`--opening-effect none|zoom_in|zoom_out`. The shared `--music-volume`,
+`--transition` and `--transition-effect` remain and act as the compatibility
+fallback for both outputs when the per-output flag is omitted.
+
+## Visual verification is optional evidence, never a render failure
+
+The first/middle/final verification frames are decoded from the finished,
+FFprobe-validated MP4 and are internal quality evidence only. They are now
+sampled from bounded timestamps: every request is clamped strictly inside the
+real video duration using a margin of two frame periods (at least `40 ms`) taken
+from the actual frame rate, and a failed extraction is retried at
+`duration - 2·margin`, `duration - 3·margin`, `duration - 4·margin` — never at or
+beyond EOF, never endlessly. A PNG counts as valid only when it exists, is
+non-empty and is structurally decodable (signature, `IHDR` with non-zero
+dimensions, `IEND` present); zero-byte or truncated files are removed and
+retried.
+
+Each frame logs exactly one concise line, for example
+`Visual verification final: requested=80.792000 · fallback=80.750333 · PNG=PASS
+(1920x1080)` or `Visual verification final: requested=5.990000 · 4 bounded
+attempts · PNG=FAIL (no decodable frame)`.
+
+The result is classified separately from the render:
+`MainVideoResult.verification_status` is `PASS`, `DEGRADED` (some frames),
+`FAIL` (no frame) or `SKIPPED` (no reliably matched words / no subtitles), and a
+cache-reused video reports `CACHED`. A `FAIL` logs
+`Visual verification: PNG=FAIL · 0/3 frames decoded · rendered output retained ·
+overall render status=SUCCESS` and the valid MP4, its clean master, SRT and VTT
+all stay on disk. Previously such a failure was reported as
+`SUBTITLE GENERATION FAILED [first/middle/final visual verification]` and the
+cleanup deleted the completed output — a long real render was thrown away because
+one optional PNG could not be extracted at EOF.
+
+Genuine failures still fail hard and still clean up: subtitle creation errors, an
+invalid subtitle timeline, missing or empty SRT/VTT/canonical-timeline artifacts,
+a failed burn-in pass and any FFprobe validation error keep the strict
+`SUBTITLE GENERATION FAILED […]` classification.
+
+## Soft timeline areas — which source folder plays where
+
+Quality stays a **folder** decision. This feature changes only *which configured
+folder is used at which approximate part of the timeline*. It performs no
+analysis of any kind: no scoring, no motion or quality measurement, no semantic
+classification, no ranking of single clips, no AI/CV. The project order
+(Natural / Alphabetical / Random / Manual, including the Legacy Input Root
+priority and folder alternation) and any randomization inside a source stay
+exactly as they are — the scheduler only re-groups **whole** clips in one O(n)
+pass.
+
+Three roles can be assigned per configured video folder (group `1 · Folders`:
+the **Role** combo plus **Set Role** for the highlighted row; a newly added
+folder receives the role currently selected in the combo):
+
+| Role | Intended for |
+| --- | --- |
+| `1. Start & End` | the beginning **and** the ending of the Long-Form video |
+| `2. Start to Middle` | the earlier/main portion, up to the midpoint target |
+| `3. Middle to End` | the later/main portion, up to the end reserve |
+
+Several folders may share one role; they simply keep their configured order and
+are never weighted against each other.
+
+- **Every boundary is a soft target.** The current clip always completes first
+  and the next role starts at that natural clip boundary, so a `23.7 s` clip
+  satisfies a `20 s` start target. No clip is ever cut, trimmed or split to hit
+  a zone — the tolerance is the clip itself, not a hidden second parameter.
+- **Configurable and persisted** (with backward-compatible defaults): Start Zone
+  Target `20 s`, End Zone Target `20 s` (both meant as ≈10–30 s), Midpoint
+  Target `50 %` — the midpoint is a setting, never hard-coded.
+- **Very short outputs** shrink both reserves proportionally instead of
+  overlapping or failing; the midpoint always stays between them, complete clips
+  and transitions are preserved.
+- **Scarce `1. Start & End` material is shared between both ends**: when the
+  role cannot fill its two reserves, its clips are split according to the
+  configured targets instead of the leading zone consuming everything and the
+  ending losing its role.
+- **A zone is never padded with another role's clips.** When a role runs out,
+  its zone ends at the natural clip boundary and the following role starts
+  there; whatever the zones did not consume keeps its incoming order at the end
+  of the sequence, so folders without a role remain the general reserve they
+  always were and nothing is ever dropped.
+- **Zone targets are positions on the rendered timeline**, therefore clips are
+  measured with the project's canonical `Duration Before Merge` multiplier
+  (`0.70x` default). Clip durations themselves are never modified.
+- **Legacy Input Root** keeps working as the optional legacy source it is and is
+  never forced into the three roles.
+- **YouTube Shorts** draw from `1. Start & End` + `2. Start to Middle` only;
+  `3. Middle to End` is excluded. The checkbox *Allow '3. Middle to End'
+  material in Shorts* opts in and is persisted separately, so the Shorts policy
+  is independent of Long-Form. A Short keeps its historical order and its
+  without-replacement pool cursor — only its source **pool** is restricted, the
+  Shorts pipeline itself is unchanged. If excluding Area 3 would empty the pool,
+  the full pool is used instead.
+- **No role configured = byte-identical behavior.** Without any role (or without
+  a voiceover-driven target) the scheduler is a no-op and the historical
+  sequence is rendered unchanged.
+
+Rendering, FFmpeg command building, encoding/CRF/bitrate/codec, transitions,
+blur, subtitles (ASR/transcription, alignment, timing, styling, animation,
+burn-in), voiceover and music timing/volume/looping/ducking/stream mapping,
+original audio, and intro/outro rendering are untouched: the feature lives
+purely at the clip/source-selection layer.
+
+GUI: group `1 · Folders` — folder rows show `path · role`, the **Role** combo
+and **Set Role** assign it, and the `Timeline Areas` row holds Start Zone /
+Midpoint / End Zone plus the Shorts checkbox. The video-pool status line uses the
+same ordering as the render, so status and Stage 1 never disagree. Diagnostics
+reports the resolved roles, the soft targets, the Shorts policy and how many
+analyzed clips fall into each area.
+
+CLI: `--folder-area FOLDER=AREA` (repeatable; `AREA` accepts `1|2|3`,
+`Start & End`, `2) Start to Middle`, `area_3`, the canonical keys, …),
+`--area-start`, `--area-end`, `--area-midpoint` and `--shorts-allow-area3`.
+
+All five settings persist in the project file, survive older project files
+(missing fields fall back to the documented defaults, unusable or contradictory
+values degrade to "no role" instead of crashing) and are part of the
+render-cache identity (`FINGERPRINT_SCHEMA = 5`), so a different source ordering
+always re-renders instead of reusing a stale entry. One log line per job states
+what really happened, e.g. `Timeline areas (soft targets): 0.0-2.0 s =
+1. Start & End · 2.0-6.8 s = 2. Start to Middle · 6.8-11.5 s = 3. Middle to End
+· 11.5-13.5 s = 1. Start & End · clips per area: 2/2/2 + 0 unassigned ·
+5 clip(s) re-grouped, none cut`, and for the Shorts pool `Timeline areas
+(Shorts): 3. Middle to End excluded → 4 of 6 clip(s) eligible (1. Start & End +
+2. Start to Middle).`
+
+No quality-neutral render optimization was necessary or sufficiently safe, so
+none was added: the scheduler is a single permutation pass over already analyzed
+metadata and changes no render graph, no filter and no encoding parameter.
+
+## Output modes and the script-to-Short mapping
+
+**Output mode** (group `4 · Output`, combo *YouTube Output*) decides which
+outputs a run produces, and nothing else:
+
+| Mode | Result |
+| --- | --- |
+| `Long-Form only` | the existing landscape Long-Form video, **no** Short is planned or rendered |
+| `Shorts only` | only the vertical Shorts — **no** Long-Form directory, file or render |
+| `Long-Form + Shorts` | the existing Long-Form **and** the configured Shorts |
+
+**One voiceover/script unit is one Short** by default: `Script 1 → Short 001`,
+`Script 2 → Short 002`, `Script 3 → Short 003`, each with its own video,
+voiceover, subtitles, transcript, music and output file. A project without
+groups renders exactly as before — same numbering, same file names, same
+render-cache entries.
+
+### Grouping several scripts into ONE Short
+
+Select several rows in the voiceover/script table (Ctrl/Shift + click) and press
+**Group Selected → 1 Short**. The new fourth column *Short* then shows the same
+Short name on every member row (e.g. `003-004 (group)`, highlighted), so the
+mapping is visible before the run. **Ungroup Selected** dissolves a group again
+and every unit becomes its own Short. Nothing forces a group: units you never
+select stay independent.
+
+`Script 1`, `Script 2 + Script 3`, `Script 4` therefore produce three Shorts:
+`001.mp4`, `002-003.mp4`, `004.mp4`.
+
+The **voiceover/script list order is authoritative**: a group always renders its
+members top-down (Script 3 before Script 4, never the reverse), no matter in
+which order the rows were clicked, and groups themselves are ordered by their
+first member. A unit belongs to at most one group; unknown, empty or
+single-member entries in an old or hand-edited project file are ignored instead
+of breaking the run.
+
+A grouped Short is **one real Short, planned as one job** — never two finished
+Shorts concatenated afterwards:
+
+* one media plan and one video timeline for the combined duration,
+* one continuous voiceover timeline: member A, the configured *Pause Between
+  Voiceovers*, member B (a single-unit Short keeps the historical `0.0` pause),
+* **one** subtitle timeline whose timestamps keep accumulating — Script B's
+  captions start at the correct accumulated time and never reset to zero,
+* one music timeline that covers the complete combined duration (looping,
+  trimming, volume and the ending behave exactly as for a normal Short),
+* one final encode → **one MP4** named after all members (`003-004.mp4`) and
+  **one transcript** `003-004.txt` containing Script A followed by Script B,
+* the existing Short intro/outro, ending behaviour, transitions and subtitle
+  styling stay untouched, and the without-replacement Shorts pool reserves the
+  complete combined duration before rendering, so no Short takes material the
+  grouped one still needs.
+
+No ASR, alignment, styling, animation, transition, music or FFmpeg code was
+changed for this: the group is handed to the existing multi-voiceover pipeline,
+which already concatenates units on one timeline with cumulative offsets.
+
+### Own music per Short
+
+**Short Music for Selected …** gives exactly one Short its own track (a grouped
+Short owns one track for its whole timeline); **Clear Short Music** removes it
+and the Short uses the shared *Background Music (Shorts)* selection again. Every
+other Short is unaffected. The strict separation stays intact: a Short without a
+Shorts track remains silent and never inherits the Long-Form music.
+
+CLI: `--short-group VOICEOVER+VOICEOVER[+…]` (repeatable),
+`--short-music-for VOICEOVER=MUSIC` and
+`--short-music-volume-for VOICEOVER=PERCENT` (both repeatable, keyed by the
+Short's first voiceover). Project file: `short_script_groups`,
+`short_music_overrides`, `short_music_volume_overrides` — all three default to
+empty, so older project files load unchanged.
+
+The Short → script mapping is reported before and during a run: the diagnostics
+entry **YouTube Shorts Mapping** (`3 Short(s) from 4 voiceover unit(s) ·
+grouped: Short 002-003 = voice_2.wav + voice_3.wav · own music: voice_1.wav →
+a.mp3`) and the log line `YouTube Shorts script grouping: …`. Grouping never
+touches the Long-Form pipeline: it receives every voiceover unit exactly as
+before, in every mode.
+
+No render optimization was made because no sufficiently safe quality-neutral
+improvement was identified: grouping only changes which units one existing job
+receives, so no render graph, filter, timing rule or encoding parameter changed.
+## Speech language: Deutsch / English
+
+One language drives the complete speech/subtitle pipeline. **Speech Language**
+sits in the *3 · Subtitles* group directly below *Output Mode* and offers exactly
+two choices: **Deutsch** (the default) and **English**. The selection is not a
+label — it is forced onto every stage that touches speech:
+
+* **Local ASR** — faster-whisper transcribes with `language="de"` or
+  `language="en"` instead of detecting the language itself, so an English
+  voiceover is never analysed with German assumptions (punctuation, apostrophes,
+  contractions, capitalisation, word boundaries).
+* **Word alignment and subtitles** — the supplied script stays authoritative and
+  the recognised words only supply timing. Matching, segmentation, SRT/VTT and
+  the burned-in captions run through the same canonical text pipeline for both
+  languages; there is no second English pipeline.
+* **YouTube metadata** — title/description language detection receives the same
+  selection.
+* **Caches** — the language is part of the ASR/alignment identity and of the
+  Stage-1 render fingerprint, so switching between Deutsch and English analyses
+  the audio again instead of replaying the other language's result. Unrelated
+  caches stay valid, and the stored value for German is unchanged, so existing
+  German projects keep their cache entries and their exact output.
+
+CLI: `--language de|en` (default `de`). The historical spellings `German`,
+`English` and `Auto` keep working — `Auto` lets Whisper detect the language.
+Project file: `subtitle_language`, default `German`; a project saved by an older
+version loads as German unchanged.
+
+The diagnostics entry **Subtitle Language** reports the whole contract in one
+line — `Subtitle Language: English · ASR Language: en (forced onto
+faster-whisper) · Alignment Reference: supplied script` — and every run logs
+`Speech language: English · ASR language: en (forced) · Alignment reference:
+supplied script · compatibility 100.0%`.
+
+### Fail closed instead of publishing guesswork
+
+When an explicitly selected language other than the historical default
+contradicts the audio — almost nothing of the script can be located in the
+recognised speech, measured compatibility below 20 % — the render stops with
+`SUBTITLE GENERATION FAILED [language / script alignment]`, names the selected
+language, and produces no MP4, SRT or VTT at all, instead of writing captions
+whose timestamps are pure interpolation. **Allow alignment warnings** (CLI:
+`--allow-alignment-warning`) is the documented escape hatch: it renders anyway,
+keeps the complete script captioned and still reports the measured mismatch.
+German and `Auto` keep the long-standing behaviour (warn, then render), so
+existing projects stay byte- and stage-compatible.
+
+Long-Form, individual Shorts and grouped Shorts all follow the same rule; a
+grouped Short is one continuous voiceover and subtitle timeline whose every
+member is transcribed, aligned and captioned in the selected language.

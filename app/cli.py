@@ -6,10 +6,38 @@ from pathlib import Path
 from .video_merger.discovery import discover_videos
 from .video_merger.engine import VideoMergerEngine
 from .video_merger.main_project import MainProjectEngine
-from .video_merger.models import ExportSettings
+from .video_merger.models import (
+    DEFAULT_TRANSITION_TYPE,
+    LONG_FORM_INTRO_SECONDS,
+    LONG_FORM_MUSIC_VOLUME,
+    LONG_FORM_OUTRO_SECONDS,
+    LONG_FORM_TRANSITION_DURATION,
+    MAX_MUSIC_VOLUME_PERCENT,
+    MUSIC_VOLUME_PERCENT,
+    SHORT_INTRO_SECONDS,
+    SHORT_OUTRO_SECONDS,
+    SHORTS_MUSIC_VOLUME,
+    SHORTS_TRANSITION_DURATION,
+    TIMELINE_AREA_END_SECONDS,
+    TIMELINE_AREA_MIDPOINT_PERCENT,
+    TIMELINE_AREA_START_SECONDS,
+    TRANSITION_DURATION_LEGACY_DEFAULT,
+    ExportSettings,
+    normalize_subtitle_language,
+)
+from .video_merger.opening_effects import (
+    OPENING_EFFECT_NONE,
+    OPENING_EFFECTS,
+)
 from .video_merger.output_manager import make_output_path
 from .video_merger.paths import locate_ffmpeg
 from .video_merger.project_order import GeneratedOutputStore, ProjectOrderStore
+from .video_merger.subtitles import (
+    DEFAULT_LONG_ANIMATION,
+    DEFAULT_SHORT_ANIMATION,
+    accepted_animation_values,
+)
+from .video_merger.timeline_areas import TIMELINE_AREA_LABELS, normalize_timeline_area
 from .video_merger.video_pool import order_media_for_video_order
 from .video_merger.youtube_outputs import (
     EXPORT_MODE_COMBINED,
@@ -27,6 +55,37 @@ def main() -> int:
         "--source-folder", action="append", default=[], type=Path,
         help="configured video source folder; repeat for multiple folders (overrides --input)",
     )
+    parser.add_argument(
+        "--folder-area", action="append", default=[], metavar="FOLDER=AREA",
+        help=(
+            "soft timeline area role of one configured folder, e.g. "
+            "'/clips/best=1'. 1 = Start & End, 2 = Start to Middle, "
+            "3 = Middle to End. Repeat for several folders; a folder without a "
+            "role keeps the historical order. Roles never cut a clip."
+        ),
+    )
+    parser.add_argument(
+        "--area-start", type=float, default=TIMELINE_AREA_START_SECONDS,
+        help="soft target in seconds for the leading '1. Start & End' zone (default 20)",
+    )
+    parser.add_argument(
+        "--area-end", type=float, default=TIMELINE_AREA_END_SECONDS,
+        help="soft target in seconds for the trailing '1. Start & End' zone (default 20)",
+    )
+    parser.add_argument(
+        "--area-midpoint", type=float, default=TIMELINE_AREA_MIDPOINT_PERCENT,
+        help=(
+            "soft midpoint in percent of the output duration where '2. Start to "
+            "Middle' hands over to '3. Middle to End' (default 50)"
+        ),
+    )
+    parser.add_argument(
+        "--shorts-allow-area3", action="store_true",
+        help=(
+            "let YouTube Shorts also use '3. Middle to End' material; by default "
+            "Shorts draw from Area 1 + Area 2 only"
+        ),
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument(
         "--export-mode", choices=[EXPORT_MODE_LONG_FORM, EXPORT_MODE_SHORTS, EXPORT_MODE_COMBINED],
@@ -35,10 +94,50 @@ def main() -> int:
     )
     parser.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
     parser.add_argument("--resolution", default="Auto")
-    parser.add_argument("--transition", type=float, default=1.0, help="transition duration in seconds")
     parser.add_argument(
-        "--transition-effect", default="cross_dissolve",
+        "--transition", type=float, default=None,
+        help=(
+            f"shared transition duration in seconds for the basic/Main Video merge "
+            f"(default {TRANSITION_DURATION_LEGACY_DEFAULT}). An explicit value is also the "
+            "migration fallback for both YouTube outputs unless --long-transition / "
+            "--short-transition override it"
+        ),
+    )
+    parser.add_argument(
+        "--transition-effect", default=DEFAULT_TRANSITION_TYPE,
         choices=["smooth_blur", "cross_dissolve", "film_dissolve", "additive_dissolve"],
+    )
+    # Long-Form and Shorts own their transition completely: changing one output
+    # never changes the other. Both default to Cross Dissolve / 2.0 s.
+    parser.add_argument(
+        "--long-transition-effect", default=None,
+        choices=["smooth_blur", "cross_dissolve", "film_dissolve", "additive_dissolve"],
+        help=(
+            f"Long-Form transition family (default {DEFAULT_TRANSITION_TYPE}); "
+            "independent from --short-transition-effect"
+        ),
+    )
+    parser.add_argument(
+        "--long-transition", type=float, default=None,
+        help=(
+            f"Long-Form transition duration in seconds (default {LONG_FORM_TRANSITION_DURATION}); "
+            "independent from --short-transition"
+        ),
+    )
+    parser.add_argument(
+        "--short-transition-effect", default=None,
+        choices=["smooth_blur", "cross_dissolve", "film_dissolve", "additive_dissolve"],
+        help=(
+            f"YouTube Shorts transition family (default {DEFAULT_TRANSITION_TYPE}); "
+            "independent from --long-transition-effect"
+        ),
+    )
+    parser.add_argument(
+        "--short-transition", type=float, default=None,
+        help=(
+            f"YouTube Shorts transition duration in seconds (default {SHORTS_TRANSITION_DURATION}); "
+            "independent from --long-transition"
+        ),
     )
     parser.add_argument(
         "--transition-ease", default="ease_in_out",
@@ -74,10 +173,72 @@ def main() -> int:
         default="natural",
         help="Natural, Alphabetical, Random, or explicit persisted Manual order",
     )
-    parser.add_argument("--music", default="")
+    parser.add_argument(
+        "--music", default="",
+        help="background music for the Long-Form / basic Main Video (never used in Shorts)",
+    )
+    parser.add_argument(
+        "--short-music", default="",
+        help="separate background music used only for the generated YouTube Shorts",
+    )
     parser.add_argument("--original-audio", choices=["mute", "low", "original"], default="mute")
-    parser.add_argument("--music-volume", type=int, default=44)
-    parser.add_argument("--pause", type=float, default=1.0)
+    parser.add_argument(
+        "--music-volume", type=int, default=MUSIC_VOLUME_PERCENT,
+        help=(
+            f"shared background music volume in percent (default {MUSIC_VOLUME_PERCENT}). It is the "
+            "migration fallback for both YouTube outputs unless --long-music-volume / "
+            "--short-music-volume override it"
+        ),
+    )
+    parser.add_argument(
+        "--long-music-volume", type=int, default=None,
+        help=(
+            f"Long-Form background music volume in percent (default {LONG_FORM_MUSIC_VOLUME}); "
+            "independent from --short-music-volume"
+        ),
+    )
+    parser.add_argument(
+        "--short-music-volume", type=int, default=None,
+        help=(
+            f"YouTube Shorts background music volume in percent (default {SHORTS_MUSIC_VOLUME}); "
+            "independent from --long-music-volume"
+        ),
+    )
+    parser.add_argument(
+        "--short-group", action="append", default=[], metavar="VOICEOVER+VOICEOVER",
+        help=(
+            "render the listed voiceovers/scripts as ONE Short, e.g. "
+            "'/vo/vo3.wav+/vo/vo4.wav'. Repeat for several groups. Members are "
+            "always rendered in voiceover-list order (the first list member "
+            "plays first), the group becomes one video, voiceover, subtitle and "
+            "music timeline, one MP4 named after all members (003-004.mp4) and "
+            "one transcript. Without this flag every voiceover stays its own Short."
+        ),
+    )
+    parser.add_argument(
+        "--short-music-for", action="append", default=[], metavar="VOICEOVER=MUSIC",
+        help=(
+            "own background track for exactly one Short, keyed by its first "
+            "voiceover file, e.g. '/vo/vo1.wav=/music/a.mp3'. Repeat for several "
+            "Shorts; every other Short keeps --short-music. A grouped Short owns "
+            "one track for its complete timeline. The Long-Form track is never used."
+        ),
+    )
+    parser.add_argument(
+        "--short-music-volume-for", action="append", default=[], metavar="VOICEOVER=PERCENT",
+        help=(
+            "own music volume in percent for exactly one Short, keyed like "
+            "--short-music-for. Every other Short keeps --short-music-volume."
+        ),
+    )
+    parser.add_argument(
+        "--pause", "--end-padding", dest="pause", type=float, default=None,
+        help=(
+            "legacy Main Video end padding. It is the same timeline section as "
+            "--long-outro, so the visual outro is never applied twice; when "
+            f"omitted, --long-outro (default {LONG_FORM_OUTRO_SECONDS} s) is used"
+        ),
+    )
     parser.add_argument(
         "--short-video", choices=["hold", "loop"], default="hold",
         help="hold final rendered frame or loop the complete active ordered timeline",
@@ -108,26 +269,7 @@ def main() -> int:
         "--max-stretch", type=float, default=10.0,
         help="maximum stretch of the final clip in percent (default 10)",
     )
-    # Optional silent Quote/Flyer artwork between Intro and Main.
-    parser.add_argument("--quote", action="store_true", help="enable the Quote / Flyer section")
-    parser.add_argument(
-        "--quote-artwork", default="",
-        help="Quote/Flyer artwork (.png, .jpg, .jpeg, .webp or .pdf)",
-    )
-    parser.add_argument(
-        "--quote-pdf-page", "--quote-page", type=int, default=1,
-        help="one-based PDF page for --quote-artwork (default: 1)",
-    )
-    parser.add_argument(
-        "--quote-fit-mode", "--quote-fit", dest="quote_fit_mode",
-        choices=["fit", "fill", "crop"], default="fit",
-        help="artwork framing mode; Fit preserves the complete artwork (default)",
-    )
-    parser.add_argument(
-        "--quote-duration", type=float, default=4.0,
-        help="Quote/Flyer duration in seconds (0.5-5.0; default 4.0)",
-    )
-    # Independent silent Stage-2 Add Image (never Quote/Flyer/PDF).
+    # Optional silent Stage-2 Add Image section.
     parser.add_argument(
         "--image-enabled", "--add-image-enabled", action="store_true",
         help="enable Add Image explicitly (normally implied by an image path)",
@@ -178,9 +320,22 @@ def main() -> int:
         choices=["with_subtitles", "without_subtitles", "with_and_without_subtitles", "burned_and_sidecars", "burned_only"],
         help="With Subtitles (default), Without Subtitles, or With and Without Subtitles",
     )
-    parser.add_argument("--language", choices=["German", "English", "Auto"], default="German")
+    parser.add_argument(
+        "--language", choices=["de", "en", "German", "English", "Auto"], default="de",
+        help="Speech/subtitle language: de (Deutsch, default) or en (English). The same "
+             "value is forced onto the local ASR, the script alignment and the metadata. "
+             "'Auto' lets Whisper detect the language; the historical spellings "
+             "'German'/'English' keep working.",
+    )
     parser.add_argument("--subtitle-style", default="long_1")
-    parser.add_argument("--subtitle-animation", choices=["type_reveal", "color_change", "word_highlight", "outline_highlight", "static_phrase"], default="static_phrase")
+    parser.add_argument(
+        "--subtitle-animation", choices=list(accepted_animation_values("long")),
+        default=DEFAULT_LONG_ANIMATION,
+        help=(
+            "Long-Form caption animation; deprecated values (outline_highlight) "
+            "are accepted and migrated to a clean glyph-aligned animation"
+        ),
+    )
     parser.add_argument("--subtitle-font", choices=["eveleth_clean", "modern_sans_bold", "clean_sans"], default="modern_sans_bold")
     parser.add_argument(
         "--subtitle-position", choices=["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"],
@@ -188,11 +343,46 @@ def main() -> int:
     )
     parser.add_argument("--subtitle-debug-overlay", action="store_true")
     parser.add_argument("--short-subtitle-style", default="short_1")
-    parser.add_argument("--short-subtitle-animation", choices=["type_reveal", "color_change", "word_highlight", "outline_highlight", "static_phrase"], default="word_highlight")
+    parser.add_argument(
+        "--short-subtitle-animation", choices=list(accepted_animation_values("short")),
+        default=DEFAULT_SHORT_ANIMATION,
+        help=(
+            "Shorts caption animation. Word Highlight is no longer available for "
+            "Shorts and Outline Highlight is deprecated; both are accepted here "
+            "and migrated to a safe animation instead of failing the run"
+        ),
+    )
     parser.add_argument("--short-subtitle-font", choices=["eveleth_clean", "modern_sans_bold", "clean_sans"], default="modern_sans_bold")
     parser.add_argument(
         "--short-subtitle-position", choices=["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"],
         default="Bottom Center",
+    )
+    parser.add_argument(
+        "--long-intro", type=float, default=LONG_FORM_INTRO_SECONDS,
+        help=f"Long-Form visual-only intro before the voiceover in seconds (default {LONG_FORM_INTRO_SECONDS}; 0 disables it)",
+    )
+    parser.add_argument(
+        "--long-outro", type=float, default=LONG_FORM_OUTRO_SECONDS,
+        help=(
+            f"Long-Form visual-only outro after the voiceover in seconds (default {LONG_FORM_OUTRO_SECONDS}; "
+            "0 disables it). This is the Main Video end padding - it is never added twice"
+        ),
+    )
+    parser.add_argument(
+        "--short-intro", type=float, default=SHORT_INTRO_SECONDS,
+        help=f"Short visual-only intro before the voiceover in seconds (default {SHORT_INTRO_SECONDS}; 0 disables it)",
+    )
+    parser.add_argument(
+        "--short-outro", type=float, default=SHORT_OUTRO_SECONDS,
+        help=(
+            f"Short visual-only outro after the voiceover in seconds (default {SHORT_OUTRO_SECONDS}; 0 disables it). "
+            "It replaces the historical fixed 0.7 s Short ending"
+        ),
+    )
+    parser.add_argument(
+        "--opening-effect", choices=[key for key, _label in OPENING_EFFECTS],
+        default=OPENING_EFFECT_NONE,
+        help="subtle Main Video opening effect; it never changes timeline, audio or subtitle timing",
     )
     parser.add_argument("--allow-alignment-warning", action="store_true")
     parser.add_argument("--watermark", default="")
@@ -212,14 +402,99 @@ def main() -> int:
     if script_mode == "single":
         script_paths = [global_script] if global_script else []
     subtitle_position = args.subtitle_position or ("Center" if args.aspect == "16:9" else "Bottom Center")
+    # Output-specific transitions and music volumes. An omitted per-output flag
+    # falls back to an explicitly given shared flag, and otherwise to the new
+    # per-output default - exactly the migration rule the model resolvers use,
+    # so CLI, GUI and project files behave identically. The shared transition
+    # duration keeps its historical default for the basic/Main Video merge.
+    shared_transition_duration = (
+        TRANSITION_DURATION_LEGACY_DEFAULT if args.transition is None else args.transition
+    )
+    long_transition_duration = (
+        args.long_transition
+        if args.long_transition is not None
+        else (args.transition if args.transition is not None else LONG_FORM_TRANSITION_DURATION)
+    )
+    short_transition_duration = (
+        args.short_transition
+        if args.short_transition is not None
+        else (args.transition if args.transition is not None else SHORTS_TRANSITION_DURATION)
+    )
+    long_music_volume = (
+        args.long_music_volume if args.long_music_volume is not None else args.music_volume
+    )
+    short_music_volume = (
+        args.short_music_volume if args.short_music_volume is not None else args.music_volume
+    )
     configured_sources = [str(Path(value).expanduser().resolve()) for value in args.source_folder]
+    folder_areas: dict[str, str] = {}
+    for entry in args.folder_area:
+        folder, separator, role = str(entry).partition("=")
+        area = normalize_timeline_area(role)
+        if not separator or not folder.strip() or not area:
+            parser.error(
+                "--folder-area expects FOLDER=AREA with AREA one of: "
+                + ", ".join(f"{key} = {label}" for key, label in TIMELINE_AREA_LABELS.items())
+            )
+        folder_areas[str(Path(folder).expanduser().resolve())] = area
+    # Phase 25 script-to-Short mapping. Empty means no group and no per-Short
+    # music, so the historical one-voiceover-per-Short behaviour stays intact.
+    short_groups: list[list[str]] = []
+    for entry in args.short_group:
+        members = [
+            str(Path(part).expanduser().resolve())
+            for part in str(entry).split("+") if part.strip()
+        ]
+        if len(members) < 2:
+            parser.error(
+                "--short-group expects VOICEOVER+VOICEOVER[+VOICEOVER...]: at least "
+                "two voiceover files render together as one Short"
+            )
+        short_groups.append(members)
+    short_music_overrides: dict[str, str] = {}
+    for entry in args.short_music_for:
+        anchor, separator, track = str(entry).partition("=")
+        if not separator or not anchor.strip() or not track.strip():
+            parser.error("--short-music-for expects VOICEOVER=MUSIC")
+        short_music_overrides[str(Path(anchor).expanduser().resolve())] = str(
+            Path(track).expanduser().resolve()
+        )
+    short_music_volume_overrides: dict[str, int] = {}
+    for entry in args.short_music_volume_for:
+        anchor, separator, percent = str(entry).partition("=")
+        if not separator or not anchor.strip():
+            parser.error("--short-music-volume-for expects VOICEOVER=PERCENT")
+        try:
+            volume = int(str(percent).strip())
+        except ValueError:
+            parser.error(
+                f"--short-music-volume-for expects a percent integer (0-{MAX_MUSIC_VOLUME_PERCENT}), "
+                f"not {percent!r}"
+            )
+        short_music_volume_overrides[str(Path(anchor).expanduser().resolve())] = max(
+            0, min(MAX_MUSIC_VOLUME_PERCENT, volume)
+        )
     settings = ExportSettings(
         export_mode=normalize_export_mode(args.export_mode),
         aspect=args.aspect, resolution=args.resolution,
         source_folders=configured_sources,
+        # Soft timeline-area source ordering. Empty means no role is configured
+        # and the historical project order stays byte-identical.
+        source_folder_areas=folder_areas,
+        timeline_area_start_seconds=args.area_start,
+        timeline_area_end_seconds=args.area_end,
+        timeline_area_midpoint_percent=args.area_midpoint,
+        shorts_allow_area_middle_end=args.shorts_allow_area3,
         video_order_mode=args.video_order,
         transition_type=args.transition_effect, transition_ease=args.transition_ease,
-        transition_duration=args.transition, encoding=args.encoding,
+        transition_duration=shared_transition_duration, encoding=args.encoding,
+        # Independent per-output transition settings (Cross Dissolve / 2.0 s by
+        # default for both). Combined mode and One-Click use the Long-Form pair
+        # for the Long-Form job and the Shorts pair for every Short.
+        long_form_transition_type=args.long_transition_effect or args.transition_effect,
+        long_form_transition_duration=long_transition_duration,
+        shorts_transition_type=args.short_transition_effect or args.transition_effect,
+        shorts_transition_duration=short_transition_duration,
         crf=args.crf, quality_preset=args.quality, output_preset=args.output_preset,
         normalize_audio=not args.no_normalize,
         workflow_stage=args.stage, voiceover_path=voiceover_paths[0] if voiceover_paths else "",
@@ -228,8 +503,34 @@ def main() -> int:
         global_script_path=global_script,
         voiceover_pause=max(0.0, min(10.0, args.voiceover_pause)),
         voiceover_order_mode=args.voiceover_order,
-        music_path=args.music, original_audio_mode=args.original_audio,
-        music_volume=args.music_volume, final_pause=args.pause,
+        music_path=args.music, short_music_path=args.short_music,
+        short_script_groups=short_groups,
+        short_music_overrides=short_music_overrides,
+        short_music_volume_overrides=short_music_volume_overrides,
+        # Explicit visual-only sections. The Long-Form outro is the canonical
+        # Main Video end padding (final_pause), so the tail exists exactly once.
+        long_form_intro_seconds=args.long_intro,
+        # ``--pause``/``--end-padding`` is the legacy alias of the Long-Form
+        # outro, so an explicit value drives BOTH names; otherwise the orchestrated
+        # Long-Form job would derive its tail from the outro default alone.
+        long_form_outro_seconds=(
+            args.pause if args.pause is not None else args.long_outro
+        ),
+        short_intro_seconds=args.short_intro,
+        short_outro_seconds=args.short_outro,
+        visual_intro_seconds=args.long_intro,
+        final_pause=args.pause if args.pause is not None else args.long_outro,
+        opening_effect=args.opening_effect,
+        # Random order reserves its first three clips from this root.
+        legacy_input_root=(
+            str(Path(args.input).expanduser().resolve()) if args.input else ""
+        ),
+        original_audio_mode=args.original_audio,
+        music_volume=args.music_volume,
+        # Independent per-output music volumes (44 % by default for both). The
+        # music itself always plays from 0.000 s to the final video frame.
+        long_form_music_volume=long_music_volume,
+        shorts_music_volume=short_music_volume,
         short_video_mode=args.short_video,
         duration_fit_mode=args.duration_fit,
         max_stretch_percent=max(1.0, min(50.0, args.max_stretch)),
@@ -238,12 +539,6 @@ def main() -> int:
         duration_after_merge_enabled=bool(args.enable_duration_after_merge),
         # Legacy field is retained only for old cache/API compatibility.
         video_speed=1.0,
-        quote_enabled=args.quote or bool(args.quote_artwork),
-        quote_input_mode="artwork",
-        quote_artwork_path=args.quote_artwork,
-        quote_pdf_page=args.quote_pdf_page,
-        quote_artwork_fit_mode=args.quote_fit_mode,
-        quote_duration=max(0.5, min(5.0, args.quote_duration)),
         image_enabled=bool(args.image_path) or args.image_enabled, image_path=args.image_path,
         image_position=args.image_position,
         image_duration=max(0.5, min(60.0, args.image_duration)),
@@ -252,7 +547,8 @@ def main() -> int:
         image_fit_mode=args.image_fit_mode, image_zoom=max(100, min(300, args.image_zoom)),
         image_filter=args.image_filter,
         subtitle_output_mode=args.subtitle_output_mode,
-        subtitle_enabled=args.subtitles, subtitle_language=args.language,
+        subtitle_enabled=args.subtitles,
+        subtitle_language=normalize_subtitle_language(args.language),
         subtitle_style=args.subtitle_style, subtitle_animation=args.subtitle_animation,
         subtitle_font=args.subtitle_font, subtitle_position=subtitle_position,
         short_subtitle_style=args.short_subtitle_style,
@@ -280,7 +576,9 @@ def main() -> int:
             order_store=ProjectOrderStore(), excluded_paths=output_store.paths()
         )
         media = engine.analyze(inputs, print)
-        media = order_media_for_video_order(media, settings.video_order_mode)
+        media = order_media_for_video_order(
+            media, settings.video_order_mode, legacy_root=settings.legacy_input_root,
+        )
         if args.stage == "main":
             result = MainProjectEngine(engine).create_youtube_exports(
                 media, settings, args.output, log=print, order_already_applied=True,

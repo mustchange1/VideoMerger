@@ -82,6 +82,38 @@ def effective_music_tracks(settings) -> list[dict]:
     return []
 
 
+def effective_short_music_tracks(settings, anchor: object = None) -> list[dict]:
+    """Return the authoritative ordered SHORTS sequence for one settings object.
+
+    Strictly separate from :func:`effective_music_tracks`: the Long-Form
+    sequence never leaks into a Short. Resolution order mirrors the
+    historical single-track Shorts behavior exactly:
+
+    1. A per-Short override (``short_music_overrides`` keyed by the Short's
+       anchor voiceover) wins and is a one-track sequence.
+    2. A populated ``short_music_tracks`` list (Phase 27 multi-track).
+    3. The legacy single ``short_music_path`` migrates to a one-item sequence.
+    4. No Shorts music at all (an empty list — a Short without its own track
+       stays silent and never inherits the Long-Form track).
+    """
+    override = ""
+    if anchor is not None:
+        try:
+            lookup = getattr(settings, "short_music_overrides", None) or {}
+            override = str(lookup.get(str(anchor), "") or "").strip()
+        except AttributeError:
+            override = ""
+    if override:
+        return [{"path": override, "trim_start": 0.0, "trim_duration": 0.0}]
+    tracks = normalize_music_tracks(getattr(settings, "short_music_tracks", None))
+    if tracks:
+        return tracks
+    legacy = str(getattr(settings, "short_music_path", "") or "").strip()
+    if legacy:
+        return [{"path": legacy, "trim_start": 0.0, "trim_duration": 0.0}]
+    return []
+
+
 def music_track_paths(settings) -> list[Path]:
     """Return the ordered resolved file paths of the effective sequence."""
     return [

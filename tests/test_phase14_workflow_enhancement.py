@@ -94,10 +94,17 @@ def test_independent_merge_duration_defaults_and_legacy_migration(tmp_path):
     assert duration_after_merge_value(defaults) == 1.0
 
     path = tmp_path / "settings.json"
-    path.write_text(json.dumps({"video_speed": 0.55, "quote_duration": 2.0}), encoding="utf-8")
+    # A project saved by an older release may still contain keys of removed
+    # features (here: the former Quote/Flyer section). Loading must ignore them
+    # instead of failing, while every surviving override is still applied.
+    path.write_text(
+        json.dumps({"video_speed": 0.55, "quote_duration": 2.0, "quote_enabled": True}),
+        encoding="utf-8",
+    )
     migrated = SettingsStore(path).load()
     assert migrated.duration_before_merge == 0.55
-    assert migrated.quote_duration == 2.0  # explicit existing override survives
+    assert not hasattr(migrated, "quote_duration")
+    assert not hasattr(migrated, "quote_enabled")
 
     selected = ExportSettings(
         source_folders=[str(tmp_path / "A"), str(tmp_path / "B")],

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,12 +13,18 @@ from .image_insertion import (
     normalize_image_fit_mode,
 )
 from .models import ExportSettings, MediaSequence, ResolvedExport
+from .opening_effects import (
+    normalize_opening_effect,
+    opening_effect_filter,
+    opening_effect_window,
+)
 from .paths import project_root
 from .subtitle_modes import (
     SUBTITLE_OUTPUT_WITHOUT,
     normalize_subtitle_output_mode,
 )
 from .transition_effects import normalize_transition, transition_blur_sigma, xfade_expression
+from .youtube_outputs import effective_intro_seconds
 
 
 def _number(value: float) -> str:
@@ -32,6 +39,45 @@ def _percent_gain(value: int) -> float:
     # Slider is presented as percent; the filter receives a proper linear gain
     # (20*log10(gain) dB). Zero remains true silence.
     return max(0.0, min(1.5, float(value) / 100.0))
+
+
+# Upper bound for the audio a loop window may buffer (15 s ≈ 5.8 MB stereo
+# float). A long voiceover must never be buffered completely just to cover a
+# short visual outro.
+MUSIC_LOOP_WINDOW_SECONDS = 15.0
+AUDIO_GRAPH_SAMPLE_RATE = 48000
+
+
+def music_outro_loop(program: float, target: float) -> str:
+    """Repeat the tail of the trimmed music so it covers the visual outro.
+
+    Background music has to be audible from ``0.000 s`` to the final video frame,
+    i.e. also through the visual outro behind the spoken program. The stream
+    looped music *input* is deliberately only asked for the spoken program: with
+    FFmpeg 6.0 a ``-stream_loop -1`` source that must feed a branch right up to
+    the output end deadlocks at 0 % CPU (measured: ``atrim=duration=<target>``
+    stalls, ``atrim=duration=<target-0.1>`` finishes in 0.4 s, both from the same
+    0.6 s track). The outro is therefore produced inside the filter graph by
+    looping the tail window of the already trimmed music.
+
+    The window starts exactly where the program ends, so the outro continues the
+    track seamlessly instead of jumping back to its beginning; the bounded
+    ``loop`` count plus the caller's final ``atrim`` cut it exactly at the video
+    end. Returns an empty string when there is no outro to cover, which keeps the
+    historical chain byte-identical.
+    """
+    needed = float(target) - float(program)
+    if needed <= 1e-6 or program <= 1e-6:
+        return ""
+    window = min(float(program), max(needed, 1.0), MUSIC_LOOP_WINDOW_SECONDS)
+    # ``round`` already returns an int for a float argument in Python 3.
+    size = max(1, round(window * AUDIO_GRAPH_SAMPLE_RATE))
+    start = max(0, round((float(program) - window) * AUDIO_GRAPH_SAMPLE_RATE))
+    loops = max(1, math.ceil(needed / window - 1e-9))
+    return (
+        f",aloop=loop={loops}:size={size}:start={start},"
+        f"atrim=duration={_number(target)},asetpts=PTS-STARTPTS"
+    )
 
 
 def _filter_path(value: str) -> str:
@@ -154,9 +200,8 @@ class FFmpegCommandBuilder:
         lines: list[str] = []
         video_labels: list[str] = []
         audio_labels: list[str] = []
-        # Every Stage-2 section is a real media input. Uploaded Quote/Flyer
-        # artwork and Add Image are looped at input level; no synthetic
-        # text-card input exists.
+        # Every Stage-2 section is a real media input. Add Image is looped at
+        # input level; no synthetic text-card input exists.
         real_input = list(range(len(media)))
         next_input = len(media)
         voice_indices: list[int] = []
@@ -185,9 +230,9 @@ class FFmpegCommandBuilder:
             base = f"base{index}"
             visual_base = base
             if item.is_image_insertion:
-                # Add Image is a real looped Stage-2 input, not a text card
-                # and not Quote/Flyer. It is deliberately silent: the
-                # audio branch below creates only a matching null source.
+                # Add Image is a real looped Stage-2 input, not a text card.
+                # It is deliberately silent: the audio branch below creates
+                # only a matching null source.
                 source = f"[{real_input[index]}:v:0]"
                 pre = f"pre{index}"
                 lines.append(
@@ -232,53 +277,6 @@ class FFmpegCommandBuilder:
                 if image_filter:
                     framing += "," + image_filter
                 lines.append(f"[{pre}]{framing},setsar=1,format=yuv420p[{base}]")
-            elif item.is_quote_artwork:
-                # Uploaded artwork is looped at input level and trimmed to the
-                # exact Quote duration. It never receives text overlays, audio,
-                # subtitles, voiceover, or music. Every fit mode preserves the
-                # source aspect ratio; only the intentional crop modes remove
-                # pixels, never non-uniformly stretch the artwork.
-                source = f"[{real_input[index]}:v:0]"
-                pre = f"pre{index}"
-                lines.append(
-                    f"{source}fps={resolved.fps_expr}:round=near,"
-                    f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
-                )
-                configured_fit = str(getattr(settings, "quote_artwork_fit_mode", "") or "").strip().casefold()
-                item_fit = str(getattr(item, "quote_fit_mode", "fit") or "fit").casefold()
-                # MainProjectEngine stamps the setting onto the item. The
-                # item still wins for direct graph callers that construct an
-                # explicit non-default artwork occurrence.
-                fit_mode = item_fit if item_fit in {"fill", "crop"} else configured_fit
-                if fit_mode not in {"fit", "fill", "crop"}:
-                    fit_mode = "fit"
-                if fit_mode == "fit":
-                    # Contain: the complete artwork remains visible and the
-                    # unused canvas is deliberately letterboxed black.
-                    lines.append(
-                        f"[{pre}]scale=w={width}:h={height}:"
-                        f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
-                        f"pad=w={width}:h={height}:x=(ow-iw)/2:y=(oh-ih)/2:color=black,"
-                        f"setsar=1,format=yuv420p[{base}]"
-                    )
-                elif fit_mode == "fill":
-                    # Cover: fill the output and center-crop the excess.
-                    lines.append(
-                        f"[{pre}]scale=w={width}:h={height}:"
-                        f"force_original_aspect_ratio=increase:force_divisible_by=2:flags=lanczos,"
-                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,setsar=1,format=yuv420p[{base}]"
-                    )
-                else:
-                    # Crop the source to the target aspect first, then scale
-                    # that already matching rectangle. Escaped commas are
-                    # required because these are FFmpeg expression commas,
-                    # not filter-option separators.
-                    crop_w = f"min(iw\\,ih*{width}/{height})"
-                    crop_h = f"min(ih\\,iw*{height}/{width})"
-                    lines.append(
-                        f"[{pre}]crop=w={crop_w}:h={crop_h}:x=(iw-ow)/2:y=(ih-oh)/2,"
-                        f"scale=w={width}:h={height}:flags=lanczos,setsar=1,format=yuv420p[{base}]"
-                    )
             else:
                 original_duration = item.source_duration or item.duration
                 # 1.3.0 playback_rate: global Main Video speed and/or Smart
@@ -425,7 +423,6 @@ class FFmpegCommandBuilder:
             if (
                 item.audio.present
                 and real_input[index] is not None
-                and not item.is_quote_artwork
                 and not item.is_image_insertion
             ):
                 # 1.3.0: the clip's own audio follows its playback rate so a
@@ -511,6 +508,26 @@ class FFmpegCommandBuilder:
             f"tpad=stop_mode=clone:stop_duration={_number(final_pad_duration)},"
             f"{trim_expression},setpts=PTS-STARTPTS,format=yuv420p,setsar=1[{visual_label}]"
         )
+        if settings.workflow_stage == "main":
+            # Optional subtle opening effect for the Main Video. It is applied to
+            # the assembled visual timeline BEFORE the subtitle burn-in, so
+            # captions are never scaled, and it only covers the opening portion:
+            # after its window the chain is a lossless same-size pass-through.
+            opening_chain = opening_effect_filter(
+                normalize_opening_effect(getattr(settings, "opening_effect", "")),
+                width,
+                height,
+                opening_effect_window(
+                    effective_intro_seconds(settings), resolved.expected_duration
+                ),
+                # Segmented/chunked rendering: keep one continuous ramp over the
+                # complete program instead of restarting it in every segment.
+                time_offset=video_window_start,
+            )
+            if opening_chain:
+                output = "vopening"
+                lines.append(f"[{visual_label}]{opening_chain}[{output}]")
+                visual_label = output
         if (
             settings.workflow_stage == "main"
             and settings.subtitle_enabled
@@ -559,9 +576,14 @@ class FFmpegCommandBuilder:
         )
 
         # Audio in Stage 1 is explicitly tied to the resolved visual timeline.
-        # Voiceover is never looped. Music is looped at input level, then
-        # trimmed at the spoken-program boundary and padded with silence for
-        # the configurable final pause.
+        # Voiceover is never looped and never reaches into the visual outro; it
+        # is trimmed at the spoken-program boundary and padded with silence.
+        # Background music is the opposite: it is looped at input level and
+        # trimmed to the COMPLETE video window, so it starts at 0.000 s (never
+        # delayed by the visual intro), plays under the voiceover and continues
+        # through the visual outro until the final frame. No silent gap and no
+        # silent ending can appear while a track is configured; without one, no
+        # artificial audio is invented.
         final_audio = audio_chain
         if settings.workflow_stage == "main":
             target = window_duration
@@ -599,30 +621,32 @@ class FFmpegCommandBuilder:
                     )
                 except (TypeError, ValueError):
                     inter_voiceover_pause = 0.7
-                if len(prepared_labels) == 1 or inter_voiceover_pause <= 1e-9:
-                    if len(prepared_labels) == 1:
-                        voice_chain = prepared_labels[0]
-                    else:
-                        joined_in = "".join(prepared_labels)
+                # Silence is an actual audio segment in the same concat timeline
+                # as the voiceovers — both the configured visual intro in front
+                # of the first unit and the inter-unit pauses. This keeps music,
+                # subtitle offsets, visual target duration and rendered audio
+                # boundaries in agreement; it is not an end pad and not a
+                # post-render subtitle delay.
+                intro_seconds = effective_intro_seconds(settings)
+                timeline_labels: list[str] = []
+                if intro_seconds > 1e-9:
+                    lines.append(
+                        f"anullsrc=r=48000:cl=stereo:d={_number(intro_seconds)},"
+                        f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[vintro]"
+                    )
+                    timeline_labels.append("[vintro]")
+                for unit_index, voice_label in enumerate(prepared_labels):
+                    timeline_labels.append(voice_label)
+                    if unit_index < len(prepared_labels) - 1 and inter_voiceover_pause > 1e-9:
+                        pause_label = f"vpause{voice_indices[unit_index]}"
                         lines.append(
-                            f"{joined_in}concat=n={len(prepared_labels)}:v=0:a=1[vvoice_all]"
+                            f"anullsrc=r=48000:cl=stereo:d={_number(inter_voiceover_pause)},"
+                            f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[{pause_label}]"
                         )
-                        voice_chain = "[vvoice_all]"
+                        timeline_labels.append(f"[{pause_label}]")
+                if len(timeline_labels) == 1:
+                    voice_chain = timeline_labels[0]
                 else:
-                    # The silence is an actual audio segment in the same
-                    # concat timeline as the voiceovers. This keeps music,
-                    # subtitle offsets, visual target duration and rendered
-                    # audio boundaries in agreement; it is not an end pad.
-                    timeline_labels: list[str] = []
-                    for unit_index, voice_label in enumerate(prepared_labels):
-                        timeline_labels.append(voice_label)
-                        if unit_index < len(prepared_labels) - 1:
-                            pause_label = f"vpause{voice_indices[unit_index]}"
-                            lines.append(
-                                f"anullsrc=r=48000:cl=stereo:d={_number(inter_voiceover_pause)},"
-                                f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[{pause_label}]"
-                            )
-                            timeline_labels.append(f"[{pause_label}]")
                     joined_in = "".join(timeline_labels)
                     lines.append(
                         f"{joined_in}concat=n={len(timeline_labels)}:v=0:a=1[vvoice_all]"
@@ -645,6 +669,14 @@ class FFmpegCommandBuilder:
                 mix_labels.append(voice_mix)
             if music_index is not None:
                 music_gain = _percent_gain(settings.music_volume)
+                # The music WINDOW is the complete rendered video (``target``):
+                # the track starts at 0.000 s, plays under the voiceover and is
+                # still audible in the last frame of the visual outro. The
+                # stream-looped INPUT is only read for the spoken program — the
+                # proven-safe amount — and ``music_outro_loop`` extends that
+                # audio inside the graph to the video end (see its docstring for
+                # the measured FFmpeg deadlock). The trailing apad/atrim pair
+                # stays as the safety net for a source that cannot be looped.
                 music_trim = (
                     f"atrim=start={_number(audio_window_start)}:duration={_number(program)}"
                     if audio_window_start > 1e-9 else f"atrim=duration={_number(program)}"
@@ -652,7 +684,8 @@ class FFmpegCommandBuilder:
                 lines.append(
                     f"[{music_index}:a:0]aresample=48000:async=1:first_pts=0,"
                     f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
-                    f"volume={_number(music_gain)},{music_trim},asetpts=PTS-STARTPTS,"
+                    f"volume={_number(music_gain)},{music_trim},asetpts=PTS-STARTPTS"
+                    f"{music_outro_loop(program, target)},"
                     f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[music_pre]"
                 )
                 music_label = "music_pre"
@@ -788,9 +821,9 @@ class FFmpegCommandBuilder:
         )
         command = [self.ffmpeg_path, "-hide_banner", "-y"]
         for item in media:
-            if item.is_quote_artwork or item.is_image_insertion:
+            if item.is_image_insertion:
                 # One still-image input is looped for the exact section duration;
-                # the filter graph trims it and keeps Quote/Add Image silent.
+                # the filter graph trims it and keeps Add Image silent.
                 command += ["-loop", "1", "-i", str(item.path)]
             else:
                 # Never stream-loop a normal video occurrence: repeated media

@@ -1,7 +1,7 @@
 """Safe Stage-1 Main Video fingerprinting and reuse cache.
 
 The Stage-1 cache deliberately models only the inputs that define the Main
-Video render. Stage-2 composition choices (Intro, Quote, Add Image and Outro
+Video render. Stage-2 composition choices (Intro, Add Image and Outro
 controls) are not part of that fingerprint, so One-Click can reuse a valid Main
 Video when only final-composition choices change. A separate Stage-2
 fingerprint models the final composition; in particular, Add Image's selected
@@ -23,12 +23,28 @@ from .paths import project_root
 from .subtitle_modes import normalize_subtitle_output_mode
 
 CACHE_SCHEMA = 1
-FINGERPRINT_SCHEMA = 1
-STAGE2_FINGERPRINT_SCHEMA = 1
+# 2: the Quote/Flyer artwork section was removed, which changed both payload
+# shapes. Entries written by schema 1 must never be reused silently.
+# 3: the explicit visual-only intro/outro sections and the Main Video opening
+# effect were added to the Stage-1 payload. A cached render from schema 2 has a
+# different timeline (no visual intro, a different tail) and must never be
+# reused silently for the new settings.
+# 4: background music now covers the COMPLETE video (it used to be trimmed at
+# the spoken end, which left the visual outro silent) and Long-Form/Shorts
+# received independent music volume and transition settings with new defaults.
+# A cached render from schema 3 therefore contains different audio bytes and
+# possibly different transitions, and must never be reused silently.
+# 5: configured video folders can now carry a soft timeline-area role
+# (1. Start & End / 2. Start to Middle / 3. Middle to End) plus start/end zone
+# targets and a midpoint percentage, which change WHICH clips are selected for a
+# render. A schema-4 entry was built without that source ordering and must never
+# be reused silently.
+FINGERPRINT_SCHEMA = 5
+STAGE2_FINGERPRINT_SCHEMA = 2
 
 # These are the settings that can change the bytes or duration of the Stage-1
 # Main Video. Deliberately absent: workflow_stage, output_name, main_video_path,
-# Intro/Quote/Outro paths and all other Stage-2-only composition controls.
+# Intro/Outro paths and all other Stage-2-only composition controls.
 _STAGE1_SETTING_FIELDS = (
     "export_mode",
     "aspect",
@@ -37,6 +53,14 @@ _STAGE1_SETTING_FIELDS = (
     "transition_type",
     "transition_ease",
     "transition_duration",
+    # Output-specific transition settings. The canonical pair above already
+    # carries the value this job resolved; these four participate as well, so a
+    # Long-Form or Shorts transition change can never reuse an incompatible
+    # cached render, even before the planner copied the value over.
+    "long_form_transition_type",
+    "long_form_transition_duration",
+    "shorts_transition_type",
+    "shorts_transition_duration",
     "background_blur",
     "background_darkness",
     "background_zoom",
@@ -54,7 +78,21 @@ _STAGE1_SETTING_FIELDS = (
     "ducking_enabled",
     "ducking_attack_ms",
     "ducking_release_ms",
+    # ``final_pause`` is the canonical visual outro (Main Video end padding):
+    # the tail after the spoken audio, filled with video-only material.
     "final_pause",
+    # Explicit visual-only timeline sections. ``visual_intro_seconds`` is the
+    # canonical intro the renderer uses; the four collection-specific values are
+    # included as well so a changed Long-Form or Short section can never reuse
+    # an incompatible cached render, even before the planner copied it over.
+    "visual_intro_seconds",
+    "long_form_intro_seconds",
+    "long_form_outro_seconds",
+    "short_intro_seconds",
+    "short_outro_seconds",
+    # Subtle Main Video opening effect (none | zoom_in | zoom_out). It changes
+    # rendered pixels, so it is part of the Stage-1 identity.
+    "opening_effect",
     # Phase 4: inter-unit silence and ordering/global-script semantics are
     # render inputs; final_pause above remains the independent end padding.
     "voiceover_pause",
@@ -72,6 +110,14 @@ _STAGE1_SETTING_FIELDS = (
     # legacy semantics; new GUI projects use the canonical field above.
     "video_speed",
     "video_order_mode",
+    # Soft timeline-area source ordering: which configured folder is used at
+    # which approximate part of the timeline changes the selected clips, so it
+    # is part of the render identity like the project order itself.
+    "source_folder_areas",
+    "timeline_area_start_seconds",
+    "timeline_area_end_seconds",
+    "timeline_area_midpoint_percent",
+    "shorts_allow_area_middle_end",
     # Shorts are independent Stage-1 jobs; this prevents duplicate rows from
     # sharing a cache result merely because their audio path is the same.
     "render_variant_key",
@@ -176,8 +222,6 @@ def _media_payload(item: MediaInfo) -> dict[str, Any]:
         "color_space": str(item.color_space),
         "playback_rate": float(item.playback_rate),
         "source_folder": str(getattr(item, "source_folder", "") or item.path.parent),
-        "is_quote_artwork": bool(item.is_quote_artwork),
-        "quote_fit_mode": str(item.quote_fit_mode),
         "is_image_insertion": bool(getattr(item, "is_image_insertion", False)),
         "image_fit_mode": str(getattr(item, "image_fit_mode", "fit")),
         "image_zoom": int(getattr(item, "image_zoom", 100)),
@@ -241,13 +285,26 @@ def build_stage1_payload(
     if music_asset is not None:
         values.update({
             "music_volume": settings.music_volume,
+            # Independent per-output music volumes. Like the canonical value
+            # they only matter while a track is really mixed, so an unused
+            # control must not invalidate an otherwise identical render.
+            "long_form_music_volume": getattr(settings, "long_form_music_volume", None),
+            "shorts_music_volume": getattr(settings, "shorts_music_volume", None),
             "music_preset": settings.music_preset,
             "ducking_enabled": settings.ducking_enabled,
             "ducking_attack_ms": settings.ducking_attack_ms,
             "ducking_release_ms": settings.ducking_release_ms,
         })
     else:
-        for name in ("music_volume", "music_preset", "ducking_enabled", "ducking_attack_ms", "ducking_release_ms"):
+        for name in (
+            "music_volume",
+            "long_form_music_volume",
+            "shorts_music_volume",
+            "music_preset",
+            "ducking_enabled",
+            "ducking_attack_ms",
+            "ducking_release_ms",
+        ):
             values[name] = None
 
     values["watermark_active"] = bool(
@@ -340,11 +397,6 @@ _STAGE2_SETTING_FIELDS = (
     "intro_audio_mode",
     "outro_audio_mode",
     "outro_transition_enabled",
-    "quote_enabled",
-    "quote_input_mode",
-    "quote_pdf_page",
-    "quote_artwork_fit_mode",
-    "quote_duration",
     "image_enabled",
     "image_position",
     "image_duration",
@@ -381,7 +433,6 @@ def build_stage2_payload(
         "main_video_path": _stage2_path_payload(settings, "main_video_path"),
         "intro_path": _stage2_path_payload(settings, "intro_path"),
         "outro_path": _stage2_path_payload(settings, "outro_path"),
-        "quote_artwork_path": _stage2_path_payload(settings, "quote_artwork_path", content_hash=True),
         "image_path": _stage2_path_payload(settings, "image_path", content_hash=True),
     })
     return {

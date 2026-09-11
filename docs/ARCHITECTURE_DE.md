@@ -5,8 +5,7 @@
 - **Quellordner:** `discovery.discover_videos()` akzeptiert die explizit konfigurierte Ordnerliste und setzt `MediaInfo.source_folder`; der alte Ein-Ordner-Modus scannt weiterhin nur direkt enthaltene Dateien. `ProjectOrderStore` persistiert globale und ordnerspezifische aktive Reihenfolgen.
 - **Auswahl:** `video_pool.order_media_for_video_order()` ist die gemeinsame Effective-Order-Pipeline für Natural, Alphabetical, Random und Manual. Natural/Alphabetical verwenden numerische bzw. filename-basierte Queues; Random permutiert zuerst per Fisher-Yates und alterniert danach Quellordner, solange Alternativen vorhanden sind. `folder_aware=False` ist der ausdrückliche bereits-geordnete Timeline-Pfad; die Legacy-Einstellung `folder_alternating` bleibt kompatibel.
 - **Dauer:** `timeline.duration_before_merge_value()` skaliert jeden normalen Stage-1-Clip vor dem Timeline-Aufbau; `engine.post_process_duration()` ist die getrennte optionale After-Merge-Operation. Smart Last-Clip Stretch bleibt zwischen diesen Schritten und dem Render.
-- **Flyer:** Artwork ist ein echter stummer Stage-2-Eingang zwischen Intro und Main. Rasterbilder werden direkt, PDF-Seiten mit PyMuPDF als temporäre Renderdatei verwendet; Stage-1-Cache-Fingerprints enthalten keine Quote-only-Einstellungen.
-- **Defaults:** neue Projekte verwenden Before Merge `0,70x`, After Merge deaktiviert / `1,00x`, Flyer `4,0 s` und Long-Form Landscape `Center`; Short-Form Portrait bleibt `Bottom Center`. Gespeicherte Werte haben Vorrang.
+- **Defaults:** neue Projekte verwenden Before Merge `0,70x`, After Merge deaktiviert / `1,00x` und Long-Form Landscape `Center`; Short-Form Portrait bleibt `Bottom Center`. Gespeicherte Werte haben Vorrang.
 
 ## Additiver Aufbau
 
@@ -24,7 +23,7 @@ PySide6 GUI / CLI
   │   ├─ atomarer bestehender VideoMergerEngine-Export
   │   └─ First/Middle/Final-Verifikationsframes
   ├─ Stage 2: MainProjectEngine.add_outro
-  │   ├─ Main + optionale Intro/Quote-Flyer/Image-Insertion + Outro
+  │   ├─ Main + optionale Intro/Add-Image + Outro
   │   └─ pro Sektion isolierte Audio-Rollen und sichere Übergänge
   └─ One Click: MainProjectEngine.create_complete
       ├─ echte Stage 1 ausführen/validieren
@@ -64,9 +63,19 @@ Jedes ASS-Event enthält die vollständigen Wörter des finalen Cue-Blocks sowie
 
 - **Type Reveal:** zukünftige Wörter haben Alpha FF, bleiben aber im Shaping/Layout;
 - **Color Change:** nur die aktuelle Wortfarbe ändert sich;
-- **Word Highlight:** aktuelles Wort erhält ruhige Farbe/Outline;
-- **Outline Highlight:** aktuelles Wort erhält eine stärkere Outline;
+- **Word Highlight:** aktuelles Wort erhält ruhige Farbe (nur Long-Form);
+- **Phrase Focus:** ruhiger, weicher Eintritt auf Cue-Ebene (Standard der Shorts);
 - **Static Phrase:** ein vollständiges Event über die Cue-Dauer.
+
+**Outline Highlight ist entfernt**: die Variante zeichnete pro Wort eine kräftige
+Outline-Farbe und erzeugte damit gefüllte rechteckige Flächen außerhalb der
+Glyphen. `subtitles.normalize_subtitle_animation(value, collection)` ist der
+einzige Migrationspunkt (Outline Highlight → Color Change, Word Highlight →
+Phrase Focus für Shorts, Unbekanntes → Collection-Standard); `animation_options()`
+und `accepted_animation_values()` liefern die auswählbaren bzw. noch akzeptierten
+Werte, sodass alte Projektdateien nie abstürzen. Alle verbleibenden Animationen
+emittieren ausschließlich glyphenausgerichtete Overrides (`\c`, `\1a`, `\3a`,
+`\fad`) – kein `\3c`, `\bord`, `\shad`, `\clip` oder Vektor-`\p` mehr.
 
 Bei den synchronisierten Varianten beginnen Events exakt an kanonischen Wortstarts. Das optionale Debug-Layer erzeugt pro Wort ein eigenes Event mit Wort, Start und Ende. Es ist standardmäßig deaktiviert.
 
@@ -119,19 +128,18 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 
 ### Dauer-Fit, Speed, End-Padding
 
-`timeline.fit_media_to_duration(..., duration_fit_mode, max_stretch_percent, playback_rate)` bleibt die eine Auswahl-Mathematik. `cut` = exaktes 1.2.4-Verhalten; `stretch` zieht das Präfix bevorzugt einen Clip kürzer und dehnt nur den letzten (relativ zur geschwindigkeitsskalierten Timeline-Dauer, begrenzt). `video_pool` spiegelt dieselbe Entscheidung in O(n) (eine Präfix-Berechnung pro Status). `MediaInfo.playback_rate` wird im Graph via `setpts=PTS/rate` + `atempo` umgesetzt (nur Clip-Audio; Voiceover/Musik/Untertitel unberührt). `final_pause` bleibt die autoritative End-Padding-Größe (GUI: freier Spin, Standard 1,0 s).
+`timeline.fit_media_to_duration(..., duration_fit_mode, max_stretch_percent, playback_rate)` bleibt die eine Auswahl-Mathematik. `cut` = exaktes 1.2.4-Verhalten; `stretch` zieht das Präfix bevorzugt einen Clip kürzer und dehnt nur den letzten (relativ zur geschwindigkeitsskalierten Timeline-Dauer, begrenzt). `video_pool` spiegelt dieselbe Entscheidung in O(n) (eine Präfix-Berechnung pro Status). `MediaInfo.playback_rate` wird im Graph via `setpts=PTS/rate` + `atempo` umgesetzt (nur Clip-Audio; Voiceover/Musik/Untertitel unberührt). `final_pause` bleibt das kanonische End-Padding-Feld (Standard 1,0 s für direkte
+API-Aufrufe); die GUI schreibt es zusammen mit `long_form_outro_seconds`
+(Nutzerstandard 2,5 s) aus einem einzigen Regler, sodass das frühere Main Video
+End Padding und das neue Long-Form-Outro derselbe Abschnitt sind.
 
 ### Flexible Subtitle-Ausgaben + sauberer Output
 
 `subtitle_output_mode` ist ein echter Pipeline-Vertrag: `with_subtitles` rendert intern einen sauberen Master, brennt genau einmal ASS und schreibt SRT/VTT, behält aber keine zusätzliche Clean-Datei; `with_and_without_subtitles` behält zusätzlich die Clean-Variante; `without_subtitles` überspringt Alignment und Burn-in vollständig. Der alte Wert `burned_and_sidecars` wird für gespeicherte Projekte als duale Ausgabe migriert. Chunked Rendering segmentiert zuerst den clean master und brennt höchstens einmal nach der Assembly. Stage 2 erhält anschließend genau die gewählte Main-Variante.
 
-### Quote-/Flyer-Artwork
-
-`quote_artwork.quote_artwork_path()` akzeptiert ausschließlich PDF, PNG, JPG, JPEG und WEBP und meldet fehlende, nicht lesbare oder nicht unterstützte Dateien explizit. Rasterbilder werden direkt als ein realer, geloopter Stage-2-Bildeingang verwendet. PDFs werden seitengeprüft und mit PyMuPDF output-aware in eine render-only PNG-Datei gerastert; `cleanup_prepared_quote_artwork()` entfernt diese Datei in `finally`, ohne die Quelle anzutasten. `command_builder` verwendet Fit (Contain + Letterbox), Fill (Cover + Center-Crop) oder Crop (zuerst aspect-safe zuschneiden, dann skalieren), nie eine nicht-uniforme Dehnung. Der Abschnitt hat eine eigene `anullsrc`-Audiospur und erhält keine Voiceover-, Musik-, Subtitle- oder Main-Audio-Spur. `add_outro` fügt ihn nur bei aktiviertem, gültigem Artwork zwischen Intro und Main ein; ohne Artwork bleibt der alte Textpfad ausgeschlossen und es gibt keinen generierten Fallback. Quote-only-Einstellungen sind nicht Bestandteil von `render_cache.stage1_fingerprint()`.
-
 ### Add Image / Legacy Image Insertion
 
-`image_insertion.py` validiert ausschließlich PNG/JPG/JPEG/WEBP und normalisiert die kanonischen Grenzen Before Main/After Main (die alten After Intro/Before Outro-Aliasse bleiben kompatibel), Dauer, Transition, Fit, Zoom und die fünf deterministischen Looks. `MainProjectEngine.add_outro()` fügt genau eine `MediaInfo(is_image_insertion=True)` unmittelbar vor oder nach Main Video ein; Quote/Flyer bleibt davor separat und Intro/Outro werden nicht umgeordnet. `command_builder` loopt nur den Videoeingang, erzeugt die Projektauflösung mit aspect-safe Fit/Fill/Crop plus Zoom/Filter und stellt für die Bildposition ausschließlich `anullsrc` bereit. Die Transition-Familie und Dauer der Bildgrenzen werden unabhängig von den übrigen Clip-Grenzen sicher geklemmt; Audio, Untertitel und Voiceover bleiben unangetastet. SettingsStore, GUI und CLI verwenden dieselben Werte. Die Add-Image-Datei (einschließlich SHA-256) und alle Bildparameter stehen im unabhängigen Stage-2-Kompositions-Fingerprint; reine Add-Image-Änderungen invalidieren deshalb nicht den wiederverwendbaren Stage-1-Main-Render.
+`image_insertion.py` validiert ausschließlich PNG/JPG/JPEG/WEBP und normalisiert die kanonischen Grenzen Before Main/After Main (die alten After Intro/Before Outro-Aliasse bleiben kompatibel), Dauer, Transition, Fit, Zoom und die fünf deterministischen Looks. `MainProjectEngine.add_outro()` fügt genau eine `MediaInfo(is_image_insertion=True)` unmittelbar vor oder nach Main Video ein; Intro/Outro werden dabei nicht umgeordnet. `command_builder` loopt nur den Videoeingang, erzeugt die Projektauflösung mit aspect-safe Fit/Fill/Crop plus Zoom/Filter und stellt für die Bildposition ausschließlich `anullsrc` bereit. Die Transition-Familie und Dauer der Bildgrenzen werden unabhängig von den übrigen Clip-Grenzen sicher geklemmt; Audio, Untertitel und Voiceover bleiben unangetastet. SettingsStore, GUI und CLI verwenden dieselben Werte. Die Add-Image-Datei (einschließlich SHA-256) und alle Bildparameter stehen im unabhängigen Stage-2-Kompositions-Fingerprint; reine Add-Image-Änderungen invalidieren deshalb nicht den wiederverwendbaren Stage-1-Main-Render.
 
 ### Lokale YouTube-Metadaten
 
@@ -142,3 +150,455 @@ FFprobe prüft MP4/Streams, Codec, Pixelformat, Auflösung, FPS, SAR, Seitenverh
 `youtube_outputs.py` plant drei echte Modi. Long-Form ruft die vorhandene Multi-Voiceover-Stage-1-Timeline mit erzwungenem 16:9 auf. Shorts erzeugen für jede geordnete Voiceover-Einheit einen eigenen 9:16-Auftrag mit `voiceover_pause=0`, eigener Zieldauer und eigener `render_variant_key`; dadurch sind auch doppelt referenzierte Audiodateien cache-separat. Matched Scripts bleiben basename-gekoppelt, ein globales Script wird als ein globaler Input erhalten und ist unabhängig von der Voiceover-Anzahl. `create_youtube_exports()` ordnet die fertigen Artefakte in `LongForm/` und `Shorts/` ein und wird auch vom One-Click-Worker verwendet.
 
 Die Subtitle-Modi sind `with_subtitles`, `without_subtitles` und `with_and_without_subtitles`. Der neue Standard erzeugt Burn-in sowie SRT/VTT, aber keine zusätzliche Clean-Datei; der dritte Modus behält die Clean-Datei user-facing. Der alte gespeicherte Wert `burned_and_sidecars` wird als Kompatibilitätswert weiterhin als duale Ausgabe gelesen. Das Shorts-Profil wird erst unmittelbar im Short-Job auf `short_*`, mobile Schrift-/Safe-Position und synchronisierte Animation umgeschaltet; Long-Form-Profile bleiben unverändert.
+
+### Getrennte Musik für Long-Form und Shorts
+
+`ExportSettings.music_path` ist die Long-Form-/Basic-Musik, `ExportSettings.short_music_path` die eigene Shorts-Musik. `youtube_outputs.short_settings()` ersetzt `music_path` eines Short-Auftrags strikt durch die Shorts-Auswahl: ohne eigene Auswahl bleibt der Short ohne Hintergrundmusik, die Long-Form-Spur wird nie in einen vertikalen Render gemischt. `long_form_settings()` lässt `music_path` unverändert. Die Lautstärke ist seit Phase 23 ebenfalls getrennt: `long_form_music_volume` und `shorts_music_volume` (Sentinel `None`, Standard je `MUSIC_VOLUME_PERCENT = 44`) werden von `youtube_outputs.output_music_volume()` pro Auftrag aufgelöst und in das kanonische `music_volume` des jeweiligen Jobs kopiert – ein Wert ändert nie den anderen. Fehlt beiden Feldern ein Wert, dient das gespeicherte gemeinsame `music_volume` als Migrations-Fallback (`SettingsStore.load()` kopiert es in beide neuen Felder, überschreibt aber niemals explizit gespeicherte Werte). Preset, Ducking, Looping (`-stream_loop -1`) und Trimming bleiben die gemeinsame, unveränderte Musik-Pipeline der jeweils aktiven Spur. Die Stage-1-Cache-Identität entsteht weiterhin über das geprobte Musik-Asset-Payload, weshalb ein Musikwechsel korrekt invalidiert und beide Spuren getrennt cachefähig sind. `app/cli.py` ergänzt `--short-music`, die GUI eine zweite Auswahlzeile, `diagnostics.py` einen eigenen Prüfeintrag.
+
+### Festes 0,7-Sekunden-Ende jedes Shorts
+
+`youtube_outputs.SHORT_ENDING_SECONDS = 0.7` ist die einzige Quelle dieses Werts
+und dient nur noch als garantierte Untergrenze für Settings-Objekte ohne das Feld
+`short_outro_seconds`; `short_settings()` setzt `final_pause` jedes Short-Auftrags
+auf das explizite Short-Outro (Nutzerstandard 0,7 s), das diesen Wert **ersetzt**
+statt ihn zu einem zweiten sichtbaren Ende aufzustocken, während das Long-Form das
+frei wählbare Long-Form-Outro behält. Die vorhandene Timeline-Logik setzt das Ziel deterministisch um: `create_main` berechnet `voice_total + final_pause` als Video-Zieldauer, `fit_media_to_duration` liefert dafür zusätzliches Bildmaterial (Clip-Auswahl, Übergänge, Hold/Loop, Chunked Rendering bleiben unverändert), und `subtitle_program_end = voice_total` begrenzt die Untertitel-Zeitleiste auf das gesprochene Audio. Das bestehende Guard-Raise verhindert zusätzlich, dass ein Cue in das Ende reicht; Voiceover-Audio endet ohnehin mit der Datei. Der Shorts-Pool ohne Ersatz reserviert pro Short `voice_total + final_pause` und stellt damit vorab genug Material für das Ende bereit.
+
+### Eine Skript-Textdatei pro Short
+
+`youtube_outputs.write_short_script_text()` schreibt `<finaler Videoname>.txt` (inklusive eines durch `_available_bundle` hochgezählten Namens) mit exakt dem Skripttext des Shorts: Quelle ist `main_project.global_script_path(job_settings)`, also die abgeleitete globale Skript-Sektion, das basename-gematchte Einzelskript oder – bei einem einzelnen Voiceover – das vollständige globale Skript. `MainProjectEngine._publish_short_script_text()` ruft sie im Auftrags-Loop nach jedem gerenderten Short auf; ein Audio-only-Short erhält keine Datei, ein Schreibfehler wird protokolliert und macht den fertigen Short nicht zum Fehlversuch. Es läuft keine zusätzliche ASR: die Sektionen stammen aus dem einen bereits vorhandenen globalen Mapping. Damit auch `without_subtitles` korrekte Texte liefert, leitet `_short_script_sections` die Sektionen in diesem Modus einmalig ab (dasselbe gecachte `align_global`, fehlertolerant), während der Render selbst weiterhin keine Ausrichtung, kein Burn-in, kein SRT und kein VTT erzeugt.
+
+### Entferntes Quote-/Flyer-Artwork
+
+`quote_artwork.py`, die GUI-Sektion inklusive PDF-Seite/Artwork Fit/Vorschau, `MediaInfo.is_quote_artwork`/`quote_fit_mode`, `ExportSettings.quote_*`, die CLI-Schalter `--quote*`, der Stage-2-Einbau in `add_outro`, die Quote-Zweige im `command_builder` und `QuotePreviewCanvas` sind entfernt; PyMuPDF ist keine Abhängigkeit mehr. Add Image (`is_image_insertion`, `image_*`), Intro/Outro und alle übrigen Timeline-Funktionen bleiben unverändert, und `_stage2_image_target()` (vormals `_quote_artwork_target`) bestimmt weiterhin die Auto-Auflösung für Standbilder. Alte Projektdateien bleiben ladbar, weil `SettingsStore.load()` unbekannte Schlüssel verwirft; `render_cache` hebt wegen der geänderten Payload-Form beide Fingerprint-Schemata auf `2`, damit keine Einträge aus der Zeit vor der Entfernung wiederverwendet werden.
+
+## Visuelle Intro-/Outro-Abschnitte, Opening Effect, Legacy-Priorität
+
+### Kanonische Timeline `[Intro][Voiceover][Outro]`
+
+`youtube_outputs.MainTimeline` (eingefroren: `intro`, `spoken`, `outro`) ist die
+eine Quelle der Wahrheit für einen Voiceover-getriebenen Auftrag: `voiceover_start`,
+`spoken_end`, `subtitle_start`/`subtitle_end`, `target`, `audio_program` und
+`log_lines()` leiten sich aus diesen drei Zahlen ab, und Video-Timeline,
+Audio-Graph, Untertitel-Offset, Shorts-Pool-Reservierung und Log lesen dieselben
+Werte (`main_timeline(settings, voice_total)`). `visual_section_seconds()`
+validiert jeden Abschnitt (Zahl, endlich, ≥ 0, auf Millisekunden gerundet; 0
+deaktiviert ihn, negativ wird abgelehnt, kein künstliches Limit – die
+GUI-Obergrenze `MAX_VISUAL_SECTION_SECONDS = 60` ist reine Widget-Range).
+
+`ExportSettings` trennt weiterhin kanonische und nutzerseitige Felder: kanonisch
+bleiben `visual_intro_seconds = 0.0` und `final_pause = 1.0`, sodass ein direkter
+`create_main(ExportSettings())`-Render exakt das frühere Verhalten zeigt;
+nutzerseitig kommen `long_form_intro_seconds`/`long_form_outro_seconds` (je 1,5 s),
+`short_intro_seconds`/`short_outro_seconds` (je 0,7 s), `opening_effect` (`"none"`)
+und `legacy_input_root` (`""`) hinzu. `long_form_settings()` und `short_settings()`
+kopieren die nutzerseitigen Werte in die kanonischen Felder – das Long-Form-Outro
+**ist** damit das frühere Main Video End Padding: ein einziger Tail, der sich nie
+verdoppeln kann. `SettingsStore.load()` migriert ein gespeichertes `final_pause`
+nach `long_form_outro_seconds`, wenn das neue Feld fehlt; `app/cli.py` schreibt aus
+`--pause`/`--end-padding` beide Namen; die GUI besitzt einen Regler in der Gruppe
+„4d · Timeline – Visual Intro / Outro / Opening Effect“.
+
+Audio: `command_builder` stellt dem Voiceover-Concat bei `intro > 0` ein
+`anullsrc`-Segment `[vintro]` voran
+(`[vintro][vu1]concat=n=2:v=0:a=1[vvoice_all]`); bei `intro == 0` bleibt der
+historische Graph byte-identisch. Musik und Clip-Originalton laufen über
+`audio_program = intro + spoken`, dürfen also während des Intros spielen und enden
+mit der Sprache. Das Render-Ziel ist `intro + voice_total + outro`, wodurch
+`fit_media_to_duration` und der Shorts-Pool ohne Ersatz echtes Bildmaterial für
+alle drei Abschnitte reservieren – kein Schwarzbild, kein Standbild, kein
+doppeltes Audio.
+
+Untertitel: `main_project._offset_alignment(alignment, intro)` verschiebt die
+kanonische Wort-Zeitleiste **vor** `_scale_alignment`, und
+`subtitle_program_end = (intro + voice_total) / speed` begrenzt sie auf den
+gesprochenen Teil. Die Verschiebung lebt damit im Timeline-Modell, nicht in einem
+nachgelagerten Delay; Wort-Timing, globale Skript-Sektionen, SRT/VTT, Burn-in und
+die strikte Cue-Validierung bleiben unverändert, und kein Cue reicht in Intro oder
+Outro. `render_cache.FINGERPRINT_SCHEMA = 3` nimmt alle neuen Felder
+(`long_form_intro_seconds`, `long_form_outro_seconds`, `short_intro_seconds`,
+`short_outro_seconds`, `visual_intro_seconds`, `final_pause`, `opening_effect`) in
+die Stage-1-Identität auf; Stage 2 bleibt bei Schema 2.
+
+### Opening Effect des Main Videos
+
+`opening_effects.py` ist ein bewusst kleines Register ohne Animations-Editor:
+`none` (Standard), `zoom_in`, `zoom_out`. `normalize_opening_effect()` akzeptiert
+Alias-/Groß-Kleinschreibvarianten und bildet Unbekanntes auf `none` ab.
+`opening_effect_window(intro, program)` nutzt das visuelle Intro als
+Öffnungsabschnitt (ohne Intro die festen `OPENING_EFFECT_SECONDS = 3.0`), begrenzt
+ihn durch die Programmlänge und liefert unter
+`MIN_OPENING_EFFECT_SECONDS = 0.5` gar keinen Effekt. `opening_effect_filter()`
+erzeugt `scale=…:eval=frame:flags=lanczos` (5 % Spitze, gerade Größen via
+`trunc(…/2)*2`) gefolgt von einem zentrierten `crop` fester Größe und `setsar=1`
+**nach** dem Crop: zwischen dem pro Frame variierenden `scale` und dem festen
+`crop` darf kein Filter stehen, weil FFmpeg 6.0 sonst bei einer Zoom-Out-Rampe
+reproduzierbar abstürzt. `time_offset` hält die Rampe über Chunk-Grenzen
+kontinuierlich. Eingebaut wird der Effekt in Stage 1 (`workflow_stage == "main"`)
+als `[vprogram]…[vopening]` **vor** dem ASS-Burn-in, sodass Untertitel nie
+skaliert werden; Shorts erhalten grundsätzlich `none`. Außerhalb des Fensters ist
+die Kette ein verlustfreier Same-Size-Durchlauf, es wird kein Frame ergänzt oder
+entfernt – Ziel-Dauer, Voiceover-Sync und Untertitel bleiben unberührt.
+
+### Legacy Input Root Priorität (nur Random)
+
+`video_pool.reserve_legacy_priority(media, legacy_root, rng, count=LEGACY_PRIORITY_CLIPS=3)`
+zieht per `rng.sample` bis zu drei verschiedene Clips des Legacy Input Root,
+mischt sie untereinander und entfernt sie **vor** der weiteren Sequenz aus dem
+Pool; `order_media_for_video_order(..., legacy_root=)` ruft sie ausschließlich im
+Random-Zweig auf und hängt `randomize_order` + `folder_aware_order` für Clip 4+
+unverändert an. Gibt es keine eligible Wurzel (leer, fehlend, weniger als drei
+Clips, Nicht-Random-Modus), wird nichts reserviert **und keine Zufälligkeit
+verbraucht**, womit der historische unverfälschte Shuffle bit-identisch bleibt.
+Manual, Alphabetical und Natural bleiben unberührt. `legacy_input_root` wird von
+der GUI (`_settings()`) und der CLI (aufgelöstes `--input`) gesetzt und über
+`main_project`, `engine`, `timeline` und `gui/workers` durchgereicht;
+`_log_legacy_priority()` protokolliert genau eine Zeile mit den reservierten
+Clipnamen – nur im Random-Modus, nur wenn wirklich reserviert wurde und nur dort,
+wo die Reihenfolge erzeugt wurde.
+
+## Phase 23: Musikfenster, eigene Übergänge, robuste Verifikation
+
+### Musik von 0,000 s bis zum Video-Ende
+
+`MainTimeline` kennt neben `voiceover_start`, `spoken_end`, `subtitle_start` und
+`subtitle_end` auch `video_start` (immer `0.0`), `video_end` (= `target`),
+`music_start` (immer `0.0`) und `music_end` (= `video_end`); `log_lines()` gibt
+diese Werte einmal pro Auftrag aus und unterscheidet dabei
+`music_configured=True/False` („Music: not configured …“ statt eines Fensters).
+Der Audio-Graph folgt genau diesem Fenster: Musik wird nie per `adelay`
+verschoben, erhält ihre Lautstärke **vor** dem Schnitt und endet exakt mit dem
+letzten Frame. Das Voiceover bleibt unverändert an das gesprochene Programm
+gebunden (`anullsrc`-Intro + `atrim=duration=<Programm>` + `apad`), sodass im
+visuellen Outro zwar Musik, aber keine Sprache liegt.
+
+`command_builder.music_outro_loop(program, target)` erzeugt die Erweiterung für
+das visuelle Outro. Der geloopte Input wird weiterhin nur für das gesprochene
+Programm gelesen (`atrim=duration=<Programm>`) – genau die historisch sichere
+Menge: FFmpeg 6.0 blockiert bei 0 % CPU, sobald ein `-stream_loop -1`-Input eine
+Verzweigung bis unmittelbar an das Ausgabe-Ende versorgen muss (gemessen mit
+derselben 0,6-s-Spur: `atrim=duration=<Ziel>` hängt, `<Ziel − 0,1 s>` läuft in
+0,4 s durch; unabhängig von `aresample async`, `asetpts`, `apad`-Variante und
+endlicher `-t`-Begrenzung des Inputs). Deshalb wiederholt `aloop` das
+**Ende** des bereits geschnittenen Programms: `window = min(programm,
+max(outro, 1 s), MUSIC_LOOP_WINDOW_SECONDS = 15 s)`, `start =
+(programm − window) · 48000`, `loop = ceil(outro / window)`. Die Wiederholung
+beginnt exakt am Programmende (nahtlos), der Puffer ist auf 15 s begrenzt (ein
+10-Minuten-Voiceover wird nie vollständig gepuffert), und das folgende
+`atrim=duration=<Ziel>` schneidet exakt am Video-Ende. Ohne Outro
+(`target == program`) ist die Kette byte-identisch zur früheren Form.
+
+### Übergänge und Lautstärken pro Ausgabe
+
+`output_transition_type()` und `output_transition_duration()` lösen
+`long_form_transition_type`/`long_form_transition_duration` bzw.
+`shorts_transition_type`/`shorts_transition_duration` pro Auftrag auf; leere
+Sentinel-Werte fallen auf die gemeinsamen `transition_type`/`transition_duration`
+zurück (Migrationspfad alter Projekte), und `TRANSITION_DURATION_LEGACY_DEFAULT`
+bleibt der Wert für Basic-Merge/kanonische Direkt-Renders. Beide Ausgaben
+starten mit `Cross Dissolve / 2,0 s`; `long_form_settings()` und
+`short_settings()` schreiben die aufgelösten Werte in die kanonischen Felder,
+sodass Combined-Modus und One-Click automatisch die jeweils eigenen Werte
+verwenden. Alle Resolver klemmen und validieren (0–150 %, ≥ 0 s, endlich) und
+werfen `VideoMergerError` mit lesbarem Label, den `diagnostics.py` im Eintrag
+„Output Music & Transitions“ fail-closed anzeigt, statt ihn zu verschlucken.
+
+`render_cache.FINGERPRINT_SCHEMA` steht auf `5`: Die Stage-1-Identität enthält
+die vier Abschnittsdauern, beide Musik-Lautstärken (nur bei konfigurierter Spur)
+und die vier Übergangswerte (unbedingt) neben Opening Effect,
+Animations-/Profilwerten und der effektiven Medienreihenfolge. `load()` bleibt
+fail-closed – abweichendes Schema oder Digest liefert `None`, kein Eintrag einer
+älteren Version wird still wiederverwendet. Stage 2 behält Schema `2`.
+
+### Visuelle Verifikation: begrenzt, wiederholt, getrennt klassifiziert
+
+`subtitle_verification.py` dekodiert die Nachweisbilder aus der fertigen,
+FFprobe-validierten MP4. `frame_safe_margin(duration, fps)` leitet den Abstand
+vom Dateiende aus der realen Framerate ab (zwei Frame-Perioden, mindestens
+`MINIMUM_FRAME_MARGIN_SECONDS = 0.04`), schrumpft ihn für sehr kurze Dateien auf
+ein Viertel ihrer Dauer und greift ohne verwertbare Dauer auf
+`DEFAULT_VERIFICATION_FPS = 25` zurück. `bounded_verification_times()` liefert
+den angefragten Zeitstempel (aus dem Wort-Timing) plus bis zu drei strikt
+frühere Kandidaten (`MAXIMUM_VERIFICATION_ATTEMPTS = 4`); kein Kandidat liegt am
+oder hinter dem Dateiende, keiner ist negativ, Dubletten entfallen.
+
+`png_frame_status()` akzeptiert eine PNG nur, wenn sie existiert, nicht leer ist,
+Signatur und `IHDR` trägt, von Null verschiedene Dimensionen hat und `IEND`
+enthält – eine 0-Byte- oder abgeschnittene Datei wird entfernt und erneut
+versucht. `_extract_frame()` meldet `OSError`, `TimeoutExpired`, einen
+Returncode ≠ 0 und jede ungültige Datei als `(False, Grund)` statt zu werfen.
+`verify_subtitle_frames()` liefert ein `VisualVerification`-Objekt
+(`FrameVerification` pro Label mit `requested`, `used`, `attempts`, `detail`,
+`status` ∈ PASS/DEGRADED/FAIL/SKIPPED) und protokolliert genau eine Zeile pro
+Bild; `create_visual_verification_frames()` bleibt als kompatibler Wrapper
+erhalten, der nur die erfolgreich dekodierten Pfade zurückgibt.
+
+`main_project.create_main()` trennt die Kategorien: Der kritische Block prüft
+weiterhin kanonische Timeline sowie SRT/VTT und wirft bei einem echten Problem
+`SUBTITLE GENERATION FAILED [subtitle output artifacts]`; die optionale
+Verifikation läuft danach in einem eigenen `try`, dessen Fehler lediglich
+`WARNUNG: Visuelle Verifikation nicht möglich, Ausgabe bleibt gültig: …`
+protokolliert. `MainVideoResult.verification_status` transportiert die
+Klassifizierung (`CACHED` bei einem Cache-Hit), während `verification_frames`
+weiterhin die Liste der dekodierten Bilder ist. Ein fehlgeschlagenes
+Verifikationsbild löscht damit nie wieder eine gültige Ausgabe – der frühere
+Realfehler (`SUBTITLE GENERATION FAILED [first/middle/final visual
+verification]: … keine gültige PNG-Ausgabe` bei 80,792 s Dauer, obwohl MP4,
+FFprobe, Audio, Video und Burn-in gültig waren) ist strukturell ausgeschlossen,
+weil der letzte Zeitstempel aus der Wort-Zeitleiste stets am oder hinter dem
+Dateiende liegen konnte. Echte Fehler – Untertitel-Erzeugung, ungültige
+Zeitachse, fehlende/leere Artefakte, Burn-in, FFprobe-Validierung – behalten die
+strikte Klassifizierung und räumen weiterhin auf.
+
+## Phase 24: Weiche Timeline-Areas (Quellenreihenfolge)
+
+### Schicht und Abgrenzung
+
+`app/video_merger/timeline_areas.py` ist die einzige neue Schicht: Sie liegt
+**vor** `timeline.fit_media_to_duration` und **nach**
+`video_pool.order_media_for_video_order`, entscheidet also ausschließlich, welche
+konfigurierte Quelle an welcher ungefähren Timeline-Position verwendet wird.
+Render-Graphen, Filterketten, Encoding, Übergänge, Untertitel, Voiceover, Musik,
+Originalaudio und Intro-/Outro-Rendering bleiben unberührt. Das Modul enthält
+bewusst keinerlei Analyse (kein Scoring, keine Bewegungs-/Qualitätsmessung, keine
+Semantik, kein Ranking, keine KI/CV) und kostet einen O(n)-Permutationsdurchlauf
+über bereits analysierte Metadaten.
+
+### Datenmodell und Normalisierung
+
+`ExportSettings` erhält fünf Felder: `source_folder_areas`
+(`dict[str, str]`, Ordnerschlüssel → Rolle), `timeline_area_start_seconds`
+(`20.0`), `timeline_area_end_seconds` (`20.0`),
+`timeline_area_midpoint_percent` (`50.0`) und
+`shorts_allow_area_middle_end` (`False`); dazu die Konstanten
+`TIMELINE_AREA_*` und `MAX_TIMELINE_AREA_SECONDS = 600.0`. Rollenkanon sind
+`area_1_start_end`, `area_2_start_middle`, `area_3_middle_end`;
+`normalize_timeline_area` akzeptiert GUI-, CLI- und handgeschriebene Aliase
+(`1`, `area 2`, `Start & End`, `2) Start to Middle`, kanonische Schlüssel) und
+liefert sonst `""` = keine Rolle. Eine nummerierte Schreibweise wird nur
+akzeptiert, wenn Nummer und Rolle übereinstimmen – `1. middle to end` ergibt
+`""` statt einer stillen Fehlzuordnung. `folder_area_map` nutzt
+`video_pool.normalize_legacy_root` als Ordnerschlüssel und
+`media_source_folder` als Clip-Identität, verworfen wird alles, was kein
+nicht-leeres dict ist.
+
+### Weiche Zonen statt harter Schnitte
+
+`area_zone_bounds(target, settings)` liefert `(start_zone, midpoint, end_start)`:
+Reserven werden auf `0.3 · target` verkleinert, sobald `start + end > 0.8 ·
+target`, der Midpoint wird zwischen beide Kanten geklemmt, alle Werte werden
+geklemmt und auf Endlichkeit geprüft (`0`/negativ/`NaN`/`inf` → Default,
+`> 600 s` → Cap). `_zone_plan` erzeugt daraus vier Zonen:
+`[0 → start] = Area 1`, `[start → midpoint] = Area 2`,
+`[midpoint → end_start] = Area 3`, `[end_start → target] = Area 1`.
+
+`order_media_by_timeline_areas` baut pro Rolle eine Queue in Eingangsreihenfolge,
+läuft die Zonen ab und nimmt jeweils **ganze** Clips: Die Uhr advance nur um
+vollständige Clip-Dauern, geprüft wird erst danach – deshalb darf ein Clip über
+ein Zonenziel hinausragen (23,7 s bei 20 s Ziel) und wird nie gekürzt.
+`_clip_seconds` misst mit dem kanonischen `Duration Before Merge`-Multiplikator
+(`timeline.duration_before_merge_value`, `0.70x`-Default, optional per
+`playback_rate` überschrieben), weil Zonenziele Positionen der *gerenderten*
+Timeline sind; Clip-Dauern werden dabei nie verändert. `_next_item` liefert nur
+aus der eigenen Rolle, sonst `None`: Eine Zone wird nie mit fremdem Material
+aufgefüllt, sondern endet an der natürlichen Clip-Grenze.
+`_area_one_start_cap` begrenzt die führende Zone ausschließlich dann, wenn das
+Material der Rolle nicht für beide Reserven reicht – Area 1 bedient Anfang *und*
+Ende, also wird knappes Material nach den konfigurierten Zielen geteilt
+(mindestens ein Clip pro Ende, nie ein Schnitt). Nicht verbrauchte Clips
+(Ordner ohne Rolle, Reste anderer Rollen) folgen anschließend in
+Eingangsreihenfolge, wodurch die allgemeine Reserve erhalten bleibt und die
+bestehende Required-Only-Auswahl unverändert entscheidet. Ohne Rolle, ohne
+positives Ziel oder mit weniger als zwei Clips ist die Funktion ein No-op und
+gibt die Eingangsliste unverändert zurück.
+
+### Shorts-Pool
+
+`shorts_area_pool` filtert Area 3 heraus (`SHORTS_TIMELINE_AREAS`), sofern
+`shorts_allow_area_middle_end` nicht gesetzt ist, und fällt auf den vollen Pool
+zurück, wenn der Filter sonst leer würde. Die Reihenfolge der verbleibenden Clips
+bleibt unangetastet, der Without-Replacement-Cursor und die gesamte
+Shorts-Erzeugung sind unverändert.
+
+### Verdrahtung
+
+`main_project.create_main` ruft den Scheduler nach einem eventuellen Pool-Take
+und **vor** `fit_media_to_duration`, gesteuert durch den neuen expliziten
+Parameter `apply_timeline_areas` (Default `True`);
+`create_youtube_exports` setzt ihn auf `kind == "long"`, weil `short_video_pool`
+nach der Vorab-Planung `None` sein kann und daher kein zuverlässiges
+Long-Form-Kriterium ist. Derselbe Orchestrator bildet `shorts_pool_media =
+shorts_area_pool(effective_media, …)` und speist damit sowohl den Laufzeit-Pool
+als auch den Planungs-Pool. `video_pool.compute_pool_status` erhält optional
+`timeline_area_settings` und wendet (lazy importiert, nur bei `target > 0`)
+dieselbe Ordnung inklusive Rate an, damit GUI-Status und Stage-1-Sequenz
+identisch entscheiden. `diagnostics.run_project_diagnostics` meldet im Eintrag
+„Timeline Areas" Rollen, weiche Ziele, Shorts-Politik und – falls Medien
+bekannt sind – die Clip-Verteilung, fail-closed bei unbrauchbaren Werten.
+
+### Persistenz und Cache-Identität
+
+`SettingsStore` braucht keine Migration: `load()` filtert unbekannte Schlüssel,
+fehlende Felder erhalten die dokumentierten Defaults, Projektdateien vor diesem
+Feature laden unverändert und bleiben ein No-op. Alle fünf Felder stehen in
+`render_cache._SETTING_FIELDS`; `json.dumps(..., sort_keys=True)` macht auch das
+dict deterministisch, sodass äquivalente Mappings dieselbe Identität ergeben.
+`FINGERPRINT_SCHEMA` steigt von `4` auf `5`, damit kein Eintrag, der ohne
+Quellenordnung entstand, still wiederverwendet wird; Stage 2 behält Schema `2`.
+
+## Phase 25: Ausgabe-Modi, Script-Gruppen und eigene Short-Musik
+
+### Planungsschicht `short_groups.py`
+
+Die komplette neue Logik liegt in einem eigenen, reinen Planungsmodul ohne
+FFmpeg-, GUI- oder Engine-Abhängigkeit:
+
+* `normalize_short_groups(raw, ordered_units)` validiert die Gruppen gegen die
+  geordnete Voiceover-Liste: Mitglieder werden wie die Einheitenliste aufgelöst,
+  unbekannte entfallen, eine Einheit gehört zu höchstens einer Gruppe (die erste
+  gewinnt), Mitglieder werden nach ihrer Listenposition sortiert und Gruppen mit
+  weniger als zwei verbleibenden Mitgliedern entfallen ganz.
+* `build_short_plan(units, groups)` liefert einen `ShortPlan` pro Short
+  (`index`, `positions`, `units`, `output_name`). Ohne Gruppen ist das exakt ein
+  Plan pro Einheit mit der bisherigen Nummer und dem bisherigen Namen.
+* `short_output_name` erzeugt `003` für eine Einheit und `003-004` (bzw.
+  `004-005-006`) für eine Gruppe; `short_cache_key` bleibt für eine Einheit
+  byteweise identisch zur bisherigen Formel
+  `youtube-short-<index>-<sha256("short:<index>:<unit>")[:16]>` und faltet bei
+  einer Gruppe alle Mitglieder in den Digest.
+* `short_music_for` / `short_music_volume_for` / `short_voiceover_pause` lösen
+  die Short-spezifischen Werte auf. Eigene Musik überschreibt nur diesen einen
+  Short; ohne Shorts-Titel bleibt der Short stumm (keine Long-Form-Erbschaft).
+  `short_voiceover_pause` gibt `0.0` für einen Short aus einer Einheit zurück
+  (bisheriges Verhalten) und die konfigurierte Projekt-Pause für eine Gruppe,
+  weil eine Gruppe wirklich eine kombinierte Voiceover-Timeline ist.
+
+### Auftragsmodell und Orchestrierung
+
+`ShortJob` behält `voiceover_path`/`script_path` als **erste** Mitglieder, damit
+alle bestehenden Konsumenten (Script-Abschnitte, Transkript-Sidecars, Cache,
+Logs) unverändert funktionieren, und ergänzt `voiceover_paths`/`script_paths`
+sowie die Eigenschaften `members`, `member_scripts`, `grouped`.
+`build_short_jobs` erzeugt einen Auftrag pro `ShortPlan`; `short_settings` setzt
+`voiceover_paths` auf alle Mitglieder. Damit rendert die bestehende
+Multi-Voiceover-Pipeline eine Gruppe als **einen** Short: eine Video-, Audio-,
+Untertitel- und Musik-Timeline, ein Encode, keine nachträgliche MP4-Konkatenation.
+Die aufsummierten Untertitel-Zeitstempel stammen aus dem bestehenden
+matched-Alignment ("concatenate the canonical word timelines with cumulative
+offsets"), das unverändert blieb.
+
+`_short_script_sections` hängt an einen gruppierten Auftrag die
+aneinandergereihten Mitglieder-Abschnitte (Listenreihenfolge) statt eines
+einzelnen Abschnitts; fehlt eine Einheit akustisch, bleibt es bei der bisherigen
+Konfiguration. Im Individual-Scripts-Modus ergänzt
+`_grouped_matched_sections` **nur** für Gruppen eine kombinierte
+Transkriptquelle, damit das einzelne `.txt` eines gruppierten Shorts Script A
+gefolgt von Script B enthält (`global_script_path` wird im matched-Modus von
+`create_main` ignoriert, beeinflusst also weder Alignment noch Untertitel).
+Der Without-Replacement-Pool reserviert in `create_youtube_exports` die komplette
+kombinierte Dauer (`voiceover_timeline_duration` über alle Mitglieder plus
+konfigurierter Pause) statt nur die Dauer der ersten Einheit.
+
+### Persistenz, Cache und Diagnose
+
+Drei neue Felder in `ExportSettings` (`short_script_groups`,
+`short_music_overrides`, `short_music_volume_overrides`) sind leer per Default;
+`SettingsStore` braucht keine Migration, weil `load()` unbekannte Schlüssel
+filtert und `save()` über `asdict()` schreibt. Ein Bump von `FINGERPRINT_SCHEMA`
+war **nicht** nötig: Die Stage-1-Identität enthält bereits `voiceovers` (alle
+Einheiten des Auftrags), `scripts` und `music`, ein gruppierter Short oder eine
+eigene Short-Musik ergibt also automatisch einen anderen Fingerprint. Die
+Diagnose ergänzt den Eintrag `YouTube Shorts Mapping`, der Lauf loggt
+`YouTube Shorts script grouping: …`.
+
+### GUI und CLI
+
+Die Voiceover-/Script-Tabelle behält ihr Verhalten (Drag-Reihenfolge,
+Move-Buttons, Remove/Script-Aktionen arbeiten weiter auf der aktuellen Zeile)
+und wird nur erweitert: vierte Spalte *Short*, `ExtendedSelection` ausschließlich
+auf dieser Tabelleninstanz, eine zweite Button-Zeile im selben Grid-Row-Index
+(keine bestehende Zeile verschiebt sich) mit Group/Ungroup und eigener
+Short-Musik. Gruppen und Overrides werden als Pfade gespeichert und bei jeder
+Änderung der Liste bereinigt (`_prune_short_state`), überleben also Umsortieren.
+CLI: `--short-group A+B`, `--short-music-for VO=MUSIK`,
+`--short-music-volume-for VO=PROZENT`.
+## Phase 26: Eine Sprache für die gesamte Sprach-/Untertitel-Pipeline
+
+### Kanonisches Vokabular in `models.py`
+
+Statt verstreuter Zuweisungen gibt es jetzt **eine** Sprachquelle: die
+Konstanten `SUBTITLE_LANGUAGE_GERMAN`/`_ENGLISH`/`_AUTO`, die
+Nutzerlabels `SUBTITLE_LANGUAGE_LABELS` (`Deutsch`, `English`), die ASR-Codes
+`SUBTITLE_LANGUAGE_CODES` (`de`, `en`, `None` für Auto), die Alias-Tabelle
+(`de`/`deutsch`/`german`/`en`/`englisch`/`english`, Groß-/Kleinschreibung und
+Leerzeichen egal) sowie `SUBTITLE_LANGUAGE_CHOICES = (German, English)` als die
+genau zwei auswählbaren Werte. `normalize_subtitle_language` führt jede Eingabe
+auf den kanonischen internen Wert zurück, `subtitle_language_code` auf das
+ASR-Kürzel, `subtitle_language_label` auf die Anzeige; ein unbrauchbarer Wert
+wirft `VideoMergerError`, wird also nie still zu „auto". Der kanonische Wert für
+Deutsch bleibt das historische `"German"` — deshalb ändern sich weder
+Projektdateien noch Fingerprints noch Cache-Schlüssel bestehender Projekte.
+`ExportSettings.subtitle_language` hat `DEFAULT_SUBTITLE_LANGUAGE` als Default.
+
+### ASR, Alignment und Cache-Identität
+
+`alignment.py` ersetzt die drei identischen Inline-Zuweisungen
+(`{"German": "de", …}` plus Mitgliedschaftsprüfung) durch
+`subtitle_language_code(language)`; Semantik und Fehlermeldung bleiben
+gleich. `align`, `align_global` und `recognize` zwingen das Kürzel damit in
+`WhisperModel.transcribe(..., language=<code>)` — eine ausdrückliche Auswahl
+schlägt die automatische Erkennung, `Auto` (Code `None`) behält sie.
+`_normalize` und die gesamte Text-Pipeline blieben unverändert: gemessen Kontraktionen 0.944, verrauschtes Englisch 0.914, Kleinschreibung/Gedanken-
+strich/typografische Apostrophe 1.000 Kompatibilität.
+
+Cache-Identitäten enthalten die Sprache bereits (`transcriptions` über
+`audio_sha256 + model + language`, `alignments` über den Transkriptionsschlüssel
+plus Skript-Hash, Stage-1-Fingerprint über `_SUBTITLE_SETTING_FIELDS` mit
+`subtitle_language`), deshalb war kein Schema-Bump nötig: Deutsch behält seine
+Einträge, English erzeugt eigene. `_CACHE_SCHEMA` bleibt 4.
+
+### Fail-closed-Gate und Rückwärtskompatibilität
+
+`main_project.py` loggt nach dem Alignment einmal pro Auftrag die Sprache samt
+gemessener Kompatibilität (`Speech language: … · ASR language: … ·
+Alignment reference: supplied script · compatibility …`) und bricht ab, wenn
+**alle vier** Bedingungen gelten: es gibt Alignment-Wörter, die ausdrückliche
+Auswahl ist nicht der historische Standard (also weder `German` noch `Auto`),
+die Kompatibilität liegt unter `LANGUAGE_MISMATCH_COMPATIBILITY = 0.20`, und
+`allow_alignment_warnings` ist aus. Die Meldung lautet
+`SUBTITLE GENERATION FAILED [language / script alignment]`, nennt die Sprache
+und verhindert MP4/SRT/VTT. Deutsch und `Auto` behalten bewusst das bisherige
+Verhalten (warnen, dann mit interpolierten Zeitstempeln rendern), weil
+bestehende Projekte byte- und stufenkompatibel bleiben müssen — gemessen:
+Englisch-Skript mit deutscher Erkennung 0.043, englisch/englisch 1.000,
+deutsch/deutsch 1.000. `allow_alignment_warnings` existierte bereits, wurde aber
+nie ausgewertet; es ist jetzt die dokumentierte Ausnahmeregel.
+
+### GUI, CLI und Diagnose
+
+Die ComboBox **Speech Language** steht in der Gruppe *3 · Subtitles* in Zeile 2
+(direkt unter *Output Mode*, vor Style/Animation/Font/Position), bezieht ihre
+Einträge aus `SUBTITLE_LANGUAGE_CHOICES` und trägt als Item-Daten den kanonischen
+Wert — `currentData()` statt `currentText()` liefert also `"German"`/`"English"`,
+während `"Deutsch"`/`"English"` angezeigt werden. `_load_subtitle_language` lädt
+tolerant: ein gespeicherter Wert wird normalisiert, ein unbekannter (z. B. `Auto`
+aus einer alten Datei) als zusätzlicher Eintrag sichtbar gemacht und nie
+still überschrieben. CLI: `--language de|en|German|English|Auto`, Default `de`,
+normalisiert in `ExportSettings.subtitle_language`; bestehende Aufrufe bleiben
+unverändert gültig. Die Diagnose ergänzt den Eintrag **Subtitle Language**
+(Label, ASR-Kürzel, `forced onto faster-whisper` bzw. `detected by
+faster-whisper`, Alignment-Referenz) und zeigt einen unbrauchbaren Wert als
+fehlgeschlagenes Element statt abzustürzen.
+
+### Verifikation
+
+A/B-Vergleich gegen den Vorgänger-Commit mit identischem Harness: Long-Form
+Deutsch, Long-Form English und ein gruppierter deutscher Short liefern
+byteweise gleiche SRT/VTT-Inhalte, gleiche Cue-Zeitstempel, gleiche Dauer und
+gleiche ASR-Sprachcodes (Laufzeiten 0.55/0.57/1.91 s vorher, 0.60/0.56/1.91 s
+nachher). Die vollständige Test-Suite hat dieselben 17 vorbestehenden
+Sandbox-Fehlschläge und dieselben 8 Skips wie vorher, plus 64 neue bestandene
+Phase-26-Tests (kanonisches Vokabular, Sprachweitergabe an `align`/`align_global`/
+`recognize`, Cache-Isolation Deutsch↔English, Persistenz und Alt-Projekte, CLI,
+Diagnose, GUI-Vertrag auf Quelltextebene sowie echte FFmpeg-Render für Long-Form,
+gruppierte und ungruppierte Shorts).

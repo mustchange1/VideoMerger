@@ -41,9 +41,7 @@ param(
     [string]$SubtitleFont = 'modern_sans_bold',
     [ValidateSet('Bottom', 'Medium-Low', 'Middle', 'Top')]
     [string]$SubtitlePosition = 'Bottom',
-    [string]$Watermark = '',
-    [string]$QuoteArtwork = '',
-    [int]$QuotePdfPage = 1
+    [string]$Watermark = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,7 +82,6 @@ $Intro = Require-File $Intro 'Intro'
 $Outro = Require-File $Outro 'Outro'
 $Voiceover = @($Voiceover | ForEach-Object { Require-File $_ 'Voiceover' })
 if ($Watermark) { $Watermark = Require-File $Watermark 'Watermark' }
-if ($QuoteArtwork) { $QuoteArtwork = Require-File $QuoteArtwork 'Quote artwork' }
 
 if (-not $RunId) {
     $RunId = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -160,7 +157,6 @@ $Metadata = [ordered]@{
         intro = $Intro
         outro = $Outro
         watermark = [bool]$Watermark
-        quote_artwork = [bool]$QuoteArtwork
         one_click = $true
     }
 }
@@ -191,12 +187,6 @@ foreach ($Path in $Voiceover) {
 if ($Watermark) {
     [void]$CliArguments.Add('--watermark')
     [void]$CliArguments.Add($Watermark)
-}
-if ($QuoteArtwork) {
-    [void]$CliArguments.Add('--quote-artwork')
-    [void]$CliArguments.Add($QuoteArtwork)
-    [void]$CliArguments.Add('--quote-pdf-page')
-    [void]$CliArguments.Add([string]$QuotePdfPage)
 }
 
 $Records = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()

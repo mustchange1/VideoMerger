@@ -425,18 +425,23 @@ def test_alignment_retains_script_only_words_with_local_fallback_timing(tmp_path
     result = aligner.align(
         "Today we discuss discipline and consistency.", tmp_path / "voice.wav", "English"
     )
-    # Fail-closed contract: EVERY script word is retained, including ones the
-    # recognizer missed. Unmatched trailing words share the fallback window
-    # after the last anchored word (0.8 s here), each with confidence 0.0.
+    # Every script word is retained — unmatched words are no longer dropped.
+    # The two words the speaker did not say receive the bounded 0.24 s fallback
+    # rate directly after the last real acoustic anchor, and the canonical
+    # timeline stays strictly ordered with positive durations.
     assert [word.text for word in result.words] == [
         "Today", "we", "discuss", "discipline", "and", "consistency.",
     ]
     assert [round(word.start, 2) for word in result.words[:4]] == [0.0, 0.2, 0.4, 0.6]
-    assert result.words[4].start == pytest.approx(0.8)
-    assert result.words[5].start == pytest.approx(result.words[4].end)
-    for word in result.words[4:]:
-        assert word.end - word.start <= 0.24
-        assert word.confidence == 0.0
+    fallback = result.words[4:]
+    assert fallback[0].start == pytest.approx(0.8)
+    assert all(word.confidence == 0.0 for word in fallback)
+    assert all(word.end - word.start <= 0.24 + 1e-9 for word in fallback)
+    assert all(word.start < word.end for word in result.words)
+    assert all(
+        right.start >= left.end - 1e-9
+        for left, right in zip(result.words, result.words[1:])
+    )
 
 
 def test_script_only_middle_word_is_retained_with_a_local_fallback(tmp_path):

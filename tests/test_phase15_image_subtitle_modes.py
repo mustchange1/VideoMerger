@@ -256,11 +256,11 @@ def test_add_image_transition_is_local_to_image_boundaries(tmp_path: Path) -> No
     assert "[vx2][v3]xfade=transition=custom" in graph
 
 
-def test_add_image_before_main_stays_after_quote_flyer(tmp_path: Path) -> None:
-    intro, main, quote, image = (
-        tmp_path / name for name in ("intro.mp4", "main.mp4", "flyer.png", "add-image.jpg")
+def test_add_image_before_main_stays_immediately_before_main(tmp_path: Path) -> None:
+    intro, main, image = (
+        tmp_path / name for name in ("intro.mp4", "main.mp4", "add-image.jpg")
     )
-    for path in (intro, main, quote, image):
+    for path in (intro, main, image):
         path.write_bytes(b"fixture")
     engine = type("FakeEngine", (), {})()
     engine.ffprobe_path = Path("ffprobe")
@@ -279,10 +279,11 @@ def test_add_image_before_main_stays_after_quote_flyer(tmp_path: Path) -> None:
     MainProjectEngine(engine).add_outro(
         ExportSettings(
             workflow_stage="outro", main_video_path=str(main), intro_path=str(intro),
-            quote_enabled=True, quote_artwork_path=str(quote),
             image_enabled=True, image_path=str(image), image_position="before_main",
         ),
         tmp_path,
     )
     names = [item.path.name for item in captured[-1]]
-    assert names == ["intro.mp4", "flyer.png", "add-image.jpg", "main.mp4"]
+    assert names == ["intro.mp4", "add-image.jpg", "main.mp4"]
+    # The removed Quote/Flyer section left no media item or role behind.
+    assert not any(getattr(item, "is_quote_artwork", False) for item in captured[-1])

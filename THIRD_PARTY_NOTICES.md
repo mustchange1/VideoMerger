@@ -7,7 +7,6 @@ VideoMerger installs and uses the following third-party projects:
 - **Python** – Python Software Foundation License. See <https://docs.python.org/3/license.html>.
 - **faster-whisper** – installed from PyPI; MIT License. See <https://github.com/SYSTRAN/faster-whisper>.
 - **fontTools** – installed from PyPI; MIT License. Used locally to read selected-font advance metrics. See <https://github.com/fonttools/fonttools>.
-- **PyMuPDF** – installed from PyPI for local PDF page rasterization; AGPL/commercial dual licensing applies. See <https://pymupdf.readthedocs.io/en/latest/about.html#licensing>.
 - **Noto Sans Regular/Bold** – bundled in `tools/fonts` under the SIL Open Font License 1.1; the complete license is `tools/fonts/OFL.txt`. Source: <https://github.com/notofonts/noto-fonts>.
 - **Eveleth Clean** – commercial/proprietary and **not bundled**. VideoMerger only detects a user-installed licensed copy and otherwise uses the Noto Sans fallback.
 - **CTranslate2** – installed as a faster-whisper dependency; MIT License. See <https://github.com/OpenNMT/CTranslate2>.
