@@ -13,7 +13,9 @@ session is tracked by `arena/01a09941-videomerger`).
   which does not exist in this repository (verified locally, after fetch, and via
   for-each-ref). The repository contains exactly one commit – the squashed 1.3.0
   baseline – which is what was verified (see `BASELINE.md`).
-* Final commit: the single commit of this delivery (all VM Automatic files added).
+* Final commit: `d8e4c1d` ("Add VM Automatic (Video Merger Automatic)
+  companion automation") on `arena/01a09941-videomerger`, pushed to
+  `mustchange1/VideoMerger`.
 * No history rewrite, no rebase, no force-push. `main` untouched.
 
 ## Files changed / added
