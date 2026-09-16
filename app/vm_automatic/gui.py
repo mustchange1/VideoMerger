@@ -433,10 +433,21 @@ class VMAutomaticWindow(QMainWindow):
 
 
 def launch() -> int:
+    from .applock import InstanceLockError, SingleInstanceLock
+
     app = QApplication(sys.argv)
     app.setApplicationName("VM Automatic")
     app.setOrganizationName("Local Video Tools")
     app.setStyle("Fusion")
-    window = VMAutomaticWindow()
-    window.show()
-    return app.exec()
+    lock = SingleInstanceLock()
+    try:
+        lock.acquire()
+    except InstanceLockError as exc:
+        QMessageBox.critical(None, "VM Automatic", str(exc))
+        return 1
+    try:
+        window = VMAutomaticWindow()
+        window.show()
+        return app.exec()
+    finally:
+        lock.release()
