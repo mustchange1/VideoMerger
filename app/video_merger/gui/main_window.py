@@ -42,7 +42,11 @@ from ..models import (
     ProgressEvent,
     normalize_subtitle_language,
 )
-from ..music_tracks import normalize_music_tracks
+from ..music_tracks import (
+    normalize_music_track,
+    normalize_music_tracks,
+    normalize_sequence_mode,
+)
 from ..opening_effects import OPENING_EFFECTS, normalize_opening_effect
 from ..project_order import natural_order, natural_sort_key, randomize_order
 from ..project_assets import probe_audio
@@ -53,8 +57,10 @@ from ..subtitles import (
     DEFAULT_SHORT_ANIMATION,
     LONG_ANIMATION_OPTIONS,
     SHORT_ANIMATION_OPTIONS,
+    SUBTITLE_POSITIONS,
     clamp_font_size_percent,
     normalize_subtitle_animation,
+    normalize_subtitle_position,
 )
 from ..timeline_areas import TIMELINE_AREA_LABELS, normalize_timeline_area, timeline_area_label
 from ..paths import ensure_project_directories, locate_ffmpeg, project_root
@@ -330,6 +336,28 @@ class MainWindow(QMainWindow):
             "Assign the selected role to the folder highlighted in the list above."
         )
         self.set_folder_area_button.clicked.connect(self._apply_folder_area)
+        # Phase 28: dedicated YouTube Shorts video sources. Completely
+        # independent from the Long-Form folders above: Shorts draw their
+        # clips ONLY from the folders configured here; an empty list keeps
+        # the historical behavior (Shorts use the shared pool's Area 1 + 2).
+        self.shorts_folders_list = QListWidget()
+        self.shorts_folders_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.shorts_folders_list.setMaximumHeight(105)
+        self.shorts_folders_list.setToolTip(
+            "YouTube Shorts Video Sources. Shorts use ONLY these folders; the "
+            "Long-Form folders above stay untouched. Empty = the historical "
+            "behavior (Shorts draw from the shared Long-Form pool)."
+        )
+        self.add_shorts_folder_button = QPushButton("Add Folder …")
+        self.remove_shorts_folder_button = QPushButton("Remove Folder")
+        self.clear_shorts_folders_button = QPushButton("Clear All")
+        self.shorts_folder_up_button = QPushButton("Up")
+        self.shorts_folder_down_button = QPushButton("Down")
+        self.add_shorts_folder_button.clicked.connect(self._add_shorts_folder)
+        self.remove_shorts_folder_button.clicked.connect(self._remove_shorts_folder)
+        self.clear_shorts_folders_button.clicked.connect(self._clear_shorts_folders)
+        self.shorts_folder_up_button.clicked.connect(lambda: self._move_shorts_folder(-1))
+        self.shorts_folder_down_button.clicked.connect(lambda: self._move_shorts_folder(1))
         folder_buttons = QHBoxLayout()
         folder_buttons.addWidget(self.add_folder_button)
         folder_buttons.addWidget(self.remove_folder_button)
@@ -394,9 +422,20 @@ class MainWindow(QMainWindow):
         io_layout.addWidget(QLabel("Timeline Areas"), 5, 0, Qt.AlignTop)
         io_layout.addLayout(area_row, 5, 1, 1, 2)
         io_layout.addWidget(self.shorts_allow_area3_check, 6, 1, 1, 2)
+        shorts_folder_buttons = QHBoxLayout()
+        for widget in (
+            self.add_shorts_folder_button, self.remove_shorts_folder_button,
+            self.clear_shorts_folders_button, self.shorts_folder_up_button,
+            self.shorts_folder_down_button,
+        ):
+            shorts_folder_buttons.addWidget(widget)
+        shorts_folder_buttons.addStretch(1)
+        io_layout.addWidget(QLabel("YouTube Shorts Video Sources"), 8, 0, Qt.AlignTop)
+        io_layout.addWidget(self.shorts_folders_list, 8, 1, 1, 2)
+        io_layout.addLayout(shorts_folder_buttons, 9, 1, 1, 2)
         drop_hint = QLabel("Add one or more configured folders; the legacy root scans its immediate files only. MP4, MOV, MKV, AVI, WebM, M4V …")
         drop_hint.setObjectName("dropHint")
-        io_layout.addWidget(drop_hint, 7, 0, 1, 3)
+        io_layout.addWidget(drop_hint, 10, 0, 1, 3)
         outer.addWidget(io_group)
 
         audio_group = QGroupBox("2 · Audio & Script")
@@ -458,6 +497,92 @@ class MainWindow(QMainWindow):
         short_music_up_button.clicked.connect(lambda: self._move_music_track(self.short_music_tracks_list, -1))
         short_music_down_button = QPushButton("Down")
         short_music_down_button.clicked.connect(lambda: self._move_music_track(self.short_music_tracks_list, 1))
+        # Phase 28: explicit playback behavior per profile and per track.
+        # The sequence mode decides what happens after the last track; the
+        # per-track mode (Play once / Loop / Repeat N) applies to the track
+        # selected in the list above. Defaults keep the historical behavior:
+        # every track plays once and the whole sequence loops as one unit.
+        self.music_sequence_mode_combo = QComboBox()
+        self.music_sequence_mode_combo.addItem(
+            "Loop entire sequence (A → B → C → A → B → C …)", "loop_sequence"
+        )
+        self.music_sequence_mode_combo.addItem(
+            "Play sequence once (music ends after the last track)", "play_once"
+        )
+        self.music_sequence_mode_combo.setToolTip(
+            "Long-Form sequence behavior after the last track. 'Loop entire "
+            "sequence' is the historical default; 'Play sequence once' ends "
+            "the music after the final track while the video continues."
+        )
+        self.short_music_sequence_mode_combo = QComboBox()
+        self.short_music_sequence_mode_combo.addItem(
+            "Loop entire sequence (A → B → C → A → B → C …)", "loop_sequence"
+        )
+        self.short_music_sequence_mode_combo.addItem(
+            "Play sequence once (music ends after the last track)", "play_once"
+        )
+        self.short_music_sequence_mode_combo.setToolTip(
+            "Shorts sequence behavior after the last track. Completely "
+            "independent from the Long-Form sequence mode above."
+        )
+        self.music_repeat_spin = QSpinBox()
+        self.music_repeat_spin.setRange(2, 100)
+        self.music_repeat_spin.setValue(2)
+        self.music_repeat_spin.setToolTip("Repeat count for the 'Repeat N' track mode.")
+        self.music_track_mode_label = QLabel("Selected track plays once")
+        self.music_track_mode_label.setObjectName("subtitle")
+        music_track_once_button = QPushButton("Track: Play Once")
+        music_track_once_button.setToolTip("The selected track plays a single time, then the next track follows.")
+        music_track_once_button.clicked.connect(
+            lambda: self._set_music_track_mode(self.music_tracks_list, self.music_repeat_spin, self.music_track_mode_label, "once")
+        )
+        music_track_loop_button = QPushButton("Track: Loop")
+        music_track_loop_button.setToolTip(
+            "The selected track repeats until the required audio duration is "
+            "satisfied; later tracks of the sequence are not reached."
+        )
+        music_track_loop_button.clicked.connect(
+            lambda: self._set_music_track_mode(self.music_tracks_list, self.music_repeat_spin, self.music_track_mode_label, "loop")
+        )
+        music_track_repeat_button = QPushButton("Track: Repeat N")
+        music_track_repeat_button.setToolTip(
+            "The selected track plays exactly N times, then the next track follows."
+        )
+        music_track_repeat_button.clicked.connect(
+            lambda: self._set_music_track_mode(self.music_tracks_list, self.music_repeat_spin, self.music_track_mode_label, "repeat")
+        )
+        self.music_tracks_list.currentRowChanged.connect(
+            lambda _row: self._update_music_track_mode_label(self.music_tracks_list, self.music_track_mode_label)
+        )
+        self.short_music_repeat_spin = QSpinBox()
+        self.short_music_repeat_spin.setRange(2, 100)
+        self.short_music_repeat_spin.setValue(2)
+        self.short_music_repeat_spin.setToolTip("Repeat count for the 'Repeat N' track mode.")
+        self.short_music_track_mode_label = QLabel("Selected track plays once")
+        self.short_music_track_mode_label.setObjectName("subtitle")
+        short_music_track_once_button = QPushButton("Track: Play Once")
+        short_music_track_once_button.setToolTip("The selected track plays a single time, then the next track follows.")
+        short_music_track_once_button.clicked.connect(
+            lambda: self._set_music_track_mode(self.short_music_tracks_list, self.short_music_repeat_spin, self.short_music_track_mode_label, "once")
+        )
+        short_music_track_loop_button = QPushButton("Track: Loop")
+        short_music_track_loop_button.setToolTip(
+            "The selected track repeats until the required audio duration is "
+            "satisfied; later tracks of the sequence are not reached."
+        )
+        short_music_track_loop_button.clicked.connect(
+            lambda: self._set_music_track_mode(self.short_music_tracks_list, self.short_music_repeat_spin, self.short_music_track_mode_label, "loop")
+        )
+        short_music_track_repeat_button = QPushButton("Track: Repeat N")
+        short_music_track_repeat_button.setToolTip(
+            "The selected track plays exactly N times, then the next track follows."
+        )
+        short_music_track_repeat_button.clicked.connect(
+            lambda: self._set_music_track_mode(self.short_music_tracks_list, self.short_music_repeat_spin, self.short_music_track_mode_label, "repeat")
+        )
+        self.short_music_tracks_list.currentRowChanged.connect(
+            lambda _row: self._update_music_track_mode_label(self.short_music_tracks_list, self.short_music_track_mode_label)
+        )
         self.script_mode_combo = QComboBox()
         self.script_mode_combo.addItem("One Global Script (eine Textdatei für die komplette Voiceover-Timeline)", "single")
         self.script_mode_combo.addItem("Individual Scripts (Basename-Matching pro Voiceover)", "matched")
@@ -594,6 +719,16 @@ class MainWindow(QMainWindow):
         for button in (music_add_button, music_remove_button, music_up_button, music_down_button):
             music_track_buttons.addWidget(button)
         music_tracks_box.addLayout(music_track_buttons)
+        music_track_modes = QHBoxLayout()
+        for widget in (
+            music_track_once_button, music_track_loop_button,
+            music_track_repeat_button, self.music_repeat_spin,
+        ):
+            music_track_modes.addWidget(widget)
+        music_track_modes.addStretch(1)
+        music_tracks_box.addLayout(music_track_modes)
+        music_tracks_box.addWidget(self.music_track_mode_label)
+        music_tracks_box.addWidget(self.music_sequence_mode_combo)
         audio_layout.addLayout(music_tracks_box, 6, 1)
         audio_layout.addWidget(QLabel("Background Music (Shorts)"), 7, 0)
         short_music_tracks_box = QVBoxLayout()
@@ -604,6 +739,16 @@ class MainWindow(QMainWindow):
         for button in (short_music_add_button, short_music_remove_button, short_music_up_button, short_music_down_button):
             short_music_track_buttons.addWidget(button)
         short_music_tracks_box.addLayout(short_music_track_buttons)
+        short_music_track_modes = QHBoxLayout()
+        for widget in (
+            short_music_track_once_button, short_music_track_loop_button,
+            short_music_track_repeat_button, self.short_music_repeat_spin,
+        ):
+            short_music_track_modes.addWidget(widget)
+        short_music_track_modes.addStretch(1)
+        short_music_tracks_box.addLayout(short_music_track_modes)
+        short_music_tracks_box.addWidget(self.short_music_track_mode_label)
+        short_music_tracks_box.addWidget(self.short_music_sequence_mode_combo)
         audio_layout.addLayout(short_music_tracks_box, 7, 1)
         # 1.2.4 Default: Original Audio (Mute/Low bleiben unabhängig wählbar).
         self.original_audio_combo = QComboBox()
@@ -778,6 +923,23 @@ class MainWindow(QMainWindow):
         self.duration_after_merge_combo.setCurrentIndex(
             self.duration_after_merge_combo.findData(1.0)
         )
+        # Phase 28: Shorts get their own Duration After Merge multiplier with
+        # an extended range (0.25x - 3.50x). Semantics are identical to the
+        # shared control above: it is a playback-rate multiplier applied after
+        # merging (atempo), never a time value. "Same as Long-Form" keeps the
+        # historic behavior of following the shared value + enable flag, so
+        # projects saved before this change behave exactly like before.
+        self.shorts_duration_after_merge_combo = QComboBox()
+        self.shorts_duration_after_merge_combo.addItem("Same as Long-Form", None)
+        for step in range(10, 141):  # 0.25 … 3.50 in 0.05 steps
+            value = step / 40.0
+            self.shorts_duration_after_merge_combo.addItem(f"{value:.2f}x", value)
+        self.shorts_duration_after_merge_combo.setToolTip(
+            "Playback-rate multiplier applied to Shorts AFTER merging "
+            "(2.00x at most uses a single atempo, higher values are chained "
+            "filters). 'Same as Long-Form' follows the shared control and "
+            "enable checkbox above."
+        )
         # 1.2.4/1.3.0: Zieldauer-Einflüsse sofort im Video-Pool-Status zeigen.
         self.end_padding_spin.valueChanged.connect(self._update_pool_status)
         # A visual intro needs real video material too, so the pool status has
@@ -793,6 +955,7 @@ class MainWindow(QMainWindow):
         self.duration_before_merge_shorts_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_combo.currentIndexChanged.connect(self._update_pool_status)
         self.duration_after_merge_check.toggled.connect(self._update_pool_status)
+        self.shorts_duration_after_merge_combo.currentIndexChanged.connect(self._update_pool_status)
         # Row 13 moved to group "4d · Timeline" (Long-Form Outro); the rows
         # below keep their relative order without a gap.
         audio_layout.addWidget(QLabel("If Video Is Too Short"), 15, 0)
@@ -813,6 +976,8 @@ class MainWindow(QMainWindow):
         after_row.addWidget(self.duration_after_merge_check)
         after_row.addWidget(self.duration_after_merge_combo)
         audio_layout.addLayout(after_row, 20, 1, 1, 2)
+        audio_layout.addWidget(QLabel("Duration After Merge (Shorts)"), 21, 0)
+        audio_layout.addWidget(self.shorts_duration_after_merge_combo, 21, 1)
         outer.addWidget(audio_group)
 
         subtitle_group = QGroupBox("3 · Subtitles")
@@ -869,7 +1034,11 @@ class MainWindow(QMainWindow):
         for key, label in FONT_OPTIONS:
             self.subtitle_font_combo.addItem(label, key)
         self.subtitle_position_combo = QComboBox()
-        self.subtitle_position_combo.addItems(["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"])
+        # Phase 28: exactly one clear option per visual spot. The former
+        # "Middle" was pixel-identical to "Center" and "Bottom Center"
+        # pixel-identical to "Bottom"; both stay loadable through
+        # normalize_subtitle_position but are no longer offered twice.
+        self.subtitle_position_combo.addItems(list(SUBTITLE_POSITIONS))
         self.subtitle_font_size_spin = QSpinBox()
         self.subtitle_font_size_spin.setRange(50, 200)
         self.subtitle_font_size_spin.setSingleStep(5)
@@ -920,7 +1089,7 @@ class MainWindow(QMainWindow):
         for key, label in FONT_OPTIONS:
             self.short_subtitle_font_combo.addItem(label, key)
         self.short_subtitle_position_combo = QComboBox()
-        self.short_subtitle_position_combo.addItems(["Bottom Center", "Center", "Bottom", "Medium-Low", "Middle", "Top"])
+        self.short_subtitle_position_combo.addItems(list(SUBTITLE_POSITIONS))
         self.short_subtitle_font_size_spin = QSpinBox()
         self.short_subtitle_font_size_spin.setRange(50, 200)
         self.short_subtitle_font_size_spin.setSingleStep(5)
@@ -946,6 +1115,11 @@ class MainWindow(QMainWindow):
         self.short_subtitle_live_preview = SubtitlePreviewCanvas()
         self.short_subtitle_live_preview.setMinimumHeight(170)
         short_layout.addWidget(self.short_subtitle_live_preview, 5, 0, 1, 2)
+        # Phase 28: dedicated large Shorts preview. Reads ONLY the Shorts
+        # controls above in the portrait frame - never Long-Form settings.
+        self.short_subtitle_preview_button = QPushButton("Open Larger Shorts Subtitle Preview")
+        self.short_subtitle_preview_button.clicked.connect(self._preview_short_subtitle_style)
+        short_layout.addWidget(self.short_subtitle_preview_button, 6, 1)
         subtitle_layout.addWidget(short_group, 4, 0, 1, 3)
 
         self.subtitle_preview_image_check = QCheckBox(
@@ -1505,6 +1679,14 @@ class MainWindow(QMainWindow):
             path = Path(value).expanduser().resolve()
             area = saved_areas.get(str(path), saved_areas.get(str(value), ""))
             self.source_folders_list.addItem(self._folder_item(str(path), area))
+        # Phase 28: dedicated YouTube Shorts sources (empty => legacy behavior).
+        self.shorts_folders_list.clear()
+        for value in list(getattr(self.saved, "shorts_video_folders", []) or []):
+            path = Path(value).expanduser().resolve()
+            item = QListWidgetItem(str(path))
+            item.setData(Qt.UserRole, str(path))
+            item.setToolTip(str(path))
+            self.shorts_folders_list.addItem(item)
         self.area_start_spin.setValue(float(getattr(
             self.saved, "timeline_area_start_seconds", TIMELINE_AREA_START_SECONDS)))
         self.area_midpoint_spin.setValue(float(getattr(
@@ -1608,6 +1790,14 @@ class MainWindow(QMainWindow):
             list(getattr(self.saved, "short_music_tracks", None) or []),
             str(getattr(self.saved, "short_music_path", "") or ""),
         )
+        # Phase 28: per-profile sequence mode. Older projects without the
+        # fields restore the historical whole-sequence loop.
+        for combo, value in (
+            (self.music_sequence_mode_combo, getattr(self.saved, "music_sequence_mode", None)),
+            (self.short_music_sequence_mode_combo, getattr(self.saved, "short_music_sequence_mode", None)),
+        ):
+            index = combo.findData(normalize_sequence_mode(value))
+            combo.setCurrentIndex(index if index >= 0 else 0)
         self.music_edit.setText(self.saved.music_path)
         self.short_music_edit.setText(getattr(self.saved, "short_music_path", ""))
         self.main_video_edit.setText(self.saved.main_video_path)
@@ -1703,7 +1893,9 @@ class MainWindow(QMainWindow):
             index = combo.findData(value)
             combo.setCurrentIndex(index if index >= 0 else 0)
         self.short_subtitle_position_combo.setCurrentText(
-            getattr(self.saved, "short_subtitle_position", "Bottom Center")
+            normalize_subtitle_position(
+                getattr(self.saved, "short_subtitle_position", "Bottom"), "short"
+            )
         )
         # Phase 27: independent Long-Form / Shorts caption sizes. Legacy
         # projects without the fields load at 100 %, i.e. exactly the
@@ -1808,6 +2000,16 @@ class MainWindow(QMainWindow):
             after_index if after_index >= 0 else self.duration_after_merge_combo.findData(1.0)
         )
         self.duration_after_merge_check.setChecked(bool(getattr(self.saved, "duration_after_merge_enabled", False)))
+        # Phase 28: Shorts-specific After Merge multiplier. Legacy projects
+        # without the field restore "Same as Long-Form" (index 0), so the
+        # shared value + enable flag decide exactly as before.
+        shorts_after_value = getattr(self.saved, "shorts_duration_after_merge", None)
+        shorts_after_combo = self.shorts_duration_after_merge_combo
+        if shorts_after_value is None:
+            shorts_after_combo.setCurrentIndex(0)
+        else:
+            shorts_after_index = shorts_after_combo.findData(float(shorts_after_value))
+            shorts_after_combo.setCurrentIndex(shorts_after_index if shorts_after_index >= 0 else 0)
         self._sync_stretch_controls()
         self.subtitle_check.setChecked(self.saved.subtitle_enabled)
         # A pre-1.5 project without the field used the old dual bundle. Keep
@@ -1830,7 +2032,9 @@ class MainWindow(QMainWindow):
         )
         self.alignment_warning_check.setChecked(self.saved.allow_alignment_warnings)
         self._load_subtitle_language(self.saved.subtitle_language)
-        self.subtitle_position_combo.setCurrentText(self.saved.subtitle_position)
+        self.subtitle_position_combo.setCurrentText(
+            normalize_subtitle_position(self.saved.subtitle_position, "long")
+        )
         self.subtitle_debug_check.setChecked(self.saved.subtitle_debug_overlay)
         self.watermark_check.setChecked(self.saved.watermark_enabled)
         self.watermark_opacity_slider.setValue(self.saved.watermark_opacity)
@@ -1904,6 +2108,8 @@ class MainWindow(QMainWindow):
             # Soft timeline-area source ordering. An empty mapping keeps the
             # historical project order byte-identical.
             source_folder_areas=self._configured_folder_areas(),
+            # Phase 28: dedicated YouTube Shorts sources (empty => legacy).
+            shorts_video_folders=self._configured_shorts_folders(),
             timeline_area_start_seconds=float(self.area_start_spin.value()),
             timeline_area_end_seconds=float(self.area_end_spin.value()),
             timeline_area_midpoint_percent=float(self.area_midpoint_spin.value()),
@@ -1946,19 +2152,17 @@ class MainWindow(QMainWindow):
             voiceover_order_mode=normalize_voiceover_order_mode(self.voiceover_order_combo.currentData()),
             voiceover_pause=float(self.voiceover_pause_spin.value()),
             music_path=self._legacy_music_path(self.music_edit, self.music_tracks_list),
-            # Phase 27: the ordered multi-track sequences, one per output
+            # Phase 27/28: the ordered multi-track sequences, one per output
             # profile. A single entry is the legacy one-track configuration;
             # ``music_path``/``short_music_path`` stay the first/current track
-            # of each profile so historic validation keeps working.
-            music_tracks=[
-                {"path": path, "trim_start": 0.0, "trim_duration": 0.0}
-                for path in self._music_track_paths(self.music_tracks_list)
-            ],
+            # of each profile so historic validation keeps working. Each entry
+            # carries its Phase-28 playback mode and the profile its sequence
+            # mode; both default to the historical whole-sequence loop.
+            music_tracks=self._music_track_entries(self.music_tracks_list),
+            music_sequence_mode=normalize_sequence_mode(self.music_sequence_mode_combo.currentData()),
             short_music_path=self._legacy_music_path(self.short_music_edit, self.short_music_tracks_list),
-            short_music_tracks=[
-                {"path": path, "trim_start": 0.0, "trim_duration": 0.0}
-                for path in self._music_track_paths(self.short_music_tracks_list)
-            ],
+            short_music_tracks=self._music_track_entries(self.short_music_tracks_list),
+            short_music_sequence_mode=normalize_sequence_mode(self.short_music_sequence_mode_combo.currentData()),
             main_video_path=self.main_video_edit.text().strip(),
             intro_path=self.intro_edit.text().strip(),
             outro_path=self.outro_edit.text().strip(),
@@ -2002,6 +2206,9 @@ class MainWindow(QMainWindow):
             duration_before_merge_shorts=float(self.duration_before_merge_shorts_combo.currentData()),
             duration_after_merge=float(self.duration_after_merge_combo.currentData()),
             duration_after_merge_enabled=self.duration_after_merge_check.isChecked(),
+            # Phase 28: Shorts-specific After Merge multiplier; None means
+            # "follow the shared value + enable flag" (legacy behavior).
+            shorts_duration_after_merge=self._shorts_after_merge_value(),
             video_speed=1.0,
             subtitle_enabled=self.subtitle_check.isChecked(),
             subtitle_language=str(self.subtitle_language_combo.currentData()),
@@ -2228,7 +2435,7 @@ class MainWindow(QMainWindow):
                     self.subtitle_style_combo.setCurrentIndex(style_index)
             if not self._subtitle_position_overridden:
                 self.subtitle_position_combo.setCurrentText(
-                    "Center" if self.radio_16.isChecked() else "Bottom Center"
+                    "Center" if self.radio_16.isChecked() else "Bottom"
                 )
             # Long-Form keeps the stable Static White Reveal; Shorts switch to
             # their own clean phrase-level default (Word Highlight is removed).
@@ -2323,10 +2530,79 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _music_track_paths(self, list_widget: QListWidget) -> list[str]:
         """The user-defined ordered list of music file paths in one profile."""
-        return [
-            str(list_widget.item(index).data(Qt.UserRole))
-            for index in range(list_widget.count())
-        ]
+        paths: list[str] = []
+        for index in range(list_widget.count()):
+            data = list_widget.item(index).data(Qt.UserRole)
+            if isinstance(data, dict):
+                paths.append(str(data.get("path", "") or ""))
+            else:
+                paths.append(str(data))
+        return paths
+
+    def _music_track_entries(self, list_widget: QListWidget) -> list[dict]:
+        """The ordered track dicts (path + playback mode) of one profile."""
+        entries: list[dict] = []
+        for index in range(list_widget.count()):
+            data = list_widget.item(index).data(Qt.UserRole)
+            track = normalize_music_track(data)
+            if track is not None:
+                entries.append(track)
+        return entries
+
+    @staticmethod
+    def _music_item(entry: dict) -> QListWidgetItem:
+        """One sequence row; its label makes the playback mode obvious."""
+        path = str(entry.get("path", "") or "")
+        mode = str(entry.get("playback_mode", "once") or "once")
+        suffix = ""
+        if mode == "loop":
+            suffix = "  ·  loops until the end"
+        elif mode == "repeat":
+            suffix = f"  ·  ×{max(1, int(entry.get('repeat_count', 1) or 1))}"
+        item = QListWidgetItem(Path(path).name + suffix)
+        item.setData(Qt.UserRole, dict(entry))
+        item.setToolTip(path)
+        return item
+
+    def _set_music_track_mode(
+        self,
+        list_widget: QListWidget,
+        repeat_spin: QSpinBox,
+        mode_label: QLabel,
+        mode: str,
+    ) -> None:
+        """Apply one playback mode to the selected track of a profile."""
+        row = list_widget.currentRow()
+        if row < 0:
+            self._append_log("Select a music track first to change its playback mode.")
+            return
+        item = list_widget.item(row)
+        data = item.data(Qt.UserRole)
+        entry = normalize_music_track(data) or {"path": str(data), "trim_start": 0.0, "trim_duration": 0.0}
+        entry["playback_mode"] = mode
+        entry["repeat_count"] = int(repeat_spin.value()) if mode == "repeat" else 1
+        new_item = self._music_item(entry)
+        list_widget.takeItem(row)
+        list_widget.insertItem(row, new_item)
+        list_widget.setCurrentRow(row)
+        self._update_music_track_mode_label(list_widget, mode_label)
+        self._sync_music_state()
+
+    def _update_music_track_mode_label(self, list_widget: QListWidget, mode_label: QLabel) -> None:
+        row = list_widget.currentRow()
+        if row < 0 or row >= list_widget.count():
+            mode_label.setText("Selected track plays once")
+            return
+        entry = normalize_music_track(list_widget.item(row).data(Qt.UserRole)) or {}
+        mode = str(entry.get("playback_mode", "once"))
+        if mode == "loop":
+            mode_label.setText("Selected track loops until the required duration is satisfied")
+        elif mode == "repeat":
+            mode_label.setText(
+                f"Selected track repeats ×{max(1, int(entry.get('repeat_count', 1) or 1))}"
+            )
+        else:
+            mode_label.setText("Selected track plays once")
 
     def _legacy_music_path(self, line_edit: QLineEdit, list_widget: QListWidget) -> str:
         """The legacy single-track field of one profile.
@@ -2360,10 +2636,10 @@ class MainWindow(QMainWindow):
             list_widget.setCurrentRow(paths.index(path))
             self._append_log(f"{label} music track already present in the sequence.")
         else:
-            item = QListWidgetItem(Path(path).name)
-            item.setData(Qt.UserRole, path)
-            item.setToolTip(path)
-            list_widget.addItem(item)
+            list_widget.addItem(self._music_item({
+                "path": path, "trim_start": 0.0, "trim_duration": 0.0,
+                "playback_mode": "once", "repeat_count": 1,
+            }))
             list_widget.setCurrentRow(list_widget.count() - 1)
         self._sync_music_state()
 
@@ -2404,21 +2680,22 @@ class MainWindow(QMainWindow):
             self._save_project()
 
     def _populate_music_tracks(self, list_widget: QListWidget, tracks: list[dict], legacy_path: str) -> None:
-        """Restore one profile's ordered sequence (legacy path migrates)."""
+        """Restore one profile's ordered sequence (legacy path migrates).
+
+        Entries carry their Phase-28 playback mode; a legacy path or an entry
+        without the mode restores as the historical one-item "play once"
+        sequence, so older projects load with their exact former behavior.
+        """
         list_widget.clear()
         normalized = normalize_music_tracks(list(tracks or []))
         if normalized:
             for track in normalized:
-                path = str(track["path"])
-                item = QListWidgetItem(Path(path).name)
-                item.setData(Qt.UserRole, path)
-                item.setToolTip(path)
-                list_widget.addItem(item)
+                list_widget.addItem(self._music_item(track))
         elif legacy_path:
-            item = QListWidgetItem(Path(legacy_path).name)
-            item.setData(Qt.UserRole, legacy_path)
-            item.setToolTip(legacy_path)
-            list_widget.addItem(item)
+            list_widget.addItem(self._music_item({
+                "path": legacy_path, "trim_start": 0.0, "trim_duration": 0.0,
+                "playback_mode": "once", "repeat_count": 1,
+            }))
 
     def _music_preset_changed(self) -> None:
         data = self.music_preset_combo.currentData()
@@ -2501,28 +2778,63 @@ class MainWindow(QMainWindow):
                 self.short_subtitle_live_preview.set_background_image(background)
 
     def _preview_subtitle_style(self) -> None:
-        """1.3.0: größere Untertitel-Vorschau mit DER Renderer-Logik.
+        """1.3.0: größere Untertitel-Vorschau mit DER Renderer-Logik."""
+        self._open_large_subtitle_preview("long")
+
+    def _preview_short_subtitle_style(self) -> None:
+        """Phase 28: große YouTube-Shorts-Untertitel-Vorschau.
+
+        Reads ONLY the Shorts controls (style/animation/font/size/position)
+        in the portrait 1080×1920 frame; it never borrows Long-Form settings.
+        """
+        self._open_large_subtitle_preview("short")
+
+    def _open_large_subtitle_preview(self, profile: str) -> None:
+        """Große Untertitel-Vorschau mit DER Renderer-Logik (beide Profile).
 
         Kein fake QLabel-Text mehr: der Dialog malt dieselbe Geometrie wie der
         Burn-In-Renderer (preview_cue + paint_subtitle_layout — identisch zur
         Live-Vorschau) und erlaubt es, den Wort-Fortschritt der Animation
         durchzuschalten (beim Render treiben die akustischen Wortzeitstempel
-        genau diese Zustände).
+        genau diese Zustände). ``profile`` wählt strikt getrennt die
+        Long-Form- oder die Shorts-Steuerelemente — eine Quelle der Wahrheit
+        mit dem Produktions-Renderer, kein Cross-Over zwischen den Profilen.
         """
-        from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
+        from PySide6.QtCore import QPointF, QRectF
+        from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen
         from ..subtitle_preview import paint_subtitle_layout, preview_cue, sample_subtitle_text
         from ..subtitle_presets import get_preset
 
-        preset = get_preset(str(self.subtitle_style_combo.currentData()))
+        is_short = profile == "short"
+        if is_short:
+            preset_key = str(self.short_subtitle_style_combo.currentData())
+            animation = str(self.short_subtitle_animation_combo.currentData())
+            animation_label = self.short_subtitle_animation_combo.currentText()
+            position = self.short_subtitle_position_combo.currentText()
+            font_key = str(self.short_subtitle_font_combo.currentData())
+            font_size_percent = int(self.short_subtitle_font_size_spin.value())
+            # Shorts sind immer vertikal; die Long-Form-Auswahl hat darauf
+            # keinen Einfluss.
+            width, height = 1080, 1920
+            title = "YouTube Shorts Subtitle Preview"
+            frame_size = (620, 980)
+        else:
+            preset_key = str(self.subtitle_style_combo.currentData())
+            animation = str(self.subtitle_animation_combo.currentData())
+            animation_label = self.subtitle_animation_combo.currentText()
+            position = self.subtitle_position_combo.currentText()
+            font_key = str(self.subtitle_font_combo.currentData())
+            font_size_percent = int(self.subtitle_font_size_spin.value())
+            width, height = (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
+            title = "Subtitle Style Preview"
+            frame_size = (960, 560)
+
+        preset = get_preset(preset_key)
+        background_path = self._subtitle_preview_background_path()
         dialog = QDialog(self)
-        dialog.setWindowTitle("Subtitle Style Preview")
-        dialog.resize(960, 560)
+        dialog.setWindowTitle(title)
+        dialog.resize(*frame_size)
         layout = QVBoxLayout(dialog)
-        animation = str(self.subtitle_animation_combo.currentData())
-        position = self.subtitle_position_combo.currentText()
-        font_key = str(self.subtitle_font_combo.currentData())
-        width, height = (1920, 1080) if self.radio_16.isChecked() else (1080, 1920)
         language = str(self.subtitle_language_combo.currentData())
         text = sample_subtitle_text(language)
         if self.subtitle_debug_check.isChecked():
@@ -2545,6 +2857,7 @@ class MainWindow(QMainWindow):
                 painter = QPainter(self)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                 painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
                 canvas = self.rect()
                 if layout_obj is None:
                     painter.end()
@@ -2558,6 +2871,21 @@ class MainWindow(QMainWindow):
                 gradient.setColorAt(0.55, QColor(26, 31, 41))
                 gradient.setColorAt(1.0, QColor(17, 20, 27))
                 painter.fillRect(rect, gradient)
+                background = state.get("background")
+                if background is not None:
+                    # "Include Image": dasselbe Fill-Verhalten wie die
+                    # Live-Vorschau (aspect-füllend, zentriert, geclippt).
+                    shown = background.scaled(
+                        rect.size().toSize(),
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    x = rect.left() + (rect.width() - shown.width()) / 2
+                    y = rect.top() + (rect.height() - shown.height()) / 2
+                    painter.save()
+                    painter.setClipRect(rect)
+                    painter.drawImage(QPointF(x, y), shown)
+                    painter.restore()
                 painter.setPen(QPen(QColor(255, 255, 255, 28)))
                 painter.drawRect(rect)
                 paint_subtitle_layout(painter, layout_obj, rect, scale, state["animation"], state["active"])
@@ -2565,8 +2893,17 @@ class MainWindow(QMainWindow):
 
         layout_data = preview_cue(
             text, font_key, preset.key, position, width, height, animation=animation,
+            font_size_percent=font_size_percent,
         )
-        state = {"layout": layout_data, "animation": animation, "active": -1}
+        background_image = None
+        if background_path:
+            candidate = QImage(background_path)
+            if not candidate.isNull():
+                background_image = candidate
+        state = {
+            "layout": layout_data, "animation": animation, "active": -1,
+            "background": background_image,
+        }
         canvas = _Canvas(dialog, state)
         layout.addWidget(canvas, stretch=1)
 
@@ -2589,11 +2926,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls)
 
         selected_font = resolve_font(font_key)
+        profile_label = "YouTube Shorts" if is_short else "Long-Form"
         note = QLabel(
-            f"{selected_font.family} · {self.subtitle_animation_combo.currentText()} · {position} · "
-            f"{width}×{height} (Renderer-Geometrie: identische Zeilenumbrüche, Font-Metriken, "
-            "Safe-Area und Farben). Beim Rendern steuern ausschließlich echte Voiceover-"
-            "Wortzeitstempel die Anzeige; die vollständige Phrase reserviert stabile Geometrie."
+            f"{profile_label} · {selected_font.family} · {animation_label} · {position} · "
+            f"{font_size_percent}% · {width}×{height} (Renderer-Geometrie: identische "
+            "Zeilenumbrüche, Font-Metriken, Safe-Area und Farben). Beim Rendern steuern "
+            "ausschließlich echte Voiceover-Wortzeitstempel die Anzeige; die vollständige "
+            "Phrase reserviert stabile Geometrie."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -2693,6 +3032,70 @@ class MainWindow(QMainWindow):
         if self.busy:
             return
         self.source_folders_list.clear()
+        self._save_project()
+        self._clear_stale_analysis(self.input_edit.text())
+
+    # --- Phase 28: dedicated YouTube Shorts video sources -------------------
+    def _shorts_after_merge_value(self) -> float | None:
+        """None = 'Same as Long-Form' (shared value + enable flag decide)."""
+        value = self.shorts_duration_after_merge_combo.currentData()
+        if value is None:
+            return None
+        return float(value)
+
+    def _configured_shorts_folders(self) -> list[str]:
+        """Return the persisted Shorts-only folder list in visible order."""
+        if not hasattr(self, "shorts_folders_list"):
+            return []
+        values: list[str] = []
+        for row in range(self.shorts_folders_list.count()):
+            item = self.shorts_folders_list.item(row)
+            value = str(item.data(Qt.UserRole) or item.text()).strip()
+            if value:
+                values.append(value)
+        return values
+
+    def _add_shorts_folder(self) -> None:
+        if self.busy:
+            return
+        selected = QFileDialog.getExistingDirectory(self, "Add YouTube Shorts Video Folder", self.input_edit.text())
+        if not selected:
+            return
+        value = str(Path(selected).expanduser().resolve())
+        if value not in self._configured_shorts_folders():
+            item = QListWidgetItem(value)
+            item.setData(Qt.UserRole, value)
+            item.setToolTip(value)
+            self.shorts_folders_list.addItem(item)
+            self._save_project()
+            self._clear_stale_analysis(self.input_edit.text())
+
+    def _remove_shorts_folder(self) -> None:
+        if self.busy:
+            return
+        row = self.shorts_folders_list.currentRow()
+        if row >= 0:
+            self.shorts_folders_list.takeItem(row)
+            self._save_project()
+            self._clear_stale_analysis(self.input_edit.text())
+
+    def _clear_shorts_folders(self) -> None:
+        if self.busy:
+            return
+        self.shorts_folders_list.clear()
+        self._save_project()
+        self._clear_stale_analysis(self.input_edit.text())
+
+    def _move_shorts_folder(self, delta: int) -> None:
+        if self.busy:
+            return
+        row = self.shorts_folders_list.currentRow()
+        target = row + delta
+        if row < 0 or target < 0 or target >= self.shorts_folders_list.count():
+            return
+        item = self.shorts_folders_list.takeItem(row)
+        self.shorts_folders_list.insertItem(target, item)
+        self.shorts_folders_list.setCurrentRow(target)
         self._save_project()
         self._clear_stale_analysis(self.input_edit.text())
 

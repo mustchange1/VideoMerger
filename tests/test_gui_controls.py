@@ -191,7 +191,9 @@ def test_gui_12_workflow_controls_defaults_and_auto_style_collection(qt_app):
         # Phase 22 removed Word Highlight from Shorts: the automatic aspect
         # switch selects the clean phrase-level Shorts default instead.
         assert window.subtitle_animation_combo.currentData() == "phrase_focus"
-        assert window.subtitle_position_combo.currentText() == "Bottom Center"
+        # Phase 28: canonical position label ("Bottom Center" was the
+        # pixel-identical duplicate of "Bottom" and is no longer offered).
+        assert window.subtitle_position_combo.currentText() == "Bottom"
         window.subtitle_style_combo.setCurrentIndex(window.subtitle_style_combo.findData("long_3"))
         assert window._settings().subtitle_style == "long_3"  # manual override remains available
     finally:

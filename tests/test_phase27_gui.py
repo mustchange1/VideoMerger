@@ -81,7 +81,7 @@ def test_short_controls_do_not_move_the_long_preview(window):
 
 
 def test_position_top_moves_caption_visually(window):
-    window.subtitle_position_combo.setCurrentText("Bottom Center")
+    window.subtitle_position_combo.setCurrentText("Bottom")
     bottom = window.subtitle_live_preview.current_layout()
     window.subtitle_position_combo.setCurrentText("Top")
     top = window.subtitle_live_preview.current_layout()
@@ -91,7 +91,7 @@ def test_position_top_moves_caption_visually(window):
 def test_shorts_position_uses_vertical_geometry(window):
     window.short_subtitle_position_combo.setCurrentText("Top")
     top = window.short_subtitle_live_preview.current_layout()
-    window.short_subtitle_position_combo.setCurrentText("Bottom Center")
+    window.short_subtitle_position_combo.setCurrentText("Bottom")
     bottom = window.short_subtitle_live_preview.current_layout()
     assert (top.width, top.height) == (1080, 1920)
     assert top.alignment != bottom.alignment or top.margin_v != bottom.margin_v

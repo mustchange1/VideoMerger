@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .errors import VideoMergerError
-from .music_tracks import effective_short_music_tracks
+from .music_tracks import effective_short_music_tracks, normalize_sequence_mode
 from .models import (
     DEFAULT_TRANSITION_TYPE,
     LONG_FORM_INTRO_SECONDS,
@@ -594,6 +594,26 @@ def short_settings(
     # The Long-Form ``music_tracks`` that flowed through ``settings`` is
     # REPLACED here — a Short never plays the Long-Form sequence.
     shorts_music_sequence = effective_short_music_tracks(settings, job.voiceover_path)
+    # Phase 28: independent Shorts Duration After Merge multiplier. ``None``
+    # (every pre-Phase-28 project) keeps the historical pass-through: the
+    # shared ``duration_after_merge`` value and enablement flag are used
+    # exactly as before. A configured Shorts value wins and enables itself,
+    # while the Long-Form job never reads it. The value stays a playback-rate
+    # multiplier — never a literal time — and keeps the shared 0.25–4.0 bound,
+    # with the GUI exposing up to 3.5 for fast vertical pacing.
+    shorts_after_merge_raw = getattr(settings, "shorts_duration_after_merge", None)
+    try:
+        shorts_after_merge_configured = (
+            None if shorts_after_merge_raw is None else float(shorts_after_merge_raw)
+        )
+    except (TypeError, ValueError):
+        shorts_after_merge_configured = None
+    if shorts_after_merge_configured is None:
+        shorts_after_merge_value = float(getattr(settings, "duration_after_merge", 1.0) or 1.0)
+        shorts_after_merge_enabled = bool(getattr(settings, "duration_after_merge_enabled", False))
+    else:
+        shorts_after_merge_value = shorts_after_merge_configured
+        shorts_after_merge_enabled = abs(shorts_after_merge_configured - 1.0) > 1e-9
     from .subtitles import clamp_font_size_percent
     # Phase 27: the independent Shorts Duration Before Merge multiplier. The
     # semantics stay exactly historical: it is a playback-rate multiplier
@@ -647,6 +667,18 @@ def short_settings(
         # from the same resolved sequence, so they can never disagree.
         music_path=str(shorts_music_sequence[0]["path"]) if shorts_music_sequence else "",
         music_tracks=list(shorts_music_sequence),
+        # Phase 28: the Shorts sequence mode is strictly separate from the
+        # Long-Form one; the whole-sequence loop remains the default, so an
+        # untouched project renders exactly like before.
+        music_sequence_mode=normalize_sequence_mode(
+            getattr(settings, "short_music_sequence_mode", None)
+        ),
+        # Phase 28: independent Shorts Duration After Merge. A configured
+        # Shorts multiplier (up to 3.5 for very fast vertical pacing) wins and
+        # enables itself; ``None`` keeps the exact historical behavior — the
+        # shared value and enablement flag flow through unchanged.
+        duration_after_merge=shorts_after_merge_value,
+        duration_after_merge_enabled=shorts_after_merge_enabled,
         # Independent Shorts audio and transition settings, resolved into the
         # canonical fields of THIS job only: a Short never inherits the
         # Long-Form music volume or transition, and the Long-Form job never

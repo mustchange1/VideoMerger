@@ -355,6 +355,16 @@ class ExportSettings:
     # silent exactly like before).
     music_tracks: list[dict] = field(default_factory=list)
     short_music_tracks: list[dict] = field(default_factory=list)
+    # Phase 28 music playback behavior. Each track entry may additionally
+    # carry ``playback_mode`` ("once" | "loop" | "repeat") and a
+    # ``repeat_count`` for "repeat"; entries without the key stay "once".
+    # The sequence mode decides what happens AFTER the last track:
+    # ``loop_sequence`` (the historical Phase-27 behavior) restarts the whole
+    # ordered sequence as one unit, ``play_once`` ends the music after the last
+    # track (the video continues without music). Both profiles are fully
+    # independent; the defaults keep every existing project byte-compatible.
+    music_sequence_mode: str = "loop_sequence"
+    short_music_sequence_mode: str = "loop_sequence"
     ducking_enabled: bool = True
     ducking_attack_ms: int = 25
     ducking_release_ms: int = 450
@@ -401,6 +411,15 @@ class ExportSettings:
     duration_before_merge_shorts: float = 0.70
     duration_after_merge: float = 1.00
     duration_after_merge_enabled: bool = False
+    # Phase 28: independent Shorts After-Merge multiplier. Same playback-rate
+    # semantics as the shared control above (a finished program is sped up as
+    # one unit), but the Shorts range extends to 3.5 for very fast vertical
+    # pacing while the Long-Form control keeps its historical range. ``None``
+    # (the default and every pre-Phase-28 project) keeps the exact historical
+    # behavior: Shorts follow the shared ``duration_after_merge`` value and
+    # enablement flag. ``short_settings()`` resolves this onto each Short job;
+    # Long-Form never reads it.
+    shorts_duration_after_merge: float | None = None
     # Deprecated compatibility input for projects/CLI callers from 1.3.0.
     # It is migrated to duration_before_merge by SettingsStore and is never
     # used as a second GUI setting. Keeping the field avoids breaking old JSON
@@ -475,7 +494,11 @@ class ExportSettings:
     short_subtitle_style: str = "short_1"
     short_subtitle_animation: str = "phrase_focus"
     short_subtitle_font: str = "inter"
-    short_subtitle_position: str = "Bottom Center"
+    # Phase 28 canonical position label: "Bottom" renders pixel-identically to
+    # the legacy "Bottom Center" (see subtitles._position aliases), so the
+    # default output is unchanged while the user-facing choice set contains
+    # exactly one option per visual spot.
+    short_subtitle_position: str = "Bottom"
     # Independent Shorts font size (percent of the preset base size; 100 % =
     # the historical Shorts size). Changing one profile never changes the
     # other; short_settings() maps this onto the Short job's generic field.
@@ -511,6 +534,17 @@ class ExportSettings:
     timeline_area_end_seconds: float = TIMELINE_AREA_END_SECONDS
     timeline_area_midpoint_percent: float = TIMELINE_AREA_MIDPOINT_PERCENT
     shorts_allow_area_middle_end: bool = SHORTS_ALLOW_AREA_MIDDLE_END
+
+    # Phase 28 dedicated YouTube Shorts video sources. When this list is
+    # populated, Shorts draw their clips ONLY from these folders; the
+    # Long-Form source folders above stay completely independent (adding,
+    # removing or reordering either list never touches the other). An empty
+    # list - the default and the state of every project saved before this
+    # feature - keeps the historical behavior byte-identical: Shorts then use
+    # the shared Long-Form pool restricted by the timeline-area policy. The
+    # sophisticated Long-Form area roles are intentionally NOT duplicated for
+    # Shorts: a plain ordered folder list is the requested behavior.
+    shorts_video_folders: list[str] = field(default_factory=list)
 
     # Render-time values filled by MainProjectEngine; they are harmless if
     # persisted and are recalculated before every Stage-1 render.

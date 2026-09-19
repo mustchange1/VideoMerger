@@ -82,7 +82,9 @@ def test_shorts_jobs_share_pool_and_use_separate_mobile_subtitle_profile(tmp_pat
     jobs = build_short_jobs(settings)
     assert short_settings(settings, jobs[0]).subtitle_font == "inter"
     assert short_settings(settings, jobs[0]).aspect == "9:16"
-    assert short_settings(settings, jobs[0]).subtitle_position == "Bottom Center"
+    # Phase 28: "Bottom" is the canonical label; the legacy "Bottom Center"
+    # renders pixel-identically (subtitles._position aliases it).
+    assert short_settings(settings, jobs[0]).subtitle_position == "Bottom"
     assert get_preset("long_1").collection == "long"
     assert get_preset("short_1").collection == "short"
     assert ExportSettings().subtitle_animation == "static_phrase"

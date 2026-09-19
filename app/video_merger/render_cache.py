@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .models import AudioAssetInfo, ExportSettings, MediaInfo, ResolvedExport
+from .music_tracks import normalize_sequence_mode
 from .paths import project_root
 from .subtitle_modes import normalize_subtitle_output_mode
 
@@ -294,6 +295,11 @@ def build_stage1_payload(
             "ducking_enabled": settings.ducking_enabled,
             "ducking_attack_ms": settings.ducking_attack_ms,
             "ducking_release_ms": settings.ducking_release_ms,
+            # Phase 28: sequence mode ("loop_sequence" is the historical
+            # default, so legacy projects keep their exact fingerprint).
+            "music_sequence_mode": normalize_sequence_mode(
+                getattr(settings, "music_sequence_mode", "loop_sequence")
+            ),
         })
     else:
         for name in (
@@ -304,6 +310,7 @@ def build_stage1_payload(
             "ducking_enabled",
             "ducking_attack_ms",
             "ducking_release_ms",
+            "music_sequence_mode",
         ):
             values[name] = None
 
@@ -343,20 +350,36 @@ def build_stage1_payload(
     # sequence identity and correctly invalidate the render stage only —
     # ASR/alignment cache keys never contain music.
     plan = list(music_track_plan or [])
+    # Phase 28: per-track playback modes (once / loop / repeat-N) and the
+    # sequence mode are part of the render identity too. They only extend the
+    # payload when they differ from the historical defaults (single plays
+    # once; whole sequence loops), so every unchanged project keeps its exact
+    # Stage-1 fingerprint. Music never reaches ASR/alignment cache keys.
+    def _non_default_mode(item: dict) -> bool:
+        mode = str(item.get("playback_mode", "once") or "once")
+        return mode not in {"", "once"} or int(item.get("repeat_count", 1) or 1) != 1
+
     if len(plan) > 1 or any(
         float(item.get("trim_start", 0.0) or 0.0) > 1e-9
         or float(item.get("trim_duration", 0.0) or 0.0) > 1e-9
+        or _non_default_mode(item)
         for item in plan
     ):
-        payload["music_tracks"] = [
-            {
+        entries: list[dict[str, Any]] = []
+        for item in plan:
+            entry: dict[str, Any] = {
                 "file": file_signature(item.get("path", "")),
                 "trim_start": float(item.get("trim_start", 0.0) or 0.0),
                 "trim_duration": float(item.get("trim_duration", 0.0) or 0.0),
                 "duration": float(item.get("duration", 0.0) or 0.0),
             }
-            for item in plan
-        ]
+            mode = str(item.get("playback_mode", "once") or "once")
+            if mode not in {"", "once"}:
+                entry["playback_mode"] = mode
+            if mode == "repeat":
+                entry["repeat_count"] = int(item.get("repeat_count", 1) or 1)
+            entries.append(entry)
+        payload["music_tracks"] = entries
     return payload
 
 

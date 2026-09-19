@@ -60,12 +60,19 @@ def _main_build(tmp_path, **changes):
 # normalization / effective sequence
 # ---------------------------------------------------------------------------
 def test_normalize_track_clamps_and_defaults():
-    assert normalize_music_track("/m/a.mp3") == {"path": "/m/a.mp3", "trim_start": 0.0, "trim_duration": 0.0}
+    # Phase 28 superset: entries additionally carry the playback mode
+    # ("once") and repeat count (1), the historical defaults.
+    assert normalize_music_track("/m/a.mp3") == {
+        "path": "/m/a.mp3", "trim_start": 0.0, "trim_duration": 0.0,
+        "playback_mode": "once", "repeat_count": 1,
+    }
     assert normalize_music_track("   ") is None
     assert normalize_music_track(42) is None
     clamped = normalize_music_track({"path": "/m/a.mp3", "trim_start": -5.0, "trim_duration": 99999})
     assert clamped["trim_start"] == 0.0
     assert clamped["trim_duration"] == 3600.0
+    assert clamped["playback_mode"] == "once"
+    assert clamped["repeat_count"] == 1
 
 
 def test_effective_tracks_single_legacy_path_migrates():

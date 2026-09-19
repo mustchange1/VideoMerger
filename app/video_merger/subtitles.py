@@ -481,8 +481,11 @@ def write_canonical_timeline(script: str, alignment: AlignmentResult, cues: list
 
 
 def _ass_time(seconds: float) -> str:
-    centis = max(0, round(seconds * 100))
-    hours, rest = divmod(centis, 360_000)
+    return _ass_time_centis(max(0, round(seconds * 100)))
+
+
+def _ass_time_centis(centis: int) -> str:
+    hours, rest = divmod(max(0, int(centis)), 360_000)
     minutes, rest = divmod(rest, 6_000)
     secs, cs = divmod(rest, 100)
     return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
@@ -492,8 +495,49 @@ def _ass_escape(text: str) -> str:
     return text.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}").replace("\n", r"\N")
 
 
+#: Phase 28 canonical subtitle positions. "Center" is THE vertical-middle
+#: position and "Bottom" the bottom position; the former "Middle" and
+#: "Bottom Center" labels were pixel-identical duplicates (see
+#: :func:`_position`) and are migrated here so exactly one clear option
+#: remains for each spot. Old values stay loadable everywhere.
+SUBTITLE_POSITIONS: tuple[str, ...] = ("Bottom", "Center", "Medium-Low", "Top")
+
+
+def normalize_subtitle_position(value: object, collection: str = "long") -> str:
+    """Return the canonical position label (legacy duplicates migrate).
+
+    ``Middle`` was rendered pixel-identical to ``Center`` and ``Bottom
+    Center`` pixel-identical to ``Bottom``; both migrate to the canonical
+    name so projects, settings files and API inputs keep loading while the
+    user-facing choice set contains exactly one option per spot.
+    """
+    text = str(value or "").strip()
+    lowered = text.casefold()
+    legacy = {
+        "middle": "Center",
+        "bottom center": "Bottom",
+        "bottom-center": "Bottom",
+        "bottomcentre": "Bottom",
+    }
+    if lowered in legacy:
+        return legacy[lowered]
+    canonical = {
+        "bottom": "Bottom",
+        "center": "Center",
+        "centre": "Center",
+        "medium-low": "Medium-Low",
+        "medium low": "Medium-Low",
+        "top": "Top",
+    }
+    if lowered in canonical:
+        return canonical[lowered]
+    return "Medium-Low" if str(collection or "").casefold() == "short" else "Center"
+
+
 def _position(position: str, width: int, height: int, collection: str) -> tuple[int, int]:
     # New defaults are explicit labels; old project values remain valid.
+    # "Center" and the legacy "Middle" are the SAME vertical-middle spot, and
+    # "Bottom"/"Bottom Center" the same bottom spot (Phase 28 deduplication).
     aliases = {"Bottom Center": "Bottom", "Center": "Middle"}
     normalized = aliases.get(str(position), str(position))
     pos = normalized if normalized in {"Bottom", "Medium-Low", "Middle", "Top"} else (
@@ -629,12 +673,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             rendered = _render_phrase(cue, -1, animation, preset)
             events.append(f"Dialogue: 0,{_ass_time(cue.start)},{_ass_time(cue.end)},Caption,,0,0,0,,{prefix}{rendered}")
         else:
+            # Per-word animation events. ASS quantizes to a 10 ms grid; after
+            # a strong speed-up (fast Shorts pacing) scaled word boundaries can
+            # land closer together than that grid, which used to collapse
+            # events onto identical or reversed centiseconds — the visible
+            # result was a lagging/jumping highlight. Boundaries are therefore
+            # emitted strictly monotonic on the grid. Regular timelines keep
+            # ≥ 20 ms word spacing, so this guard is a no-op there and the
+            # generated events stay byte-identical to before.
+            previous_end_cs: int | None = None
             for index, word in enumerate(cue.words):
                 start = max(cue.start, word.start)
                 end = cue.words[index + 1].start if index + 1 < len(cue.words) else cue.end
                 end = max(start + .02, min(cue.end, end))
+                start_cs = round(start * 100)
+                end_cs = round(end * 100)
+                if previous_end_cs is not None:
+                    start_cs = max(start_cs, previous_end_cs)
+                end_cs = max(end_cs, start_cs + 1)
+                previous_end_cs = end_cs
                 rendered = _render_phrase(cue, index, animation, preset)
-                events.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,{rendered}")
+                events.append(f"Dialogue: 0,{_ass_time_centis(start_cs)},{_ass_time_centis(end_cs)},Caption,,0,0,0,,{rendered}")
         if debug_overlay:
             for word in cue.words:
                 debug = (

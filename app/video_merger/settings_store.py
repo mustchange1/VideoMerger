@@ -55,6 +55,20 @@ class SettingsStore:
             # project files without exposing two GUI settings.
             if "source_folders" not in data and "input_folders" in data:
                 data["source_folders"] = data["input_folders"]
+            # Phase 28: deduplicate the caption position labels. "Middle" was
+            # pixel-identical to "Center" and "Bottom Center" to "Bottom"; a
+            # saved legacy value migrates to the canonical name so old projects
+            # keep loading while only one clear option per spot remains.
+            from .subtitles import normalize_subtitle_position
+
+            if "subtitle_position" in data:
+                data["subtitle_position"] = normalize_subtitle_position(
+                    data["subtitle_position"], "long"
+                )
+            if "short_subtitle_position" in data:
+                data["short_subtitle_position"] = normalize_subtitle_position(
+                    data["short_subtitle_position"], "short"
+                )
             allowed = {
                 name for name, field in ExportSettings.__dataclass_fields__.items()
                 if field.init

@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .alignment import LocalWordAligner, script_word_spans
+from .discovery import discover_videos
 from .engine import VideoMergerEngine
 from .errors import VideoMergerError
 from .font_manager import bundled_fonts_dir
@@ -48,7 +49,14 @@ from .image_insertion import (
     normalize_image_position,
     normalize_image_transition,
 )
-from .music_tracks import effective_music_tracks
+from .music_tracks import (
+    SEQUENCE_PLAY_ONCE,
+    TRACK_PLAY_ONCE,
+    effective_music_tracks,
+    normalize_playback_mode,
+    normalize_sequence_mode,
+    sequence_is_legacy,
+)
 from .render_cache import (
     Stage1RenderCache,
     load_cached_alignment,
@@ -737,6 +745,11 @@ class MainProjectEngine:
                     "trim_start": trim_start,
                     "trim_duration": trim_duration,
                     "duration": max(0.1, effective),
+                    # Phase 28 per-track playback behavior travels with the
+                    # plan; the defaults keep the historical one-track and
+                    # whole-sequence-loop behavior byte-identical.
+                    "playback_mode": normalize_playback_mode(track.get("playback_mode")),
+                    "repeat_count": max(1, int(track.get("repeat_count", 1) or 1)),
                 })
         timings["music_processing_seconds"] = time.perf_counter() - music_started
         if settings.watermark_enabled:
@@ -977,15 +990,29 @@ class MainProjectEngine:
         # for every legacy one-track configuration.
         music_sequence_active = bool(music_track_plan) and (
             len(music_track_plan) > 1
-            or float(music_track_plan[0].get("trim_start", 0.0) or 0.0) > 1e-9
-            or float(music_track_plan[0].get("trim_duration", 0.0) or 0.0) > 1e-9
+            or not sequence_is_legacy(
+                music_track_plan,
+                getattr(render_settings, "music_sequence_mode", "loop_sequence"),
+            )
         )
         if music_sequence_active:
             sequence = " → ".join(Path(item["path"]).name for item in music_track_plan)
             total = sum(float(item["duration"]) for item in music_track_plan)
+            sequence_mode = normalize_sequence_mode(
+                getattr(render_settings, "music_sequence_mode", "loop_sequence")
+            )
+            if any(
+                normalize_playback_mode(item.get("playback_mode")) != TRACK_PLAY_ONCE
+                for item in music_track_plan
+            ):
+                loop_text = "läuft mit den konfigurierten Track-Wiederholungen"
+            elif sequence_mode == SEQUENCE_PLAY_ONCE:
+                loop_text = "läuft einmal durch und endet nach dem letzten Track"
+            else:
+                loop_text = "die komplette Sequenz loopt als Einheit"
             log(
                 f"Music: {len(music_track_plan)} Track(s), Sequenz {sequence} "
-                f"(gesamt {total:.3f} s); die komplette Sequenz loopt als Einheit und wird auf "
+                f"(gesamt {total:.3f} s); {loop_text} und wird auf "
                 f"{render_settings.program_duration:.3f} s begrenzt."
             )
         elif music:
@@ -1712,6 +1739,62 @@ class MainProjectEngine:
             )
             return {}
 
+    def _shorts_folder_pool(
+        self,
+        settings: ExportSettings,
+        video_order_rng,
+        video_order_seed: int | None,
+        log: LogCallback,
+    ) -> list[MediaInfo] | None:
+        """Phase 28: resolve the dedicated YouTube Shorts video sources.
+
+        Returns the ordered Shorts-only pool when ``shorts_video_folders`` is
+        configured, or ``None`` to keep the historical behavior (Shorts draw
+        from the shared Long-Form pool restricted by the timeline-area
+        policy). The two source sets are strictly independent: this method
+        never touches the Long-Form folders and the Long-Form render never
+        consumes this pool. Missing folders are reported and skipped; a
+        configuration that yields no usable clip at all fails clearly instead
+        of silently rendering with the wrong material.
+        """
+        folders = [
+            str(value).strip()
+            for value in (getattr(settings, "shorts_video_folders", None) or [])
+            if str(value or "").strip()
+        ]
+        if not folders:
+            return None
+        existing: list[Path] = []
+        for value in folders:
+            folder = Path(value).expanduser()
+            if folder.is_dir():
+                existing.append(folder)
+            else:
+                log(f"Shorts-Videoordner fehlt und wird übersprungen: {value}")
+        if not existing:
+            raise VideoMergerError(
+                "YouTube Shorts: Keiner der konfigurierten Shorts-Videoordner existiert."
+            )
+        paths = discover_videos(existing)
+        if not paths:
+            raise VideoMergerError(
+                "YouTube Shorts: Die Shorts-Videoordner enthalten keine Videodateien."
+            )
+        shorts_media = self.engine.analyze(list(paths), log)
+        ordered = order_media_for_video_order(
+            shorts_media,
+            getattr(settings, "video_order_mode", "natural"),
+            rng=None,
+            seed=video_order_seed,
+            legacy_root="",
+        )
+        log(
+            f"YouTube Shorts Video Sources: {len(ordered)} clip(s) aus "
+            f"{len(existing)} dedizierten Shorts-Ordner(n) — unabhängig von den "
+            "Long-Form-Quellen."
+        )
+        return ordered
+
     def create_youtube_exports(
         self,
         media: list[MediaInfo],
@@ -1756,16 +1839,24 @@ class MainProjectEngine:
                 legacy_root=getattr(settings, "legacy_input_root", ""),
             )
         _log_legacy_priority(effective_media, settings, log)
-        # Shorts source policy: Area 1 + Area 2 only, so the later/main pool
-        # never reaches a vertical output unless the user explicitly allows it.
-        # This restricts the pool only - every other Shorts behavior (job
-        # planning, without-replacement consumption, timeline, subtitles, audio
-        # and rendering) is untouched.
-        shorts_pool_media = (
-            shorts_area_pool(effective_media, settings, log=log)
-            if mode != EXPORT_MODE_LONG_FORM
-            else effective_media
-        )
+        # Shorts source policy. Phase 28 adds a dedicated Shorts source set:
+        # when ``shorts_video_folders`` is configured, Shorts draw their clips
+        # ONLY from those folders and never from the Long-Form pool. Without
+        # that configuration the historical behavior stays byte-identical:
+        # Area 1 + Area 2 of the shared pool, so the later/main material never
+        # reaches a vertical output unless the user explicitly allows it. This
+        # restricts the pool only - every other Shorts behavior (job planning,
+        # without-replacement consumption, timeline, subtitles, audio and
+        # rendering) is untouched.
+        shorts_pool_media = effective_media
+        if mode != EXPORT_MODE_LONG_FORM:
+            dedicated = self._shorts_folder_pool(
+                settings, video_order_rng, video_order_seed, log
+            )
+            if dedicated is not None:
+                shorts_pool_media = dedicated
+            else:
+                shorts_pool_media = shorts_area_pool(effective_media, settings, log=log)
         short_video_pool = (
             ShortsVideoPool(shorts_pool_media) if mode != EXPORT_MODE_LONG_FORM else None
         )
@@ -1814,11 +1905,11 @@ class MainProjectEngine:
         planned_short_media: dict[str, list[MediaInfo]] = {}
         runtime_short_pool = short_video_pool
         short_entries = [entry for entry in jobs if entry[0] == "short"]
-        if short_entries and effective_media and hasattr(self.engine, "ffprobe_path"):
+        if short_entries and shorts_pool_media and hasattr(self.engine, "ffprobe_path"):
             planning_pool = ShortsVideoPool(shorts_pool_media)
             try:
                 planning_fps, _planning_fps_expr = choose_fps(
-                    effective_media, short_entries[0][1].fps_choice
+                    shorts_pool_media, short_entries[0][1].fps_choice
                 )
                 planning_rate = duration_before_merge_value(short_entries[0][1])
                 planning_fit_mode = (
@@ -1903,7 +1994,10 @@ class MainProjectEngine:
                     # shared without-replacement cursor. Handing it the complete
                     # pool with no cursor would give every Short the same leading
                     # clips and silently break the no-replacement contract.
-                    job_media = effective_media
+                    # Phase 28: hand the RESTRICTED pool media (dedicated Shorts
+                    # folders when configured, else the area pool) so a Short can
+                    # never fall back to Long-Form-only material.
+                    job_media = shorts_pool_media
                     job_pool = runtime_short_pool if runtime_short_pool is not None else short_video_pool
             else:
                 job_media, job_pool = effective_media, None

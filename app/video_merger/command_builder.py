@@ -13,6 +13,7 @@ from .image_insertion import (
     normalize_image_fit_mode,
 )
 from .models import ExportSettings, MediaSequence, ResolvedExport
+from .music_tracks import build_music_segment_plan, sequence_is_legacy
 from .opening_effects import (
     normalize_opening_effect,
     opening_effect_filter,
@@ -108,12 +109,14 @@ def _atempo_chain(rate: float) -> str:
 
 
 def _music_sequence_plan(settings: ExportSettings) -> list[dict]:
-    """Return the active multi-track/trim music plan, or [] for the legacy graph.
+    """Return the active sequence music plan, or [] for the legacy graph.
 
-    A single track without trim keeps the historical ``-stream_loop -1``
-    single-input graph byte-identical. Two or more tracks (or any per-track
-    trim) switch to the explicit sequence graph, in which the ENTIRE ordered
-    sequence loops as one unit (A → B → C → A → B → C …).
+    Every configuration that rendered with the historical graphs before
+    Phase 28 keeps them byte-identical: a single track without trim uses the
+    ``-stream_loop -1`` single-input graph, and a multi-track sequence whose
+    tracks all play once under the whole-sequence loop uses the Phase-27
+    sequence graph. Any trim, per-track playback mode or the play-once
+    sequence mode switches to the explicit segment graph.
     """
     plan = [
         track
@@ -122,11 +125,10 @@ def _music_sequence_plan(settings: ExportSettings) -> list[dict]:
     ]
     if not plan:
         return []
-    if len(plan) == 1:
-        trim_start = float(plan[0].get("trim_start", 0.0) or 0.0)
-        trim_duration = float(plan[0].get("trim_duration", 0.0) or 0.0)
-        if trim_start <= 1e-9 and trim_duration <= 1e-9:
-            return []
+    if sequence_is_legacy(
+        plan, getattr(settings, "music_sequence_mode", "loop_sequence")
+    ) and len(plan) == 1:
+        return []
     return plan
 
 
@@ -688,6 +690,83 @@ class FFmpegCommandBuilder:
                     f"{music_outro_loop(program, target)},"
                     f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[music_pre]"
                 )
+                music_label = "music_pre"
+                if voice_side is not None:
+                    attack = max(1, min(2000, settings.ducking_attack_ms))
+                    release = max(10, min(9000, settings.ducking_release_ms))
+                    lines.append(
+                        f"[music_pre][{voice_side}]sidechaincompress=threshold=0.025:ratio=8:"
+                        f"attack={attack}:release={release}:makeup=1[ducked_music]"
+                    )
+                    music_label = "ducked_music"
+                mix_labels.append(music_label)
+            elif music_sequence_indices and not sequence_is_legacy(
+                music_plan, getattr(settings, "music_sequence_mode", "loop_sequence")
+            ):
+                # Phase 28 explicit segment graph: per-track loop/repeat modes
+                # and the play-once sequence mode expand into the ordered
+                # segments that cover the complete audio window. Every legacy
+                # configuration is handled by the branches above/below and
+                # keeps its byte-identical graph.
+                music_gain = _percent_gain(settings.music_volume)
+                input_by_path = {
+                    str(track.get("path", "") or ""): input_index
+                    for track, input_index in zip(music_plan, music_sequence_indices)
+                }
+                segments = build_music_segment_plan(
+                    music_plan,
+                    getattr(settings, "music_sequence_mode", "loop_sequence"),
+                    audio_window_start + program,
+                )
+                segment_labels: list[str] = []
+                for segment_index, segment in enumerate(segments):
+                    input_index = input_by_path.get(str(segment.get("path", "") or ""))
+                    if input_index is None:
+                        continue
+                    seg_trim_start = max(0.0, float(segment.get("trim_start", 0.0) or 0.0))
+                    seg_trim_duration = max(0.0, float(segment.get("trim_duration", 0.0) or 0.0))
+                    label = f"mseg{segment_index}"
+                    segment_labels.append(f"[{label}]")
+                    trim_chain = ""
+                    if seg_trim_start > 1e-9 and seg_trim_duration > 1e-9:
+                        trim_chain = (
+                            f"atrim=start={_number(seg_trim_start)}:"
+                            f"duration={_number(seg_trim_duration)},"
+                        )
+                    elif seg_trim_start > 1e-9:
+                        trim_chain = f"atrim=start={_number(seg_trim_start)},"
+                    elif seg_trim_duration > 1e-9:
+                        trim_chain = f"atrim=duration={_number(seg_trim_duration)},"
+                    # Each occurrence is cut to its planned duration so the
+                    # concatenated sequence stops exactly at the audio window.
+                    lines.append(
+                        f"[{input_index}:a:0]aresample=48000:async=1:first_pts=0,"
+                        f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
+                        f"{trim_chain}"
+                        f"atrim=duration={_number(max(0.05, float(segment.get('duration', 0.0) or 0.0)))},"
+                        f"asetpts=PTS-STARTPTS[{label}]"
+                    )
+                if not segment_labels:
+                    lines.append(
+                        f"anullsrc=r=48000:cl=stereo:d={_number(target)}[music_pre]"
+                    )
+                elif len(segment_labels) == 1:
+                    segment_label = segment_labels[0]
+                else:
+                    lines.append(
+                        f"{''.join(segment_labels)}concat=n={len(segment_labels)}:v=0:a=1[music_seq]"
+                    )
+                    segment_label = "[music_seq]"
+                if segment_labels:
+                    music_trim = (
+                        f"atrim=start={_number(audio_window_start)}:duration={_number(program)}"
+                        if audio_window_start > 1e-9 else f"atrim=duration={_number(program)}"
+                    )
+                    lines.append(
+                        f"{segment_label}volume={_number(music_gain)},{music_trim},"
+                        f"asetpts=PTS-STARTPTS,"
+                        f"apad=pad_dur={_number(target + 0.25)},atrim=duration={_number(target)}[music_pre]"
+                    )
                 music_label = "music_pre"
                 if voice_side is not None:
                     attack = max(1, min(2000, settings.ducking_attack_ms))

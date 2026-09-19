@@ -1,5 +1,6 @@
 {
   "source_folders": [],
+  "shorts_video_folders": [],
   "video_order_mode": "natural",
   "aspect": "16:9",
   "resolution": "1920x1080",
@@ -59,6 +60,7 @@
   "duration_before_merge": 0.7,
   "duration_after_merge": 1.0,
   "duration_after_merge_enabled": false,
+  "shorts_duration_after_merge": null,
   "intro_path": "",
   "intro_audio_mode": "original",
   "image_enabled": false,
@@ -80,9 +82,11 @@
   "short_subtitle_style": "short_1",
   "short_subtitle_animation": "word_highlight",
   "short_subtitle_font": "inter",
-  "short_subtitle_position": "Bottom Center",
+  "short_subtitle_position": "Bottom",
   "music_tracks": [],
+  "music_sequence_mode": "loop_sequence",
   "short_music_tracks": [],
+  "short_music_sequence_mode": "loop_sequence",
   "short_subtitle_font_size": 100,
   "duration_before_merge_shorts": 0.7
 }
