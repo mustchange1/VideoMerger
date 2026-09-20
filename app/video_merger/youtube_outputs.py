@@ -730,6 +730,37 @@ def short_settings(
             getattr(settings, "short_subtitle_font_size", 100)
         ),
         duration_before_merge=shorts_before_merge,
+        # Phase 29: the Shorts Typewriter Hook Intro is strictly separate from
+        # the Long-Form one. Its values are resolved onto the canonical intro
+        # fields of THIS job only, exactly like the other short_* settings;
+        # the Long-Form job keeps reading its own unprefixed values and the
+        # two profiles can never leak into each other.
+        typewriter_intro_enabled=bool(getattr(settings, "short_typewriter_intro_enabled", False)),
+        typewriter_hook_text=str(getattr(settings, "short_typewriter_hook_text", "") or ""),
+        typewriter_speed=str(getattr(settings, "short_typewriter_speed", "auto")),
+        typewriter_sound_frequency=str(getattr(settings, "short_typewriter_sound_frequency", "every_character")),
+        typewriter_sound_preset=str(getattr(settings, "short_typewriter_sound_preset", "typewriter_1")),
+        typewriter_sound_volume=int(getattr(settings, "short_typewriter_sound_volume", 30)),
+        typewriter_cursor_enabled=bool(getattr(settings, "short_typewriter_cursor_enabled", True)),
+        typewriter_position=str(getattr(settings, "short_typewriter_position", "Center")),
+        typewriter_h_align=str(getattr(settings, "short_typewriter_h_align", "Center")),
+        typewriter_font=str(getattr(settings, "short_typewriter_font", "modern_sans_bold")),
+        typewriter_font_size=int(getattr(settings, "short_typewriter_font_size", 100)),
+        typewriter_bold=bool(getattr(settings, "short_typewriter_bold", True)),
+        typewriter_color=str(getattr(settings, "short_typewriter_color", "#FFFFFF")),
+        typewriter_outline_enabled=bool(getattr(settings, "short_typewriter_outline_enabled", True)),
+        typewriter_shadow_enabled=bool(getattr(settings, "short_typewriter_shadow_enabled", False)),
+        typewriter_box_enabled=bool(getattr(settings, "short_typewriter_box_enabled", False)),
+        typewriter_box_opacity=int(getattr(settings, "short_typewriter_box_opacity", 55)),
+        typewriter_box_padding=int(getattr(settings, "short_typewriter_box_padding", 40)),
+        typewriter_background_image_enabled=bool(getattr(settings, "short_typewriter_background_image_enabled", False)),
+        typewriter_background_image_path=str(getattr(settings, "short_typewriter_background_image_path", "") or ""),
+        typewriter_background_darken=int(getattr(settings, "short_typewriter_background_darken", 0)),
+        typewriter_background_blur=bool(getattr(settings, "short_typewriter_background_blur", False)),
+        typewriter_background_zoom=bool(getattr(settings, "short_typewriter_background_zoom", False)),
+        typewriter_hold_seconds=float(getattr(settings, "short_typewriter_hold_seconds", 0.5)),
+        typewriter_transition=str(getattr(settings, "short_typewriter_transition", "project")),
+        typewriter_music_mode=str(getattr(settings, "short_typewriter_music_mode", "start_with_video") or "start_with_video"),
         render_variant_key=job.cache_key,
     )
 

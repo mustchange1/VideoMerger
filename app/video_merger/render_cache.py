@@ -263,6 +263,7 @@ def build_stage1_payload(
     music_asset: AudioAssetInfo | None = None,
     music_track_plan: Sequence[dict] = (),
     watermark_path: Path | None = None,
+    typewriter_intro: str | None = None,
 ) -> dict[str, Any]:
     """Build the complete canonical payload used by the Stage-1 digest."""
     values: dict[str, Any] = {
@@ -380,6 +381,13 @@ def build_stage1_payload(
                 entry["repeat_count"] = int(item.get("repeat_count", 1) or 1)
             entries.append(entry)
         payload["music_tracks"] = entries
+    # Phase 29: the Typewriter Hook Intro is prepended AFTER the Stage-1
+    # program render, but the resulting Stage-1 artifacts already contain it,
+    # so its identity must be part of the Stage-1 digest. Only an ACTIVE intro
+    # (enabled + non-empty text) contributes a key; a disabled/empty intro
+    # keeps the exact historical payload, so existing caches remain valid.
+    if typewriter_intro:
+        payload["typewriter_intro"] = str(typewriter_intro)
     return payload
 
 
@@ -394,6 +402,7 @@ def stage1_fingerprint(
     music_asset: AudioAssetInfo | None = None,
     music_track_plan: Sequence[dict] = (),
     watermark_path: Path | None = None,
+    typewriter_intro: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return ``(sha256, canonical_payload)`` for a Stage-1 render."""
     payload = build_stage1_payload(
@@ -406,6 +415,7 @@ def stage1_fingerprint(
         music_asset=music_asset,
         music_track_plan=music_track_plan,
         watermark_path=watermark_path,
+        typewriter_intro=typewriter_intro,
     )
     encoded = _canonical_json(payload).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), payload

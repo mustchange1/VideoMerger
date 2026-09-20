@@ -87,6 +87,14 @@ from ..video_pool import (
     order_media_for_video_order,
 )
 from ..transition_effects import EASE_OPTIONS, TRANSITION_OPTIONS, transition_description
+from ..typewriter_intro import (
+    TYPEWRITER_H_ALIGNS,
+    TYPEWRITER_MUSIC_MODES,
+    TYPEWRITER_POSITIONS,
+    TYPEWRITER_SOUND_FREQUENCIES,
+    TYPEWRITER_SOUND_PRESETS,
+    TYPEWRITER_SPEEDS,
+)
 from ..youtube_outputs import (
     EXPORT_MODE_COMBINED,
     EXPORT_MODE_LABELS,
@@ -1419,6 +1427,24 @@ class MainWindow(QMainWindow):
         watermark_layout.addWidget(self.watermark_margin_spin, 6, 1)
         outer.addWidget(watermark_group)
 
+        # Phase 29: Typewriter Hook Intro. Strictly separate Long-Form and
+        # Shorts sections; both default to OFF so the historical render path
+        # is untouched until the user explicitly enables one of them.
+        typewriter_group = QGroupBox("6 · Typewriter Hook Intro")
+        typewriter_layout = QVBoxLayout(typewriter_group)
+        typewriter_layout.addWidget(QLabel(
+            "A hook text is typed character-by-character before the video, holds briefly, "
+            "then the video starts through the selected transition. Subtitles, music and the "
+            "clip sequence are not affected."
+        ))
+        self.tw_long_box = QGroupBox("YouTube Long-Form Typewriter Intro")
+        self._build_typewriter_widgets(self.tw_long_box, "tw_long")
+        self.tw_short_box = QGroupBox("YouTube Shorts Typewriter Intro")
+        self._build_typewriter_widgets(self.tw_short_box, "tw_short")
+        typewriter_layout.addWidget(self.tw_long_box)
+        typewriter_layout.addWidget(self.tw_short_box)
+        outer.addWidget(typewriter_group)
+
         action_layout = QHBoxLayout()
         self.analyze_button = QPushButton("Analyze Inputs")
         self.preview_button = QPushButton("Preview Transition")
@@ -2069,9 +2095,65 @@ class MainWindow(QMainWindow):
         image_filter_index = self.image_filter_combo.findData(normalize_image_filter(getattr(self.saved, "image_filter", "natural")))
         self.image_filter_combo.setCurrentIndex(image_filter_index if image_filter_index >= 0 else 0)
         self._sync_image_visibility()
+        self._load_typewriter_settings()
         self._sync_subtitle_request()
         self._update_subtitle_live_preview()
         self._update_pool_status()
+
+    def _load_typewriter_settings(self) -> None:
+        """Phase 29: fill BOTH intro profile sections from the saved project.
+
+        Missing keys fall back to the built-in defaults (disabled, empty
+        text), so every older project loads unchanged. Each profile reads only
+        its own fields.
+        """
+        widgets = getattr(self, "_typewriter_widgets", {})
+        if not widgets:
+            return
+        saved = self.saved
+
+        def apply(prefix: str, settings_prefix: str) -> None:
+            w = widgets[prefix]
+
+            def value(name: str, default):
+                return getattr(saved, settings_prefix + name, default)
+
+            def set_combo(combo_key: str, raw_value: str, fallback: str) -> None:
+                combo = w[combo_key]
+                index = combo.findData(str(raw_value))
+                if index < 0:
+                    index = combo.findData(fallback)
+                combo.setCurrentIndex(max(0, index))
+
+            w["enabled"].setChecked(bool(value("intro_enabled", False)))
+            w["hook_text"].setPlainText(str(value("hook_text", "")))
+            set_combo("speed", str(value("speed", "auto")), "auto")
+            set_combo("sound_frequency", str(value("sound_frequency", "every_character")), "every_character")
+            set_combo("sound_preset", str(value("sound_preset", "typewriter_1")), "typewriter_1")
+            w["sound_volume"].setValue(int(value("sound_volume", 30)))
+            w["cursor_enabled"].setChecked(bool(value("cursor_enabled", True)))
+            set_combo("position", str(value("position", "Center")), "Center")
+            set_combo("h_align", str(value("h_align", "Center")), "Center")
+            set_combo("font", str(value("font", "modern_sans_bold")), "modern_sans_bold")
+            w["font_size"].setValue(int(value("font_size", 100)))
+            w["bold"].setChecked(bool(value("bold", True)))
+            w["color"].setText(str(value("color", "#FFFFFF")))
+            w["outline_enabled"].setChecked(bool(value("outline_enabled", True)))
+            w["shadow_enabled"].setChecked(bool(value("shadow_enabled", False)))
+            w["box_enabled"].setChecked(bool(value("box_enabled", False)))
+            w["box_opacity"].setValue(int(value("box_opacity", 55)))
+            w["box_padding"].setValue(int(value("box_padding", 40)))
+            w["background_image_enabled"].setChecked(bool(value("background_image_enabled", False)))
+            w["background_image_path"].setText(str(value("background_image_path", "")))
+            w["background_darken"].setValue(int(value("background_darken", 0)))
+            w["background_blur"].setChecked(bool(value("background_blur", False)))
+            w["background_zoom"].setChecked(bool(value("background_zoom", False)))
+            w["hold_seconds"].setValue(float(value("hold_seconds", 0.5)))
+            set_combo("transition", str(value("transition", "project")), "project")
+            set_combo("music_mode", str(value("music_mode", "start_with_video")), "start_with_video")
+
+        apply("tw_long", "typewriter_")
+        apply("tw_short", "short_typewriter_")
 
     def _load_subtitle_language(self, stored: object) -> None:
         """Select the stored speech/subtitle language in the two-choice selector.
@@ -2090,6 +2172,321 @@ class MainWindow(QMainWindow):
             self.subtitle_language_combo.addItem(SUBTITLE_LANGUAGE_LABELS[language], language)
             index = self.subtitle_language_combo.findData(language)
         self.subtitle_language_combo.setCurrentIndex(max(0, index))
+
+    # ------------------------------------------------------------------
+    # Phase 29: Typewriter Hook Intro widgets (Long-Form and Shorts stay
+    # strictly separate; both default to OFF / empty).
+    # ------------------------------------------------------------------
+    _TYPEWRITER_SPEED_LABELS = {
+        "auto": "Auto (natural for text length)",
+        "slow": "Slow",
+        "normal": "Normal",
+        "fast": "Fast",
+    }
+    _TYPEWRITER_FREQUENCY_LABELS = {
+        "every_character": "Every character (default)",
+        "every_word": "Every word",
+        "word_boundary": "End of word",
+        "off": "Off",
+    }
+    _TYPEWRITER_PRESET_LABELS = {
+        "typewriter_1": "Typewriter 1 (default)",
+        "typewriter_2": "Typewriter 2",
+        "mechanical": "Mechanical",
+        "soft_keyboard": "Soft Keyboard",
+        "off": "Off",
+    }
+    _TYPEWRITER_MUSIC_LABELS = {
+        "start_with_video": "Music starts with main video (default)",
+        "continue_during_intro": "Music continues during intro",
+    }
+
+    def _build_typewriter_widgets(self, parent_box: QGroupBox, prefix: str) -> None:
+        """Build one complete intro profile section (Long-Form or Shorts)."""
+        layout = QGridLayout(parent_box)
+        w = {}
+
+        def put(widget, row: int, column: int, row_span: int = 1, col_span: int = 1):
+            layout.addWidget(widget, row, column, row_span, col_span)
+            return widget
+
+        row = 0
+        w["enabled"] = put(QCheckBox("Enable Typewriter Hook Intro (adds a typed hook before this output)"), row, 0, 1, 4)
+        row += 1
+        put(QLabel("Hook Text (multi-line, Unicode, wraps automatically)"), row, 0)
+        w["hook_text"] = put(QPlainTextEdit(), row, 1, 2, 3)
+        w["hook_text"].setFixedHeight(64)
+        w["hook_text"].setPlaceholderText("e.g. Why do 97% of creators fail?")
+        row += 2
+
+        speed_labels = {
+            "auto": self._TYPEWRITER_SPEED_LABELS["auto"],
+            "slow": self._TYPEWRITER_SPEED_LABELS["slow"],
+            "normal": self._TYPEWRITER_SPEED_LABELS["normal"],
+            "fast": self._TYPEWRITER_SPEED_LABELS["fast"],
+        }
+        put(QLabel("Typing Speed"), row, 0)
+        w["speed"] = put(QComboBox(), row, 1)
+        for key in TYPEWRITER_SPEEDS:
+            w["speed"].addItem(speed_labels.get(key, key), key)
+        put(QLabel("Sound Frequency"), row, 2)
+        w["sound_frequency"] = put(QComboBox(), row, 3)
+        for key in TYPEWRITER_SOUND_FREQUENCIES:
+            w["sound_frequency"].addItem(self._TYPEWRITER_FREQUENCY_LABELS.get(key, key), key)
+        row += 1
+
+        put(QLabel("Sound Preset"), row, 0)
+        w["sound_preset"] = put(QComboBox(), row, 1)
+        for key in TYPEWRITER_SOUND_PRESETS:
+            w["sound_preset"].addItem(self._TYPEWRITER_PRESET_LABELS.get(key, key), key)
+        put(QLabel("Sound Volume %"), row, 2)
+        w["sound_volume"] = put(QSpinBox(), row, 3)
+        w["sound_volume"].setRange(0, 100)
+        row += 1
+
+        put(QLabel("Vertical Position"), row, 0)
+        w["position"] = put(QComboBox(), row, 1)
+        for key in TYPEWRITER_POSITIONS:
+            w["position"].addItem(key, key)
+        put(QLabel("Horizontal Alignment"), row, 2)
+        w["h_align"] = put(QComboBox(), row, 3)
+        for key in TYPEWRITER_H_ALIGNS:
+            w["h_align"].addItem(key, key)
+        row += 1
+
+        put(QLabel("Font"), row, 0)
+        w["font"] = put(QComboBox(), row, 1)
+        for key, label in FONT_OPTIONS:
+            w["font"].addItem(label, key)
+        put(QLabel("Font Size %"), row, 2)
+        w["font_size"] = put(QSpinBox(), row, 3)
+        w["font_size"].setRange(50, 200)
+        row += 1
+
+        w["bold"] = put(QCheckBox("Bold"), row, 0)
+        w["cursor_enabled"] = put(QCheckBox("Blinking Cursor (default ON)"), row, 1)
+        put(QLabel("Text Color (#RRGGBB)"), row, 2)
+        w["color"] = put(QLineEdit(), row, 3)
+        row += 1
+
+        w["outline_enabled"] = put(QCheckBox("Outline"), row, 0)
+        w["shadow_enabled"] = put(QCheckBox("Shadow"), row, 1)
+        w["box_enabled"] = put(QCheckBox("Background Box"), row, 2)
+        w["box_opacity"] = put(QSpinBox(), row, 3)
+        w["box_opacity"].setRange(0, 100)
+        w["box_opacity"].setPrefix("Box Opacity ")
+        row += 1
+
+        put(QLabel("Box Padding % of font size"), row, 0)
+        w["box_padding"] = put(QSpinBox(), row, 1)
+        w["box_padding"].setRange(0, 200)
+        put(QLabel("Hold after typing (s)"), row, 2)
+        w["hold_seconds"] = put(QDoubleSpinBox(), row, 3)
+        w["hold_seconds"].setRange(0.0, 10.0)
+        w["hold_seconds"].setSingleStep(0.1)
+        row += 1
+
+        w["background_image_enabled"] = put(QCheckBox("Background Image (OFF = dark neutral)"), row, 0, 1, 2)
+        w["background_image_path"] = put(QLineEdit(), row, 2)
+        browse = put(QPushButton("…"), row, 3)
+        browse.clicked.connect(lambda _checked=False, p=prefix: self._typewriter_browse_background(p))
+        row += 1
+
+        put(QLabel("Darken Background % (0 = off)"), row, 0)
+        w["background_darken"] = put(QSpinBox(), row, 1)
+        w["background_darken"].setRange(0, 80)
+        w["background_blur"] = put(QCheckBox("Blur Background"), row, 2)
+        w["background_zoom"] = put(QCheckBox("Subtle Zoom"), row, 3)
+        row += 1
+
+        put(QLabel("Transition into Video"), row, 0)
+        w["transition"] = put(QComboBox(), row, 1)
+        w["transition"].addItem("Project default transition", "project")
+        for key, label, _description in TRANSITION_OPTIONS:
+            w["transition"].addItem(label, key)
+        put(QLabel("Music During Intro"), row, 2)
+        w["music_mode"] = put(QComboBox(), row, 3)
+        for key in TYPEWRITER_MUSIC_MODES:
+            w["music_mode"].addItem(self._TYPEWRITER_MUSIC_LABELS.get(key, key), key)
+        row += 1
+
+        preview_button = put(QPushButton("Open Large Intro Preview"), row, 0, 1, 2)
+        preview_button.clicked.connect(lambda _checked=False, p=prefix: self._open_typewriter_preview(p))
+        self._typewriter_widgets = getattr(self, "_typewriter_widgets", {})
+        self._typewriter_widgets[prefix] = w
+
+    def _typewriter_browse_background(self, prefix: str) -> None:
+        widgets = self._typewriter_widgets[prefix]
+        start_path = widgets["background_image_path"].text().strip() or str(Path.home())
+        chosen, _selected = QFileDialog.getOpenFileName(
+            self, "Typewriter Intro Background Image", start_path,
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+        )
+        if chosen:
+            widgets["background_image_path"].setText(chosen)
+
+    def _typewriter_profile_from_ui(self, prefix: str):
+        """Resolve ONE profile's widgets into a normalized render profile."""
+        from ..typewriter_intro import TypewriterProfile, clamp_hold_seconds, clamp_sound_volume
+        from ..typewriter_intro import normalize_h_align, normalize_music_mode, normalize_position
+        from ..typewriter_intro import normalize_sound_frequency, normalize_sound_preset, normalize_speed, parse_color
+
+        w = self._typewriter_widgets[prefix]
+
+        def data(combo_key: str, fallback: str) -> str:
+            value = w[combo_key].currentData()
+            return str(value) if value is not None else fallback
+
+        return TypewriterProfile(
+            enabled=bool(w["enabled"].isChecked()),
+            text=w["hook_text"].toPlainText(),
+            speed=normalize_speed(data("speed", "auto")),
+            sound_frequency=normalize_sound_frequency(data("sound_frequency", "every_character")),
+            sound_preset=normalize_sound_preset(data("sound_preset", "typewriter_1")),
+            sound_volume=clamp_sound_volume(w["sound_volume"].value()),
+            cursor_enabled=bool(w["cursor_enabled"].isChecked()),
+            position=normalize_position(data("position", "Center")),
+            h_align=normalize_h_align(data("h_align", "Center")),
+            font=str(w["font"].currentData() or "modern_sans_bold"),
+            font_size=int(w["font_size"].value()),
+            bold=bool(w["bold"].isChecked()),
+            color=parse_color(w["color"].text()),
+            outline_enabled=bool(w["outline_enabled"].isChecked()),
+            shadow_enabled=bool(w["shadow_enabled"].isChecked()),
+            box_enabled=bool(w["box_enabled"].isChecked()),
+            box_opacity=int(w["box_opacity"].value()),
+            box_padding=int(w["box_padding"].value()),
+            background_image_enabled=bool(w["background_image_enabled"].isChecked()),
+            background_image_path=w["background_image_path"].text().strip(),
+            background_darken=int(w["background_darken"].value()),
+            background_blur=bool(w["background_blur"].isChecked()),
+            background_zoom=bool(w["background_zoom"].isChecked()),
+            hold_seconds=clamp_hold_seconds(w["hold_seconds"].value()),
+            transition=data("transition", "project"),
+            music_mode=normalize_music_mode(data("music_mode", "start_with_video")),
+        )
+
+    def _open_typewriter_preview(self, prefix: str) -> None:
+        """Large preview using the PRODUCTION intro geometry (requirement 14).
+
+        The dialog scrubs through the exact deterministic timeline with the
+        same draw routine the renderer uses; it only reads the widgets of the
+        requested profile, so Shorts and Long-Form can never mix.
+        """
+        from PySide6.QtCore import QTimer
+        from PySide6.QtGui import QImage, QPainter
+        from ..typewriter_intro import (
+            TypewriterBackground, build_layout, build_timeline, draw_typewriter_frame,
+        )
+
+        profile = self._typewriter_profile_from_ui(prefix)
+        if not profile.text.strip():
+            QMessageBox.information(
+                self, "Typewriter Intro Preview",
+                "Please enter a hook text first - an empty intro renders nothing.",
+            )
+            return
+        if prefix == "tw_short":
+            width, height, title = 1080, 1920, "YouTube Shorts Typewriter Intro Preview"
+            frame_size = (560, 900)
+        else:
+            width, height, title = 1920, 1080, "YouTube Long-Form Typewriter Intro Preview"
+            frame_size = (980, 640)
+
+        timeline = build_timeline(profile)
+        layout = build_layout(profile, timeline, width, height)
+        background = TypewriterBackground(profile, width, height)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(*frame_size)
+        box = QVBoxLayout(dialog)
+
+        class _IntroCanvas(QWidget):
+            def __init__(self, parent):
+                super().__init__(parent)
+                self._time = 0.0
+                self.setMinimumHeight(320)
+                self.setStyleSheet("background:#10141c;")
+
+            def set_time(self, seconds: float) -> None:
+                self._time = float(seconds)
+                self.update()
+
+            def paintEvent(self, _event) -> None:  # noqa: N802
+                image = QImage(width, height, QImage.Format.Format_RGB32)
+                image.fill(0xFF000000)
+                painter = QPainter(image)
+                try:
+                    draw_typewriter_frame(
+                        painter, profile, timeline, layout, background,
+                        width, height, self._time,
+                    )
+                finally:
+                    painter.end()
+                scaled = image.scaled(
+                    self.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                screen = QPainter(self)
+                screen.drawImage(
+                    (self.width() - scaled.width()) // 2,
+                    (self.height() - scaled.height()) // 2,
+                    scaled,
+                )
+                screen.end()
+
+        canvas = _IntroCanvas(dialog)
+        box.addWidget(canvas, stretch=1)
+
+        controls = QHBoxLayout()
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(0, 1000)
+        time_label = QLabel("0.00 s")
+        play_button = QPushButton("Play")
+        play_button.setCheckable(True)
+        timer = QTimer(dialog)
+        timer.setInterval(40)
+
+        def _on_slide(value: int) -> None:
+            seconds = timeline.total_duration * value / 1000.0
+            canvas.set_time(seconds)
+            time_label.setText(f"{seconds:.2f} s")
+
+        def _tick() -> None:
+            next_time = canvas._time + timer.interval() / 1000.0
+            if next_time >= timeline.total_duration:
+                play_button.setChecked(False)
+                next_time = timeline.total_duration
+            slider.blockSignals(True)
+            slider.setValue(int(1000 * next_time / timeline.total_duration))
+            slider.blockSignals(False)
+            _on_slide(int(1000 * next_time / timeline.total_duration))
+
+        def _toggle_play(checked: bool) -> None:
+            play_button.setText("Pause" if checked else "Play")
+            if checked:
+                if canvas._time >= timeline.total_duration - 1e-6:
+                    slider.setValue(0)
+                    _on_slide(0)
+                timer.start()
+            else:
+                timer.stop()
+
+        slider.valueChanged.connect(_on_slide)
+        timer.timeout.connect(_tick)
+        play_button.toggled.connect(_toggle_play)
+        controls.addWidget(play_button)
+        controls.addWidget(slider, stretch=1)
+        controls.addWidget(time_label)
+        box.addLayout(controls)
+        box.addWidget(QLabel(
+            f"Duration {timeline.total_duration:.2f} s · {timeline.char_count} characters · "
+            f"position '{profile.position}' · alignment '{profile.h_align}' · "
+            "rendered with the exact production geometry."
+        ))
+        slider.setValue(0)
+        dialog.exec()
 
     def _settings(self) -> ExportSettings:
         voiceover_units = list(getattr(self, "voiceover_paths_list", []))
@@ -2243,7 +2640,56 @@ class MainWindow(QMainWindow):
             image_zoom=clamp_image_zoom(self.image_zoom_spin.value()),
             image_filter=normalize_image_filter(self.image_filter_combo.currentData()),
             subtitle_output_mode=normalize_subtitle_output_mode(self.subtitle_output_combo.currentData()),
+            **self._typewriter_settings_kwargs(),
         )
+
+    def _typewriter_settings_kwargs(self) -> dict:
+        """Phase 29: current widget state of BOTH intro profiles.
+
+        Long-Form writes the canonical ``typewriter_*`` fields; Shorts writes
+        its own strictly separate ``short_typewriter_*`` fields.
+        """
+        widgets = getattr(self, "_typewriter_widgets", {})
+        if not widgets:
+            return {}
+
+        def values(prefix: str) -> dict:
+            w = widgets[prefix]
+            return {
+                "intro_enabled": bool(w["enabled"].isChecked()),
+                "hook_text": w["hook_text"].toPlainText(),
+                "speed": str(w["speed"].currentData() or "auto"),
+                "sound_frequency": str(w["sound_frequency"].currentData() or "every_character"),
+                "sound_preset": str(w["sound_preset"].currentData() or "typewriter_1"),
+                "sound_volume": int(w["sound_volume"].value()),
+                "cursor_enabled": bool(w["cursor_enabled"].isChecked()),
+                "position": str(w["position"].currentData() or "Center"),
+                "h_align": str(w["h_align"].currentData() or "Center"),
+                "font": str(w["font"].currentData() or "modern_sans_bold"),
+                "font_size": int(w["font_size"].value()),
+                "bold": bool(w["bold"].isChecked()),
+                "color": w["color"].text().strip() or "#FFFFFF",
+                "outline_enabled": bool(w["outline_enabled"].isChecked()),
+                "shadow_enabled": bool(w["shadow_enabled"].isChecked()),
+                "box_enabled": bool(w["box_enabled"].isChecked()),
+                "box_opacity": int(w["box_opacity"].value()),
+                "box_padding": int(w["box_padding"].value()),
+                "background_image_enabled": bool(w["background_image_enabled"].isChecked()),
+                "background_image_path": w["background_image_path"].text().strip(),
+                "background_darken": int(w["background_darken"].value()),
+                "background_blur": bool(w["background_blur"].isChecked()),
+                "background_zoom": bool(w["background_zoom"].isChecked()),
+                "hold_seconds": float(w["hold_seconds"].value()),
+                "transition": str(w["transition"].currentData() or "project"),
+                "music_mode": str(w["music_mode"].currentData() or "start_with_video"),
+            }
+
+        kwargs: dict = {}
+        for key, value in values("tw_long").items():
+            kwargs[f"typewriter_{key}"] = value
+        for key, value in values("tw_short").items():
+            kwargs[f"short_typewriter_{key}"] = value
+        return kwargs
 
     def _max_stretch_value(self) -> float:
         """Aktiver Max-Stretch-Wert (Preset oder Custom-Spinbox)."""

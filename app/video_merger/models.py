@@ -554,6 +554,86 @@ class ExportSettings:
     # ordered dicts {"path", "trim_start", "trim_duration", "duration"}.
     # Empty means the legacy single ``music_path`` graph stays authoritative.
     music_track_plan: list[dict] = field(default_factory=list)
+    # ==================================================================
+    # Phase 29: Typewriter Hook Intro (Long-Form profile).
+    # An OPTIONAL generated text animation rendered before the actual video.
+    # Disabled by default; when disabled (or with empty text) the historical
+    # render path, caches and outputs stay byte-identical. The Shorts profile
+    # below is strictly independent - one profile never reads the other.
+    # ==================================================================
+    typewriter_intro_enabled: bool = False
+    typewriter_hook_text: str = ""
+    # "slow" | "normal" | "fast" | "auto" (natural speed from text length).
+    typewriter_speed: str = "auto"
+    # "every_character" | "every_word" | "word_boundary" | "off".
+    typewriter_sound_frequency: str = "every_character"
+    # "typewriter_1" | "typewriter_2" | "mechanical" | "soft_keyboard" | "off".
+    typewriter_sound_preset: str = "typewriter_1"
+    # SFX loudness in percent (0-100); medium-low default.
+    typewriter_sound_volume: int = 30
+    typewriter_cursor_enabled: bool = True
+    # Canonical vertical positions: Top | Upper-Middle | Center |
+    # Lower-Middle | Bottom (one name per visual spot, no duplicates).
+    typewriter_position: str = "Center"
+    # Independent horizontal alignment: Left | Center | Right.
+    typewriter_h_align: str = "Center"
+    typewriter_font: str = "modern_sans_bold"
+    # Percent of the resolution-aware base size (like subtitle font size).
+    typewriter_font_size: int = 100
+    typewriter_bold: bool = True
+    typewriter_color: str = "#FFFFFF"
+    typewriter_outline_enabled: bool = True
+    typewriter_shadow_enabled: bool = False
+    typewriter_box_enabled: bool = False
+    typewriter_box_opacity: int = 55
+    # Box padding in percent of the font size.
+    typewriter_box_padding: int = 40
+    # Optional background image; OFF = clean dark neutral background.
+    typewriter_background_image_enabled: bool = False
+    typewriter_background_image_path: str = ""
+    # Optional background effects (all OFF by default, intro-only).
+    typewriter_background_darken: int = 0
+    typewriter_background_blur: bool = False
+    typewriter_background_zoom: bool = False
+    # Hold of the fully typed text before the transition into the video.
+    typewriter_hold_seconds: float = 0.5
+    # "project" = the profile's existing transition; else one transition key.
+    typewriter_transition: str = "project"
+    # "start_with_video" (default, historical music placement) or
+    # "continue_during_intro" (music also plays under the intro).
+    typewriter_music_mode: str = "start_with_video"
+    # ------------------------------------------------------------------
+    # Phase 29: Typewriter Hook Intro (Shorts profile) - identical schema,
+    # strictly separate values. ``short_settings()`` resolves these onto the
+    # canonical fields of each Short job, exactly like the other short_*
+    # settings; the Long-Form job never reads them.
+    # ------------------------------------------------------------------
+    short_typewriter_intro_enabled: bool = False
+    short_typewriter_hook_text: str = ""
+    short_typewriter_speed: str = "auto"
+    short_typewriter_sound_frequency: str = "every_character"
+    short_typewriter_sound_preset: str = "typewriter_1"
+    short_typewriter_sound_volume: int = 30
+    short_typewriter_cursor_enabled: bool = True
+    short_typewriter_position: str = "Center"
+    short_typewriter_h_align: str = "Center"
+    short_typewriter_font: str = "modern_sans_bold"
+    short_typewriter_font_size: int = 100
+    short_typewriter_bold: bool = True
+    short_typewriter_color: str = "#FFFFFF"
+    short_typewriter_outline_enabled: bool = True
+    short_typewriter_shadow_enabled: bool = False
+    short_typewriter_box_enabled: bool = False
+    short_typewriter_box_opacity: int = 55
+    short_typewriter_box_padding: int = 40
+    short_typewriter_background_image_enabled: bool = False
+    short_typewriter_background_image_path: str = ""
+    short_typewriter_background_darken: int = 0
+    short_typewriter_background_blur: bool = False
+    short_typewriter_background_zoom: bool = False
+    short_typewriter_hold_seconds: float = 0.5
+    short_typewriter_transition: str = "project"
+    short_typewriter_music_mode: str = "start_with_video"
     # Stage-2 only: per-clip original-audio gains in composition order
     # (intro/image/main/outro). Filled by MainProjectEngine.add_outro().
     stage2_audio_modes: list[str] = field(default_factory=list)

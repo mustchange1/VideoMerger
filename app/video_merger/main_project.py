@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 import uuid
@@ -90,7 +91,14 @@ from .timeline import (
     fit_media_to_duration,
 )
 from .timeline_areas import order_media_by_timeline_areas, shorts_area_pool
-from .transition_effects import transition_label
+from .transition_effects import normalize_ease, normalize_transition, transition_label
+from .typewriter_intro import (
+    build_timeline as typewriter_build_timeline,
+    merge_intro_command as typewriter_merge_command,
+    profile_from_settings as typewriter_profile_from_settings,
+    render_intro_asset as typewriter_render_asset,
+    typewriter_identity as typewriter_asset_identity,
+)
 from .validation import validate_output
 from .video_pool import (
     VIDEO_ORDER_RANDOM,
@@ -565,6 +573,125 @@ class MainProjectEngine:
             video_no_subtitles=clean_video if clean_variant_requested else None,
         )
 
+    def _apply_typewriter_intro(
+        self,
+        profile,
+        timeline,
+        output_video: Path,
+        output_video_clean: Path | None,
+        resolved,
+        settings,
+        temp_dir: Path,
+        *,
+        progress=lambda _event: None,
+        log=lambda _message: None,
+    ) -> tuple[Path, Path | None]:
+        """Phase 29: prepend the generated Typewriter Hook Intro.
+
+        The intro asset (video + deterministic SFX track) is rendered once
+        into the dedicated intro cache and then merged in front of every
+        finished program variant via the project's own transition system.
+        Subtitles were burned into the program BEFORE this step, so the whole
+        program - captions included - simply starts after the hook; the
+        subtitle timeline, ASR and alignment are never modified.
+        """
+        import subprocess
+
+        from .hardware import encoder_arguments
+        from .paths import project_root
+        from .platform_utils import hidden_process_flags, safe_subprocess_env
+
+        width = int(resolved.width)
+        height = int(resolved.height)
+        fps = float(resolved.fps)
+        intro_video, intro_audio = typewriter_render_asset(
+            profile, timeline, width, height, fps,
+            project_root() / "cache" / "typewriter",
+            self.engine.ffmpeg_path,
+            progress_cb=lambda message: log(message),
+        )
+        log(
+            f"Typewriter Hook Intro: {timeline.total_duration:.2f} s "
+            f"({timeline.char_count} Zeichen, Transition "
+            f"'{transition_label(settings.transition_type)}') wird vor das fertige Video gesetzt."
+        )
+
+        transition_key = normalize_transition(
+            profile.transition if profile.transition != "project" else settings.transition_type
+        )
+        transition_ease = normalize_ease(getattr(settings, "transition_ease", "ease_in_out"))
+        transition_duration = float(getattr(settings, "transition_duration", 0.7) or 0.7)
+
+        # Optional: the music may already play under the intro. The program's
+        # historical music placement is never touched in either mode.
+        music_file: Path | None = None
+        if profile.music_mode == "continue_during_intro":
+            tracks = effective_music_tracks(settings)
+            if tracks:
+                candidate = Path(str(tracks[0].get("path", "") or "")).expanduser()
+                if candidate.is_file():
+                    music_file = candidate
+                else:
+                    log(
+                        "WARNUNG: Typewriter-Intro 'Musik läuft im Intro weiter' - "
+                        "Musikdatei fehlt, Intro bleibt ohne Musik."
+                    )
+
+        enc_args = encoder_arguments(resolved.encoder, resolved.crf, resolved.preset)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        # The clean variant only exists when the dual-output subtitle path
+        # rendered it; a single-pass render leaves the internal placeholder
+        # path untouched (nothing to prepend there).
+        targets: list[Path] = [output_video]
+        if output_video_clean is not None and output_video_clean.is_file():
+            targets.append(output_video_clean)
+        for target in targets:
+            program_duration = float(self.engine.analyzer.analyze(target).duration)
+            merged_path = temp_dir / f"{target.stem}.typewriter_merge.mp4"
+            command, effective_td = typewriter_merge_command(
+                str(self.engine.ffmpeg_path),
+                intro_video,
+                intro_audio,
+                target,
+                merged_path,
+                fps=fps,
+                width=width,
+                height=height,
+                transition_key=transition_key,
+                transition_ease=transition_ease,
+                transition_duration=transition_duration,
+                intro_duration=float(timeline.total_duration),
+                program_duration=program_duration,
+                encoder_args=enc_args,
+                music_path=music_file,
+                music_volume=float(getattr(settings, "music_volume", 50) or 50),
+            )
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=1800,
+                creationflags=hidden_process_flags(),
+                env=safe_subprocess_env(),
+            )
+            if completed.returncode != 0 or not merged_path.is_file() or merged_path.stat().st_size == 0:
+                detail = (completed.stderr or "").strip().splitlines()[-1:] or [""]
+                raise VideoMergerError(
+                    f"Typewriter-Intro konnte nicht vor {target.name} gesetzt werden "
+                    f"(FFmpeg-Exit {completed.returncode}: {detail[0][:200]})."
+                )
+            os.replace(merged_path, target)
+        log(
+            f"Typewriter Hook Intro: PASS · Übergang '{transition_label(transition_key)}' "
+            f"({effective_td:.2f} s) · finales Video enthält den Hook."
+        )
+        # Both variants were merged IN PLACE. Returning the original path
+        # objects keeps a non-rendered clean variant as its (absent) internal
+        # placeholder, so downstream cleanup behaves exactly as before.
+        return output_video, output_video_clean
+
     def create_main(
         self,
         media: list[MediaInfo],
@@ -879,6 +1006,18 @@ class MainProjectEngine:
                 resolved,
                 expected_duration=resolved.expected_duration / after_speed,
             )
+        # Phase 29: the Typewriter Hook Intro is an OPTIONAL post-render
+        # prepend. Only an ACTIVE profile (enabled + non-empty text) becomes
+        # part of the Stage-1 identity, because cached artifacts already
+        # contain it. A disabled/empty intro contributes nothing, so every
+        # historical project keeps its exact Stage-1 fingerprint.
+        typewriter_profile = typewriter_profile_from_settings(settings)
+        typewriter_digest = (
+            typewriter_asset_identity(
+                typewriter_profile, resolved.width, resolved.height, float(resolved.fps)
+            )
+            if typewriter_profile.active else None
+        )
         stage1_digest, stage1_payload = stage1_fingerprint(
             render_media,
             settings,
@@ -889,6 +1028,7 @@ class MainProjectEngine:
             music_asset=music,
             music_track_plan=music_track_plan,
             watermark_path=watermark_path,
+            typewriter_intro=typewriter_digest,
         )
         if reuse_cached:
             cached_result = self._try_reuse_cached_main(
@@ -1352,6 +1492,31 @@ class MainProjectEngine:
                     raise _subtitle_failure("single-pass FFmpeg burn-in render", exc) from exc
                 raise
             timings["ffmpeg_rendering_seconds"] = time.perf_counter() - render_started
+
+            # Phase 29: Typewriter Hook Intro. When the profile is active, the
+            # generated hook segment is prepended to the finished program
+            # (burned variant AND clean master) via the project's own
+            # transition system. Disabled/empty-text profiles never reach this
+            # code path, so the historical render result stays untouched.
+            if typewriter_profile.active:
+                typewriter_started = time.perf_counter()
+                try:
+                    output_video, output_video_clean = self._apply_typewriter_intro(
+                        typewriter_profile,
+                        typewriter_build_timeline(typewriter_profile),
+                        output_video,
+                        output_video_clean,
+                        resolved,
+                        settings,
+                        temp_dir,
+                        progress=progress,
+                        log=log,
+                    )
+                    timings["typewriter_intro_seconds"] = time.perf_counter() - typewriter_started
+                except Exception as exc:
+                    raise VideoMergerError(
+                        f"Typewriter Hook Intro fehlgeschlagen: {exc}"
+                    ) from exc
 
             finalization_started = time.perf_counter()
             if subtitle_requested:
