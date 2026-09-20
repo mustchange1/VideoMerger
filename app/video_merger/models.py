@@ -215,6 +215,16 @@ class MediaInfo:
     image_filter: str = "natural"
     # Transition family for the boundary adjacent to this Add Image item.
     image_transition_type: str = ""
+    # Phase 30 Timeline Image (Stage-1): a genuine element of the video
+    # timeline between normal clips, with its own motion and image-only TV
+    # effect. Empty/zero defaults keep Stage-2 Add Image (and any legacy
+    # caller) byte-identical - the command builder reads these fields only
+    # for items flagged ``image_timeline_insertion``.
+    image_timeline_insertion: bool = False
+    image_motion: str = ""            # none | zoom_in | zoom_out | ken_burns | pan
+    image_effect: str = ""            # off | crt_scanlines | vhs | broadcast
+    image_effect_intensity: int = 0   # 0-100 percent
+    image_flicker_speed: str = ""     # slow | normal | fast
 
     @property
     def display_name(self) -> str:
@@ -634,6 +644,58 @@ class ExportSettings:
     short_typewriter_hold_seconds: float = 0.5
     short_typewriter_transition: str = "project"
     short_typewriter_music_mode: str = "start_with_video"
+    # ==================================================================
+    # Phase 30: Image Timeline & Visual Effects - strictly additive.
+    # Mode "disabled" (default) and empty folder lists keep the historical
+    # video-only rendering byte-identical, including every cache identity.
+    # Long-Form and Shorts own completely independent folder lists and
+    # insertion rules; ``long_form_settings()`` / ``short_settings()``
+    # resolve the per-profile values onto the canonical per-job fields and
+    # the two profiles can never leak into each other.
+    # ==================================================================
+    long_form_image_folders: list[str] = field(default_factory=list)
+    shorts_image_folders: list[str] = field(default_factory=list)
+    # Canonical per-job image timeline fields. Filled by
+    # ``long_form_settings()`` / ``short_settings()`` (and by the GUI for
+    # direct Main Video renders); a raw ExportSettings from a legacy caller
+    # keeps the neutral disabled/empty defaults.
+    timeline_image_folders: list[str] = field(default_factory=list)
+    timeline_image_mode: str = "disabled"          # disabled | every_n | percentage
+    timeline_image_every_n: int = 4
+    timeline_image_share_percent: int = 20
+    timeline_image_min_video_gap: int = 2
+    timeline_image_duration_mode: str = "fixed"    # fixed | range
+    timeline_image_duration: float = 2.5
+    timeline_image_duration_min: float = 2.0
+    timeline_image_duration_max: float = 4.0
+    timeline_image_motion: str = "zoom_in"
+    timeline_image_effect: str = "off"             # off | crt_scanlines | vhs | broadcast
+    timeline_image_effect_intensity: int = 20      # 0-100 percent
+    timeline_image_flicker_speed: str = "normal"   # slow | normal | fast
+    # Global TV overlay above the COMPLETE program (videos + images +
+    # transitions). Applied exactly once as a single post-render pass right
+    # before the optional Typewriter intro; "off" (default) skips the pass
+    # entirely, so the historical output is untouched.
+    global_tv_effect: str = "off"
+    global_tv_effect_intensity: int = 20
+    global_tv_flicker_speed: str = "normal"
+    # Shorts-specific values. ``short_settings()`` resolves them onto the
+    # canonical fields of each Short job; the Long-Form job never reads them.
+    shorts_image_mode: str = "disabled"
+    shorts_image_every_n: int = 4
+    shorts_image_share_percent: int = 20
+    shorts_image_min_video_gap: int = 2
+    shorts_image_duration_mode: str = "fixed"
+    shorts_image_duration: float = 2.5
+    shorts_image_duration_min: float = 2.0
+    shorts_image_duration_max: float = 4.0
+    shorts_image_motion: str = "zoom_in"
+    shorts_image_effect: str = "off"
+    shorts_image_effect_intensity: int = 20
+    shorts_image_flicker_speed: str = "normal"
+    shorts_global_tv_effect: str = "off"
+    shorts_global_tv_effect_intensity: int = 20
+    shorts_global_tv_flicker_speed: str = "normal"
     # Stage-2 only: per-clip original-audio gains in composition order
     # (intro/image/main/outro). Filled by MainProjectEngine.add_outro().
     stage2_audio_modes: list[str] = field(default_factory=list)

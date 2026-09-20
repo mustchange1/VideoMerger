@@ -16,6 +16,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .errors import VideoMergerError
+from .image_timeline import (
+    clamp_image_timeline_duration,
+    clamp_intensity,
+    normalize_duration_mode,
+    normalize_flicker_speed,
+    normalize_insertion_mode,
+    normalize_motion,
+    normalize_tv_effect,
+)
 from .music_tracks import effective_short_music_tracks, normalize_sequence_mode
 from .models import (
     DEFAULT_TRANSITION_TYPE,
@@ -523,6 +532,19 @@ def long_form_settings(settings: ExportSettings) -> ExportSettings:
         opening_effect=normalize_opening_effect(
             getattr(settings, "opening_effect", OPENING_EFFECT_NONE)
         ),
+        # Phase 30: the Long-Form image timeline profile. The canonical
+        # insertion/effect values are stored at the Long-Form profile fields;
+        # the Long-Form folder list becomes this job's image source pool.
+        # Disabled mode or no folders keeps the historical rendering and all
+        # cache identities untouched. Shorts values never leak into this job.
+        timeline_image_folders=[
+            str(folder)
+            for folder in (getattr(settings, "long_form_image_folders", None) or [])
+            if str(folder).strip()
+        ],
+        timeline_image_mode=normalize_insertion_mode(
+            getattr(settings, "timeline_image_mode", "disabled")
+        ),
         render_variant_key="youtube-long-form",
     )
 
@@ -761,6 +783,50 @@ def short_settings(
         typewriter_hold_seconds=float(getattr(settings, "short_typewriter_hold_seconds", 0.5)),
         typewriter_transition=str(getattr(settings, "short_typewriter_transition", "project")),
         typewriter_music_mode=str(getattr(settings, "short_typewriter_music_mode", "start_with_video") or "start_with_video"),
+        # Phase 30: the Shorts image timeline profile is strictly separate
+        # from the Long-Form one. Its own folder list and its own insertion
+        # rules are resolved onto the canonical per-job fields of THIS Short;
+        # the Long-Form job keeps reading its unprefixed values and the two
+        # profiles can never leak into each other. Disabled mode or no
+        # folders keeps the historical rendering byte-identical.
+        timeline_image_folders=[
+            str(folder)
+            for folder in (getattr(settings, "shorts_image_folders", None) or [])
+            if str(folder).strip()
+        ],
+        timeline_image_mode=normalize_insertion_mode(
+            getattr(settings, "shorts_image_mode", "disabled")
+        ),
+        timeline_image_every_n=int(getattr(settings, "shorts_image_every_n", 4) or 4),
+        timeline_image_share_percent=int(getattr(settings, "shorts_image_share_percent", 20) or 20),
+        timeline_image_min_video_gap=int(getattr(settings, "shorts_image_min_video_gap", 2) or 2),
+        timeline_image_duration_mode=normalize_duration_mode(
+            getattr(settings, "shorts_image_duration_mode", "fixed")
+        ),
+        timeline_image_duration=clamp_image_timeline_duration(
+            getattr(settings, "shorts_image_duration", 2.5)
+        ),
+        timeline_image_duration_min=clamp_image_timeline_duration(
+            getattr(settings, "shorts_image_duration_min", 2.0)
+        ),
+        timeline_image_duration_max=clamp_image_timeline_duration(
+            getattr(settings, "shorts_image_duration_max", 4.0)
+        ),
+        timeline_image_motion=normalize_motion(getattr(settings, "shorts_image_motion", "zoom_in")),
+        timeline_image_effect=normalize_tv_effect(getattr(settings, "shorts_image_effect", "off")),
+        timeline_image_effect_intensity=clamp_intensity(
+            getattr(settings, "shorts_image_effect_intensity", 20)
+        ),
+        timeline_image_flicker_speed=normalize_flicker_speed(
+            getattr(settings, "shorts_image_flicker_speed", "normal")
+        ),
+        global_tv_effect=normalize_tv_effect(getattr(settings, "shorts_global_tv_effect", "off")),
+        global_tv_effect_intensity=clamp_intensity(
+            getattr(settings, "shorts_global_tv_effect_intensity", 20)
+        ),
+        global_tv_flicker_speed=normalize_flicker_speed(
+            getattr(settings, "shorts_global_tv_flicker_speed", "normal")
+        ),
         render_variant_key=job.cache_key,
     )
 

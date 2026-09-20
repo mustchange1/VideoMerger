@@ -12,6 +12,7 @@ from .image_insertion import (
     normalize_image_filter,
     normalize_image_fit_mode,
 )
+from .image_timeline import normalize_motion as normalize_image_motion
 from .models import ExportSettings, MediaSequence, ResolvedExport
 from .music_tracks import build_music_segment_plan, sequence_is_legacy
 from .opening_effects import (
@@ -163,6 +164,73 @@ def _boundary_transition_type(
     return normalize_transition(settings.transition_type)
 
 
+def _stage2_image_framing(item, settings: ExportSettings, width: int, height: int) -> str:
+    """Historical Stage-2 Add Image framing, unchanged since before Phase 30."""
+    fit_mode = normalize_image_fit_mode(
+        getattr(item, "image_fit_mode", getattr(settings, "image_fit_mode", "fit"))
+    )
+    zoom = clamp_image_zoom(
+        getattr(item, "image_zoom", getattr(settings, "image_zoom", 100))
+    ) / 100.0
+    zoom_width = max(16, int(round(width * zoom / 2.0) * 2))
+    zoom_height = max(16, int(round(height * zoom / 2.0) * 2))
+    if fit_mode == "fit":
+        framing = (
+            f"scale=w={zoom_width}:h={zoom_height}:"
+            f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
+            f"pad=w=max(iw\\,{zoom_width}):h=max(ih\\,{zoom_height}):"
+            f"x=(ow-iw)/2:y=(oh-ih)/2:color=black,"
+            f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+        )
+    elif fit_mode == "fill":
+        framing = (
+            f"scale=w={zoom_width}:h={zoom_height}:"
+            f"force_original_aspect_ratio=increase:force_divisible_by=2:flags=lanczos,"
+            f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+        )
+    else:
+        crop_w = f"min(iw\\,ih*{width}/{height})"
+        crop_h = f"min(ih\\,iw*{height}/{width})"
+        framing = (
+            f"crop=w={crop_w}:h={crop_h}:x=(iw-ow)/2:y=(ih-oh)/2,"
+            f"scale=w={zoom_width}:h={zoom_height}:flags=lanczos,"
+            f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+        )
+    image_filter = image_filter_expression(
+        normalize_image_filter(
+            getattr(item, "image_filter", getattr(settings, "image_filter", "natural"))
+        )
+    )
+    if image_filter:
+        framing += "," + image_filter
+    return framing
+
+
+def _timeline_image_framing(item, width: int, height: int, duration: float) -> str:
+    """Phase 30 Timeline Image chain: cover fit + optional image-only TV effect.
+
+    Motion (when configured) is generated upstream in the pre-line by a
+    deterministic zoompan pass that already outputs the exact output size, so
+    this chain only adds the image-only TV effect. Geometry preserves the
+    aspect ratio (scale-up cover + smart center crop) and the effect is
+    applied ONLY to this image element - never to video clips.
+    """
+    from .image_timeline import cover_crop_chain, tv_effect_chain
+
+    motion = normalize_image_motion(getattr(item, "image_motion", ""))
+    framing = "" if motion != "none" else cover_crop_chain(width, height)
+    effect = tv_effect_chain(
+        getattr(item, "image_effect", "off") or "off",
+        getattr(item, "image_effect_intensity", 0),
+        getattr(item, "image_flicker_speed", "normal") or "normal",
+        height,
+        scope="image",
+    )
+    if effect:
+        framing = f"{framing},{effect}" if framing else effect
+    return framing or "null"
+
+
 @dataclass(slots=True)
 class BuiltCommand:
     command: list[str]
@@ -237,47 +305,43 @@ class FFmpegCommandBuilder:
                 # only a matching null source.
                 source = f"[{real_input[index]}:v:0]"
                 pre = f"pre{index}"
-                lines.append(
-                    f"{source}fps={resolved.fps_expr}:round=near,"
-                    f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
+                timeline_motion = (
+                    getattr(item, "image_timeline_insertion", False)
+                    and normalize_image_motion(getattr(item, "image_motion", "")) != "none"
                 )
-                fit_mode = normalize_image_fit_mode(
-                    getattr(item, "image_fit_mode", getattr(settings, "image_fit_mode", "fit"))
-                )
-                zoom = clamp_image_zoom(
-                    getattr(item, "image_zoom", getattr(settings, "image_zoom", 100))
-                ) / 100.0
-                zoom_width = max(16, int(round(width * zoom / 2.0) * 2))
-                zoom_height = max(16, int(round(height * zoom / 2.0) * 2))
-                if fit_mode == "fit":
-                    framing = (
-                        f"scale=w={zoom_width}:h={zoom_height}:"
-                        f"force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,"
-                        f"pad=w=max(iw\\,{zoom_width}):h=max(ih\\,{zoom_height}):"
-                        f"x=(ow-iw)/2:y=(oh-ih)/2:color=black,"
-                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                if timeline_motion:
+                    # Phase 30 motion: ONE still frame is expanded into the
+                    # full section by a deterministic zoompan pass (its
+                    # expressions depend only on the output frame counter).
+                    # The input is a single image without -loop; see
+                    # ``VideoMergerEngine.export``.
+                    from .image_timeline import motion_dimensions, motion_zoompan_chain
+
+                    head_w, head_h = motion_dimensions(width, height)
+                    zoompan, _frames = motion_zoompan_chain(
+                        getattr(item, "image_motion", ""), width, height, duration,
+                        resolved.fps_expr,
                     )
-                elif fit_mode == "fill":
-                    framing = (
-                        f"scale=w={zoom_width}:h={zoom_height}:"
-                        f"force_original_aspect_ratio=increase:force_divisible_by=2:flags=lanczos,"
-                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                    lines.append(
+                        f"{source}"
+                        f"scale=w={head_w}:h={head_h}:force_original_aspect_ratio=increase"
+                        f":force_divisible_by=2:flags=lanczos,"
+                        f"crop=w={head_w}:h={head_h}:x=(iw-ow)/2:y=(ih-oh)/2,"
+                        f"{zoompan},"
+                        f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
                     )
                 else:
-                    crop_w = f"min(iw\\,ih*{width}/{height})"
-                    crop_h = f"min(ih\\,iw*{height}/{width})"
-                    framing = (
-                        f"crop=w={crop_w}:h={crop_h}:x=(iw-ow)/2:y=(ih-oh)/2,"
-                        f"scale=w={zoom_width}:h={zoom_height}:flags=lanczos,"
-                        f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2"
+                    lines.append(
+                        f"{source}fps={resolved.fps_expr}:round=near,"
+                        f"trim=duration={_number(duration)},settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
                     )
-                image_filter = image_filter_expression(
-                    normalize_image_filter(
-                        getattr(item, "image_filter", getattr(settings, "image_filter", "natural"))
-                    )
-                )
-                if image_filter:
-                    framing += "," + image_filter
+                if getattr(item, "image_timeline_insertion", False):
+                    # Phase 30 Timeline Image: cover-fit geometry and an
+                    # optional image-only TV effect. The Stage-2 Add Image
+                    # framing below is never touched by this path.
+                    framing = _timeline_image_framing(item, width, height, duration)
+                else:
+                    framing = _stage2_image_framing(item, settings, width, height)
                 lines.append(f"[{pre}]{framing},setsar=1,format=yuv420p[{base}]")
             else:
                 original_duration = item.source_duration or item.duration
@@ -901,9 +965,18 @@ class FFmpegCommandBuilder:
         command = [self.ffmpeg_path, "-hide_banner", "-y"]
         for item in media:
             if item.is_image_insertion:
-                # One still-image input is looped for the exact section duration;
-                # the filter graph trims it and keeps Add Image silent.
-                command += ["-loop", "1", "-i", str(item.path)]
+                if (
+                    getattr(item, "image_timeline_insertion", False)
+                    and normalize_image_motion(getattr(item, "image_motion", "")) != "none"
+                ):
+                    # Phase 30 motion image: ONE still frame feeds the
+                    # deterministic zoompan pass (no stream loop).
+                    command += ["-i", str(item.path)]
+                else:
+                    # One still-image input is looped for the exact section
+                    # duration; the filter graph trims it and keeps Add Image
+                    # silent.
+                    command += ["-loop", "1", "-i", str(item.path)]
             else:
                 # Never stream-loop a normal video occurrence: repeated media
                 # occurrences are what preserve clip-boundary transitions.

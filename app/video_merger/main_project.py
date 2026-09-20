@@ -99,6 +99,11 @@ from .typewriter_intro import (
     render_intro_asset as typewriter_render_asset,
     typewriter_identity as typewriter_asset_identity,
 )
+from .image_timeline import (
+    apply_image_timeline as image_timeline_apply,
+    global_effect_identity as image_global_effect_identity,
+    profile_from_settings as image_timeline_profile_from_settings,
+)
 from .validation import validate_output
 from .video_pool import (
     VIDEO_ORDER_RANDOM,
@@ -692,6 +697,84 @@ class MainProjectEngine:
         # placeholder, so downstream cleanup behaves exactly as before.
         return output_video, output_video_clean
 
+    def _apply_global_tv_effect(
+        self,
+        image_profile,
+        output_video: Path,
+        output_video_clean: Path | None,
+        resolved,
+        temp_dir: Path,
+        log: LogCallback = lambda _message: None,
+    ) -> tuple[Path, Path | None]:
+        """Phase 30 Global TV Overlay: one deterministic post-render pass.
+
+        The overlay re-encodes ONLY the video stream with the project's own
+        encoder/quality settings while the audio stream is copied byte-for-
+        byte. The deterministic filter expressions depend exclusively on
+        frame time and pixel position, so identical inputs always produce
+        identical overlays. Both output variants (burned program and clean
+        master, when present) receive exactly one pass each.
+        """
+        import subprocess
+
+        from .hardware import encoder_arguments
+        from .image_timeline import tv_effect_chain
+        from .platform_utils import hidden_process_flags, safe_subprocess_env
+
+        chain = tv_effect_chain(
+            image_profile.global_effect,
+            image_profile.global_intensity,
+            image_profile.global_flicker_speed,
+            resolved.height,
+            scope="global",
+        )
+        if not chain:
+            return output_video, output_video_clean
+        enc_args = encoder_arguments(resolved.encoder, resolved.crf, resolved.preset)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        targets: list[Path] = [output_video]
+        if output_video_clean is not None and output_video_clean.is_file():
+            targets.append(output_video_clean)
+        for target in targets:
+            filtered_path = temp_dir / f"{target.stem}.global_tv_{uuid.uuid4().hex[:8]}.mp4"
+            command = [
+                str(self.engine.ffmpeg_path), "-hide_banner", "-y",
+                "-i", str(target),
+                "-vf", chain,
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-c:v", resolved.encoder, *enc_args,
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                str(filtered_path),
+            ]
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=1800,
+                creationflags=hidden_process_flags(),
+                env=safe_subprocess_env(),
+            )
+            if (
+                completed.returncode != 0
+                or not filtered_path.is_file()
+                or filtered_path.stat().st_size == 0
+            ):
+                detail = (completed.stderr or "").strip().splitlines()[-1:] or [""]
+                raise VideoMergerError(
+                    f"Global TV Overlay konnte nicht auf {target.name} angewendet werden "
+                    f"(FFmpeg-Exit {completed.returncode}: {detail[0][:200]})."
+                )
+            os.replace(filtered_path, target)
+        log(
+            f"Global TV Overlay: PASS · Effekt '{image_profile.global_effect}' "
+            f"Intensität {image_profile.global_intensity}% · Flackern '{image_profile.global_flicker_speed}' · "
+            "einzelner Post-Render-Pass über das komplette Programm (Audio unverändert kopiert)."
+        )
+        return output_video, output_video_clean
+
     def create_main(
         self,
         media: list[MediaInfo],
@@ -958,11 +1041,57 @@ class MainProjectEngine:
             target = 0.0
             program_duration = 0.0
 
+        # Phase 30: Image Timeline. Images become genuine timeline elements
+        # BETWEEN the already fitted video occurrences (A -> B -> Image ->
+        # C -> Image -> D). This runs strictly AFTER the voiceover-driven fit,
+        # so fitting, Hold Last Frame, Full-Timeline Loop and every continuity
+        # safeguard never see the images. The feature is additive: a disabled
+        # mode (the default) or an empty folder list leaves the sequence, the
+        # timeline target and every cache identity untouched. The net added
+        # image time extends the authoritative Stage-1 target by exactly the
+        # same amount, so the complete program (videos + images + transitions)
+        # plays out to its final frame and nothing is truncated.
+        image_profile = image_timeline_profile_from_settings(settings)
+        image_result = None
+        image_target_extension = 0.0
+        if image_profile.active and render_media:
+            image_canvas = resolve_export(render_media, settings)
+            image_result = image_timeline_apply(
+                render_media,
+                image_profile,
+                width=image_canvas.width,
+                height=image_canvas.height,
+                fps=image_canvas.fps,
+                transition_type=settings.transition_type,
+                seed_parts=(
+                    getattr(settings, "export_mode", ""),
+                    getattr(settings, "video_order_mode", "natural"),
+                    video_order_seed if video_order_seed is not None else "auto",
+                    "|".join(image_profile.folders),
+                ),
+                ffprobe_path=self.engine.ffprobe_path,
+                log=log,
+            )
+            if image_result.count:
+                chain_probe = replace(settings, workflow_stage="", timeline_target_duration=0.0)
+                before_chain = resolve_export(render_media, chain_probe).expected_duration
+                render_media = image_result.media
+                after_chain = resolve_export(render_media, chain_probe).expected_duration
+                image_target_extension = max(0.0, after_chain - before_chain)
+        effective_target = target + image_target_extension if voice_assets else target
+        image_global_digest = (
+            image_global_effect_identity(image_profile)
+            if image_profile.global_effect != "off" else None
+        )
+
         render_settings = replace(
             settings,
             workflow_stage="main",
             program_duration=program_duration,
-            timeline_target_duration=target,
+            # Without timeline images this is exactly the historical target.
+            # With timeline images the authoritative endpoint grows by the
+            # net image time so the full mixed program plays to its end.
+            timeline_target_duration=effective_target,
             subtitle_enabled=subtitle_requested,
             subtitle_output_mode=subtitle_mode,
             # The Stage-1 export receives an already ordered/fitted sequence;
@@ -991,9 +1120,9 @@ class MainProjectEngine:
         resolved = self.engine.make_plan(render_media, render_settings, log)
         if not voice_assets:
             render_settings = replace(render_settings, program_duration=resolved.expected_duration)
-        elif abs(resolved.expected_duration - target) > max(0.04, 1.0 / resolved.fps):
+        elif abs(resolved.expected_duration - effective_target) > max(0.04, 1.0 / resolved.fps):
             warnings.append(
-                f"Zielabweichung nach Frame-Rundung: {resolved.expected_duration - target:+.3f} s."
+                f"Zielabweichung nach Frame-Rundung: {resolved.expected_duration - effective_target:+.3f} s."
             )
 
         # The cache validates the final Stage-1 artifact, not the temporary
@@ -1029,6 +1158,10 @@ class MainProjectEngine:
             music_track_plan=music_track_plan,
             watermark_path=watermark_path,
             typewriter_intro=typewriter_digest,
+            # Phase 30: both keys are None for disabled features, so the
+            # historical Stage-1 fingerprint stays byte-identical.
+            timeline_images=image_result.identity if image_result is not None else None,
+            global_tv_effect=image_global_digest,
         )
         if reuse_cached:
             cached_result = self._try_reuse_cached_main(
@@ -1492,6 +1625,28 @@ class MainProjectEngine:
                     raise _subtitle_failure("single-pass FFmpeg burn-in render", exc) from exc
                 raise
             timings["ffmpeg_rendering_seconds"] = time.perf_counter() - render_started
+
+            # Phase 30: Global TV Overlay. ONE single post-render pass above
+            # the complete visual timeline (videos + images + transitions),
+            # applied exactly once per output variant and BEFORE the optional
+            # Typewriter intro is prepended. The audio stream is copied
+            # untouched and subtitle/timing/voiceover data never change.
+            # "off" (the default) never reaches this code path, so the
+            # historical render result stays untouched.
+            if image_profile.global_effect != "off":
+                global_started = time.perf_counter()
+                try:
+                    output_video, output_video_clean = self._apply_global_tv_effect(
+                        image_profile,
+                        output_video,
+                        output_video_clean,
+                        resolved,
+                        temp_dir,
+                        log=log,
+                    )
+                    timings["global_tv_effect_seconds"] = time.perf_counter() - global_started
+                except Exception as exc:
+                    raise VideoMergerError(f"Global TV Overlay fehlgeschlagen: {exc}") from exc
 
             # Phase 29: Typewriter Hook Intro. When the profile is active, the
             # generated hook segment is prepended to the finished program

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, QUrl, Signal
-from PySide6.QtGui import QBrush, QCloseEvent, QColor, QDesktopServices, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QBrush, QCloseEvent, QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -19,6 +19,21 @@ from ..errors import VideoMergerError
 from ..logging_utils import configure_file_logger
 from ..font_manager import FONT_OPTIONS, register_bundled_fonts_with_qt, resolve_font
 from ..image_insertion import clamp_image_duration, clamp_image_zoom, normalize_image_filter, normalize_image_fit_mode, normalize_image_position
+from ..image_timeline import (
+    IMAGE_DURATION_CHOICES,
+    ImageTimelineProfile,
+    clamp_image_timeline_duration,
+    clamp_intensity,
+    cover_crop_chain,
+    motion_chain,
+    normalize_duration_mode,
+    normalize_flicker_speed,
+    normalize_insertion_mode,
+    normalize_motion,
+    normalize_tv_effect,
+    scan_image_files,
+    tv_effect_chain,
+)
 from ..models import (
     LONG_FORM_INTRO_SECONDS,
     LONG_FORM_MUSIC_VOLUME,
@@ -1445,6 +1460,26 @@ class MainWindow(QMainWindow):
         typewriter_layout.addWidget(self.tw_short_box)
         outer.addWidget(typewriter_group)
 
+        # Phase 30: Image Timeline & Visual Effects. Strictly separate
+        # Long-Form and Shorts sections; both default to DISABLED with empty
+        # folder lists, so the historical video-only rendering stays
+        # byte-identical until the user explicitly configures one of them.
+        image_timeline_group = QGroupBox("7 · Image Timeline & Visual Effects")
+        image_timeline_layout = QVBoxLayout(image_timeline_group)
+        image_timeline_layout.addWidget(QLabel(
+            "Images become genuine timeline elements BETWEEN the video clips "
+            "(A → B → Image → C …). Long-Form and Shorts own completely "
+            "independent folder lists and rules - they never mix. Disabled mode "
+            "or an empty folder list keeps the historical video-only rendering."
+        ))
+        self.img_long_box = QGroupBox("YouTube Long-Form Image Timeline")
+        self._build_image_timeline_widgets(self.img_long_box, "img_long")
+        self.img_short_box = QGroupBox("YouTube Shorts Image Timeline")
+        self._build_image_timeline_widgets(self.img_short_box, "img_short")
+        image_timeline_layout.addWidget(self.img_long_box)
+        image_timeline_layout.addWidget(self.img_short_box)
+        outer.addWidget(image_timeline_group)
+
         action_layout = QHBoxLayout()
         self.analyze_button = QPushButton("Analyze Inputs")
         self.preview_button = QPushButton("Preview Transition")
@@ -2096,6 +2131,7 @@ class MainWindow(QMainWindow):
         self.image_filter_combo.setCurrentIndex(image_filter_index if image_filter_index >= 0 else 0)
         self._sync_image_visibility()
         self._load_typewriter_settings()
+        self._load_image_timeline_settings()
         self._sync_subtitle_request()
         self._update_subtitle_live_preview()
         self._update_pool_status()
@@ -2314,6 +2350,521 @@ class MainWindow(QMainWindow):
         preview_button.clicked.connect(lambda _checked=False, p=prefix: self._open_typewriter_preview(p))
         self._typewriter_widgets = getattr(self, "_typewriter_widgets", {})
         self._typewriter_widgets[prefix] = w
+
+    # ------------------------------------------------------------------
+    # Phase 30: Image Timeline & Visual Effects widgets. One section per
+    # output profile (Long-Form / Shorts); each profile owns its folder
+    # list and its complete rule set. Disabled mode + empty folders keep
+    # the historical video-only rendering byte-identical.
+    # ------------------------------------------------------------------
+    _IMAGE_MOTION_LABELS = {
+        "none": "None",
+        "zoom_in": "Slow Zoom In",
+        "zoom_out": "Slow Zoom Out",
+        "ken_burns": "Ken Burns",
+        "pan": "Slow Pan",
+    }
+    _IMAGE_EFFECT_LABELS = {
+        "off": "Off",
+        "crt_scanlines": "CRT Scanlines",
+        "vhs": "Analog VHS",
+        "broadcast": "Broadcast Interference",
+    }
+    _IMAGE_FLICKER_LABELS = {"slow": "Slow", "normal": "Normal", "fast": "Fast"}
+
+    def _build_image_timeline_widgets(self, parent_box: QGroupBox, prefix: str) -> None:
+        """Build one complete image timeline profile section (LF or Shorts)."""
+        layout = QGridLayout(parent_box)
+        w: dict = {}
+
+        def put(widget, row: int, column: int, row_span: int = 1, col_span: int = 1):
+            layout.addWidget(widget, row, column, row_span, col_span)
+            return widget
+
+        row = 0
+        put(QLabel("Image Source Folders (PNG/JPG/JPEG/WEBP/BMP; other files are ignored)"), row, 0, 1, 4)
+        row += 1
+        w["folders"] = put(QListWidget(), row, 0, 2, 3)
+        w["folders"].setSelectionMode(QAbstractItemView.SingleSelection)
+        w["folders"].setMaximumHeight(100)
+        w["folders"].setToolTip(
+            "Images are drawn from these folders at randomized positions in the "
+            "timeline - one full pass before any image repeats, never the same "
+            "image twice in a row. Unicode folder and file names are fully "
+            "supported. This output profile never reads the other profile's list."
+        )
+        folder_buttons = QVBoxLayout()
+        w["add_folder"] = put(QPushButton("Add Image Folder …"), row, 3)
+        folder_buttons.addWidget(w["add_folder"])
+        w["remove_folder"] = put(QPushButton("Remove"), row + 1, 3)
+        folder_buttons.addWidget(w["remove_folder"])
+        move_row = QHBoxLayout()
+        w["folder_up"] = QPushButton("Move Up")
+        w["folder_down"] = QPushButton("Move Down")
+        w["folder_clear"] = QPushButton("Clear")
+        move_row.addWidget(w["folder_up"])
+        move_row.addWidget(w["folder_down"])
+        move_row.addWidget(w["folder_clear"])
+        layout.addLayout(move_row, row + 2, 0, 1, 4)
+        w["add_folder"].clicked.connect(lambda _c=False, p=prefix: self._image_timeline_add_folder(p))
+        w["remove_folder"].clicked.connect(lambda _c=False, p=prefix: self._image_timeline_remove_folder(p))
+        w["folder_up"].clicked.connect(lambda _c=False, p=prefix: self._image_timeline_move_folder(p, -1))
+        w["folder_down"].clicked.connect(lambda _c=False, p=prefix: self._image_timeline_move_folder(p, 1))
+        w["folder_clear"].clicked.connect(lambda _c=False, p=prefix: self._image_timeline_clear_folders(p))
+        row += 3
+
+        put(QLabel("Insertion Mode"), row, 0)
+        w["mode"] = put(QComboBox(), row, 1)
+        w["mode"].addItem("Disabled", "disabled")
+        w["mode"].addItem("Every N Videos", "every_n")
+        w["mode"].addItem("Random Percentage", "percentage")
+        put(QLabel("Every N / Share %"), row, 2)
+        w["every_n"] = put(QSpinBox(), row, 3)
+        w["every_n"].setRange(1, 100)
+        w["every_n"].setValue(4)
+        w["every_n"].setSuffix(" videos")
+        row += 1
+
+        put(QLabel("Minimum Video Gap"), row, 0)
+        w["min_gap"] = put(QSpinBox(), row, 1)
+        w["min_gap"].setRange(1, 50)
+        w["min_gap"].setValue(2)
+        w["min_gap"].setSuffix(" videos")
+        w["min_gap"].setToolTip(
+            "At least this many video clips stay between two images, so images "
+            "never cluster (Video → Image → Image is avoided whenever possible)."
+        )
+        put(QLabel("Share (Percentage mode)"), row, 2)
+        w["share"] = put(QSpinBox(), row, 3)
+        w["share"].setRange(1, 90)
+        w["share"].setValue(20)
+        w["share"].setSuffix(" %")
+        row += 1
+
+        put(QLabel("Duration Mode"), row, 0)
+        w["duration_mode"] = put(QComboBox(), row, 1)
+        w["duration_mode"].addItem("Fixed Duration", "fixed")
+        w["duration_mode"].addItem("Random Range (deterministic)", "range")
+        put(QLabel("Duration"), row, 2)
+        duration_row = QHBoxLayout()
+        w["duration"] = put(QComboBox(), 0, 0)
+        for choice in IMAGE_DURATION_CHOICES:
+            w["duration"].addItem(f"{choice:.1f} s", choice)
+        w["duration"].addItem("Custom …", -1.0)
+        w["duration"].setCurrentIndex(2)  # 2.5 s default
+        w["duration_spin"] = QDoubleSpinBox()
+        w["duration_spin"].setRange(0.5, 15.0)
+        w["duration_spin"].setSingleStep(0.5)
+        w["duration_spin"].setDecimals(2)
+        w["duration_spin"].setValue(2.5)
+        w["duration_spin"].setSuffix(" s")
+        w["duration_spin"].setEnabled(False)
+        duration_row.addWidget(w["duration"])
+        duration_row.addWidget(w["duration_spin"])
+        layout.addLayout(duration_row, row, 3)
+        row += 1
+
+        put(QLabel("Range (min – max)"), row, 0)
+        range_row = QHBoxLayout()
+        w["duration_min"] = QDoubleSpinBox()
+        w["duration_min"].setRange(0.5, 15.0)
+        w["duration_min"].setSingleStep(0.5)
+        w["duration_min"].setValue(2.0)
+        w["duration_min"].setSuffix(" s")
+        w["duration_max"] = QDoubleSpinBox()
+        w["duration_max"].setRange(0.5, 15.0)
+        w["duration_max"].setSingleStep(0.5)
+        w["duration_max"].setValue(4.0)
+        w["duration_max"].setSuffix(" s")
+        range_row.addWidget(w["duration_min"])
+        range_row.addWidget(QLabel("–"))
+        range_row.addWidget(w["duration_max"])
+        layout.addLayout(range_row, row, 1)
+        put(QLabel("Motion (images only)"), row, 2)
+        w["motion"] = put(QComboBox(), row, 3)
+        for key, label in self._IMAGE_MOTION_LABELS.items():
+            w["motion"].addItem(label, key)
+        w["motion"].setCurrentIndex(1)  # Slow Zoom In default when enabled
+        row += 1
+
+        put(QLabel("Image TV Effect"), row, 0)
+        w["effect"] = put(QComboBox(), row, 1)
+        for key, label in self._IMAGE_EFFECT_LABELS.items():
+            w["effect"].addItem(label, key)
+        put(QLabel("Effect Intensity"), row, 2)
+        w["effect_intensity"] = put(QSpinBox(), row, 3)
+        w["effect_intensity"].setRange(0, 100)
+        w["effect_intensity"].setValue(20)
+        w["effect_intensity"].setSuffix(" %")
+        row += 1
+
+        put(QLabel("Flicker Speed"), row, 0)
+        w["flicker"] = put(QComboBox(), row, 1)
+        for key, label in self._IMAGE_FLICKER_LABELS.items():
+            w["flicker"].addItem(label, key)
+        w["flicker"].setCurrentIndex(1)  # Normal
+        put(QLabel("Global TV Overlay (whole program)"), row, 2)
+        w["global_effect"] = put(QComboBox(), row, 3)
+        for key, label in self._IMAGE_EFFECT_LABELS.items():
+            w["global_effect"].addItem(label, key)
+        row += 1
+
+        put(QLabel("Global Intensity"), row, 0)
+        w["global_intensity"] = put(QSpinBox(), row, 1)
+        w["global_intensity"].setRange(0, 100)
+        w["global_intensity"].setValue(20)
+        w["global_intensity"].setSuffix(" %")
+        put(QLabel("Global Flicker Speed"), row, 2)
+        w["global_flicker"] = put(QComboBox(), row, 3)
+        for key, label in self._IMAGE_FLICKER_LABELS.items():
+            w["global_flicker"].addItem(label, key)
+        w["global_flicker"].setCurrentIndex(1)
+        row += 1
+
+        preview_row = QHBoxLayout()
+        w["preview_button"] = QPushButton("Preview Image Look …")
+        w["preview_button"].setToolTip(
+            "Renders one real frame with the production geometry: cover-fit "
+            "framing, motion at 60 % of the duration and the selected image TV "
+            "effect. Long-Form previews 16:9, Shorts preview 9:16."
+        )
+        w["preview_button"].clicked.connect(lambda _c=False, p=prefix: self._preview_image_timeline(p))
+        w["preview_label"] = QLabel("No preview yet")
+        w["preview_label"].setAlignment(Qt.AlignCenter)
+        w["preview_label"].setMinimumSize(160, 90)
+        w["preview_label"].setStyleSheet("background-color: #111; color: #888; border: 1px solid #444;")
+        w["preview_label"].mouseDoubleClickEvent = (
+            lambda _event, p=prefix: self._open_image_preview_dialog(p)
+        )
+        preview_row.addWidget(w["preview_button"])
+        preview_row.addWidget(w["preview_label"], 1)
+        layout.addLayout(preview_row, row, 0, 1, 4)
+        row += 1
+
+        w["mode"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_image_timeline_controls(p))
+        w["duration_mode"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_image_timeline_controls(p))
+        w["duration"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_image_timeline_controls(p))
+        self._sync_image_timeline_controls(prefix, widgets_override=w)
+        self._image_timeline_widgets = getattr(self, "_image_timeline_widgets", {})
+        self._image_timeline_widgets[prefix] = w
+
+    def _sync_image_timeline_controls(self, prefix: str, widgets_override: dict | None = None) -> None:
+        """Enable only the controls that the current mode can use."""
+        widgets = widgets_override or getattr(self, "_image_timeline_widgets", {}).get(prefix)
+        if not widgets:
+            return
+        mode = str(widgets["mode"].currentData() or "disabled")
+        active = mode != "disabled"
+        duration_mode = str(widgets["duration_mode"].currentData() or "fixed")
+        custom = float(widgets["duration"].currentData() or 0) < 0
+        widgets["every_n"].setEnabled(active and mode == "every_n")
+        widgets["share"].setEnabled(active and mode == "percentage")
+        widgets["min_gap"].setEnabled(active)
+        widgets["duration_mode"].setEnabled(active)
+        widgets["duration"].setEnabled(active)
+        widgets["duration_spin"].setEnabled(active and custom)
+        widgets["duration_min"].setEnabled(active and duration_mode == "range")
+        widgets["duration_max"].setEnabled(active and duration_mode == "range")
+        widgets["motion"].setEnabled(active)
+        widgets["effect"].setEnabled(active)
+        widgets["effect_intensity"].setEnabled(active and str(widgets["effect"].currentData() or "off") != "off")
+        widgets["flicker"].setEnabled(active and str(widgets["effect"].currentData() or "off") != "off")
+        # The global overlay is independent from the image insertions; it only
+        # needs to be switched on deliberately.
+        global_on = str(widgets["global_effect"].currentData() or "off") != "off"
+        widgets["global_intensity"].setEnabled(global_on)
+        widgets["global_flicker"].setEnabled(global_on)
+        widgets["preview_button"].setEnabled(active)
+
+    def _image_timeline_add_folder(self, prefix: str) -> None:
+        widgets = self._image_timeline_widgets[prefix]
+        start_path = str(Path.home())
+        if widgets["folders"].count():
+            start_path = str(Path(widgets["folders"].item(widgets["folders"].count() - 1).text()).parent)
+        chosen = QFileDialog.getExistingDirectory(self, "Add Image Folder", start_path)
+        if not chosen:
+            return
+        resolved = str(Path(chosen).expanduser().resolve())
+        existing = {widgets["folders"].item(row).text() for row in range(widgets["folders"].count())}
+        if resolved in existing:
+            return
+        widgets["folders"].addItem(resolved)
+
+    def _image_timeline_remove_folder(self, prefix: str) -> None:
+        widgets = self._image_timeline_widgets[prefix]
+        row = widgets["folders"].currentRow()
+        if row >= 0:
+            widgets["folders"].takeItem(row)
+
+    def _image_timeline_move_folder(self, prefix: str, delta: int) -> None:
+        widgets = self._image_timeline_widgets[prefix]
+        folders = widgets["folders"]
+        row = folders.currentRow()
+        target = row + delta
+        if row < 0 or target < 0 or target >= folders.count():
+            return
+        item = folders.takeItem(row)
+        folders.insertItem(target, item)
+        folders.setCurrentRow(target)
+
+    def _image_timeline_clear_folders(self, prefix: str) -> None:
+        self._image_timeline_widgets[prefix]["folders"].clear()
+
+    def _image_timeline_folders(self, prefix: str) -> list[str]:
+        widgets = getattr(self, "_image_timeline_widgets", {}).get(prefix)
+        if not widgets:
+            return []
+        return [widgets["folders"].item(row).text() for row in range(widgets["folders"].count())]
+
+    def _image_timeline_profile_from_ui(self, prefix: str) -> ImageTimelineProfile:
+        """Resolve the current widget state of one profile to a normalized profile."""
+        w = self._image_timeline_widgets[prefix]
+        duration_choice = float(w["duration"].currentData() or -1)
+        duration = (
+            clamp_image_timeline_duration(w["duration_spin"].value())
+            if duration_choice < 0 else duration_choice
+        )
+        return ImageTimelineProfile(
+            folders=tuple(self._image_timeline_folders(prefix)),
+            mode=normalize_insertion_mode(w["mode"].currentData()),
+            every_n=int(w["every_n"].value()),
+            share_percent=int(w["share"].value()),
+            min_video_gap=int(w["min_gap"].value()),
+            duration_mode=normalize_duration_mode(w["duration_mode"].currentData()),
+            duration=duration,
+            duration_min=clamp_image_timeline_duration(w["duration_min"].value()),
+            duration_max=clamp_image_timeline_duration(w["duration_max"].value()),
+            motion=normalize_motion(w["motion"].currentData()),
+            effect=normalize_tv_effect(w["effect"].currentData()),
+            effect_intensity=clamp_intensity(w["effect_intensity"].value()),
+            flicker_speed=normalize_flicker_speed(w["flicker"].currentData()),
+            global_effect=normalize_tv_effect(w["global_effect"].currentData()),
+            global_intensity=clamp_intensity(w["global_intensity"].value()),
+            global_flicker_speed=normalize_flicker_speed(w["global_flicker"].currentData()),
+        )
+
+    def _preview_image_timeline(self, prefix: str) -> None:
+        """Render one REAL frame with production geometry, motion and effect."""
+        import subprocess
+        import tempfile
+
+        from ..platform_utils import hidden_process_flags, safe_subprocess_env
+
+        profile = self._image_timeline_profile_from_ui(prefix)
+        files = scan_image_files(profile.folders)
+        if not files:
+            QMessageBox.warning(
+                self, "Image Preview",
+                "Please add at least one image folder containing PNG/JPG/JPEG/WEBP/BMP files first.",
+            )
+            return
+        image_path = files[0]
+        width, height = (640, 360) if prefix == "img_long" else (360, 640)
+        aspect = "16:9" if prefix == "img_long" else "9:16"
+        preview_duration = float(profile.duration) if profile.duration_mode == "fixed" else float(profile.duration_max)
+        duration = max(0.5, preview_duration)
+        chain = cover_crop_chain(width, height)
+        motion = motion_chain(profile.motion, width, height, duration, progress_expr="0.6")
+        if motion:
+            chain += "," + motion
+        effect = tv_effect_chain(profile.effect, profile.effect_intensity, profile.flicker_speed, height, scope="image")
+        if effect:
+            chain += "," + effect
+        cache_dir = project_root() / "cache" / "image_preview"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        token = f"{prefix}_{width}x{height}_{profile.motion}_{profile.effect}_{profile.effect_intensity}"
+        out_path = cache_dir / f"preview_{token}.png"
+        command = [
+            str(locate_ffmpeg()), "-hide_banner", "-y",
+            "-loop", "1", "-t", f"{duration:.3f}", "-i", str(image_path),
+            "-vf", chain,
+            "-frames:v", "1", "-f", "image2", str(out_path),
+        ]
+        try:
+            completed = subprocess.run(
+                command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=60, creationflags=hidden_process_flags(), env=safe_subprocess_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            QMessageBox.critical(self, "Image Preview", f"FFmpeg konnte nicht ausgeführt werden: {exc}")
+            return
+        if completed.returncode != 0 or not out_path.is_file():
+            detail = (completed.stderr or "").strip().splitlines()[-1:] or [""]
+            QMessageBox.critical(self, "Image Preview", f"Preview fehlgeschlagen: {detail[0][:240]}")
+            return
+        widgets = self._image_timeline_widgets[prefix]
+        pixmap = QPixmap(str(out_path))
+        if not pixmap.isNull():
+            widgets["preview_label"].setPixmap(pixmap.scaled(288, 220, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        widgets["preview_label"].setToolTip(
+            f"{image_path.name}\n"
+            f"Duration: {duration:.1f} s ({profile.duration_mode}) · Motion: {self._IMAGE_MOTION_LABELS[profile.motion]}\n"
+            f"Image effect: {self._IMAGE_EFFECT_LABELS[profile.effect]} ({profile.effect_intensity} %) · "
+            f"Output: {aspect}\nDouble-click for the full-size preview."
+        )
+        self._image_preview_paths = getattr(self, "_image_preview_paths", {})
+        self._image_preview_paths[prefix] = str(out_path)
+
+    def _open_image_preview_dialog(self, prefix: str) -> None:
+        """Large preview: full-size frame, landscape for LF / portrait for Shorts."""
+        path = getattr(self, "_image_preview_paths", {}).get(prefix)
+        if not path or not Path(path).is_file():
+            return
+        profile = self._image_timeline_profile_from_ui(prefix)
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            ("Long-Form" if prefix == "img_long" else "Shorts")
+            + " Image Preview – "
+            + f"{self._IMAGE_MOTION_LABELS[profile.motion]} / {self._IMAGE_EFFECT_LABELS[profile.effect]}"
+        )
+        layout = QVBoxLayout(dialog)
+        label = QLabel()
+        label.setPixmap(pixmap)
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        layout.addWidget(QLabel(
+            f"Duration {profile.duration:.1f} s · motion '{self._IMAGE_MOTION_LABELS[profile.motion]}' · "
+            f"effect '{self._IMAGE_EFFECT_LABELS[profile.effect]}' {profile.effect_intensity}% · "
+            f"{'16:9' if prefix == 'img_long' else '9:16'} production geometry"
+        ))
+        dialog.resize(pixmap.width() + 60, pixmap.height() + 110)
+        dialog.exec()
+
+    def _load_image_timeline_settings(self) -> None:
+        """Phase 30: fill BOTH image timeline sections from the saved project.
+
+        Missing keys fall back to the safe defaults (disabled, empty folders),
+        so every older project loads unchanged. Each profile reads ONLY its own
+        fields - Long-Form reads the canonical ``timeline_image_*`` values and
+        its own folder list, Shorts reads its ``shorts_image_*`` values.
+        """
+        widgets = getattr(self, "_image_timeline_widgets", {})
+        if not widgets:
+            return
+        saved = self.saved
+
+        def set_combo(combo: QComboBox, raw_value: str, fallback: str) -> None:
+            index = combo.findData(str(raw_value))
+            if index < 0:
+                index = combo.findData(fallback)
+            combo.setCurrentIndex(max(0, index))
+
+        def set_duration_combo(combo: QComboBox, spin: QDoubleSpinBox, value: float) -> None:
+            for row in range(combo.count()):
+                if float(combo.itemData(row) or -1) == float(value):
+                    combo.setCurrentIndex(row)
+                    return
+            combo.setCurrentIndex(combo.findData(-1.0))
+            spin.setValue(max(0.5, min(15.0, float(value))))
+
+        def apply(prefix: str, settings_prefix: str, folders_key: str) -> None:
+            w = widgets[prefix]
+
+            def value(name: str, default):
+                return getattr(saved, settings_prefix + name, default)
+
+            w["folders"].clear()
+            for folder in (getattr(saved, folders_key, None) or []):
+                text = str(folder).strip()
+                if text:
+                    w["folders"].addItem(text)
+            set_combo(w["mode"], str(value("mode", "disabled")), "disabled")
+            w["every_n"].setValue(max(1, min(100, int(value("every_n", 4) or 4))))
+            w["share"].setValue(max(1, min(90, int(value("share_percent", 20) or 20))))
+            w["min_gap"].setValue(max(1, min(50, int(value("min_video_gap", 2) or 2))))
+            set_combo(w["duration_mode"], str(value("duration_mode", "fixed")), "fixed")
+            set_duration_combo(w["duration"], w["duration_spin"], float(value("duration", 2.5) or 2.5))
+            w["duration_min"].setValue(max(0.5, min(15.0, float(value("duration_min", 2.0) or 2.0))))
+            w["duration_max"].setValue(max(0.5, min(15.0, float(value("duration_max", 4.0) or 4.0))))
+            set_combo(w["motion"], str(value("motion", "zoom_in")), "zoom_in")
+            set_combo(w["effect"], str(value("effect", "off")), "off")
+            w["effect_intensity"].setValue(max(0, min(100, int(value("effect_intensity", 20)))))
+            set_combo(w["flicker"], str(value("flicker_speed", "normal")), "normal")
+
+        apply("img_long", "timeline_image_", "long_form_image_folders")
+        apply("img_short", "shorts_image_", "shorts_image_folders")
+        # The global overlay is stored per profile: Long-Form uses the
+        # canonical keys, Shorts its strictly separate shorts_* keys.
+        for prefix, settings_prefix in (("img_long", ""), ("img_short", "shorts_")):
+            w = widgets[prefix]
+            set_combo(
+                w["global_effect"],
+                str(getattr(saved, settings_prefix + "global_tv_effect", "off")),
+                "off",
+            )
+            w["global_intensity"].setValue(
+                max(0, min(100, int(getattr(saved, settings_prefix + "global_tv_effect_intensity", 20))))
+            )
+            set_combo(
+                w["global_flicker"],
+                str(getattr(saved, settings_prefix + "global_tv_flicker_speed", "normal")),
+                "normal",
+            )
+        for prefix in ("img_long", "img_short"):
+            self._sync_image_timeline_controls(prefix)
+
+    def _image_timeline_settings_kwargs(self) -> dict:
+        """Phase 30: current widget state of BOTH image timeline profiles.
+
+        Long-Form writes its own ``long_form_image_folders`` plus the canonical
+        ``timeline_image_*`` fields (which ARE the Long-Form profile); Shorts
+        writes its strictly separate ``shorts_image_*`` fields. ``_settings()``
+        additionally mirrors the Long-Form folders onto the canonical folder
+        list so direct Main Video renders behave exactly like the Long-Form job.
+        """
+        widgets = getattr(self, "_image_timeline_widgets", {})
+        if not widgets:
+            return {}
+
+        def values(prefix: str) -> dict:
+            profile = self._image_timeline_profile_from_ui(prefix)
+            return {
+                "mode": profile.mode,
+                "every_n": profile.every_n,
+                "share_percent": profile.share_percent,
+                "min_video_gap": profile.min_video_gap,
+                "duration_mode": profile.duration_mode,
+                "duration": profile.duration,
+                "duration_min": profile.duration_min,
+                "duration_max": profile.duration_max,
+                "motion": profile.motion,
+                "effect": profile.effect,
+                "effect_intensity": profile.effect_intensity,
+                "flicker_speed": profile.flicker_speed,
+                "global_effect": profile.global_effect,
+                "global_intensity": profile.global_intensity,
+                "global_flicker_speed": profile.global_flicker_speed,
+            }
+
+        global_key_map = {
+            "global_effect": "global_tv_effect",
+            "global_intensity": "global_tv_effect_intensity",
+            "global_flicker_speed": "global_tv_flicker_speed",
+        }
+        long_values = values("img_long")
+        short_values = values("img_short")
+        long_folders = self._image_timeline_folders("img_long")
+        short_folders = self._image_timeline_folders("img_short")
+        kwargs: dict = {
+            "long_form_image_folders": long_folders,
+            "shorts_image_folders": short_folders,
+            # Direct Main Video renders use the Long-Form profile.
+            "timeline_image_folders": list(long_folders),
+        }
+        for key, value in long_values.items():
+            if key in global_key_map:
+                kwargs[global_key_map[key]] = value
+            else:
+                kwargs[f"timeline_image_{key}"] = value
+        for key, value in short_values.items():
+            if key in global_key_map:
+                kwargs[f"shorts_{global_key_map[key]}"] = value
+            else:
+                kwargs[f"shorts_image_{key}"] = value
+        return kwargs
 
     def _typewriter_browse_background(self, prefix: str) -> None:
         widgets = self._typewriter_widgets[prefix]
@@ -2641,6 +3192,7 @@ class MainWindow(QMainWindow):
             image_filter=normalize_image_filter(self.image_filter_combo.currentData()),
             subtitle_output_mode=normalize_subtitle_output_mode(self.subtitle_output_combo.currentData()),
             **self._typewriter_settings_kwargs(),
+            **self._image_timeline_settings_kwargs(),
         )
 
     def _typewriter_settings_kwargs(self) -> dict:

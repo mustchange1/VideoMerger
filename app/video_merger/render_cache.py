@@ -232,6 +232,15 @@ def _media_payload(item: MediaInfo) -> dict[str, Any]:
         payload["image_transition_type"] = str(
             getattr(item, "image_transition_type", "") or ""
         )
+    # Phase 30 Timeline Images extend the payload ONLY for items that really
+    # are timeline image insertions. Historical items (and therefore every
+    # pre-Phase-30 digest) keep their exact payload shape.
+    if getattr(item, "image_timeline_insertion", False):
+        payload["image_timeline_insertion"] = True
+        payload["image_motion"] = str(getattr(item, "image_motion", "") or "")
+        payload["image_effect"] = str(getattr(item, "image_effect", "") or "")
+        payload["image_effect_intensity"] = int(getattr(item, "image_effect_intensity", 0) or 0)
+        payload["image_flicker_speed"] = str(getattr(item, "image_flicker_speed", "") or "")
     return payload
 
 
@@ -264,6 +273,8 @@ def build_stage1_payload(
     music_track_plan: Sequence[dict] = (),
     watermark_path: Path | None = None,
     typewriter_intro: str | None = None,
+    timeline_images: str | None = None,
+    global_tv_effect: str | None = None,
 ) -> dict[str, Any]:
     """Build the complete canonical payload used by the Stage-1 digest."""
     values: dict[str, Any] = {
@@ -388,6 +399,17 @@ def build_stage1_payload(
     # keeps the exact historical payload, so existing caches remain valid.
     if typewriter_intro:
         payload["typewriter_intro"] = str(typewriter_intro)
+    # Phase 30: Image Timeline & Visual Effects. Both keys are added ONLY
+    # when the corresponding feature is really active for this render:
+    # ``timeline_images`` when at least one image was inserted into the
+    # timeline, ``global_tv_effect`` when the global overlay is not "off".
+    # A disabled feature contributes nothing, so every historical project
+    # keeps its exact Stage-1 fingerprint and cache identity. ASR, alignment
+    # and subtitle cache keys never contain these values.
+    if timeline_images:
+        payload["timeline_images"] = str(timeline_images)
+    if global_tv_effect:
+        payload["global_tv_effect"] = str(global_tv_effect)
     return payload
 
 
@@ -403,6 +425,8 @@ def stage1_fingerprint(
     music_track_plan: Sequence[dict] = (),
     watermark_path: Path | None = None,
     typewriter_intro: str | None = None,
+    timeline_images: str | None = None,
+    global_tv_effect: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return ``(sha256, canonical_payload)`` for a Stage-1 render."""
     payload = build_stage1_payload(
@@ -416,6 +440,8 @@ def stage1_fingerprint(
         music_track_plan=music_track_plan,
         watermark_path=watermark_path,
         typewriter_intro=typewriter_intro,
+        timeline_images=timeline_images,
+        global_tv_effect=global_tv_effect,
     )
     encoded = _canonical_json(payload).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), payload
