@@ -569,8 +569,15 @@ class FFmpegCommandBuilder:
         # finishing stage receives the same complete timeline.
         frame_duration = 1.0 / max(float(resolved.fps), 1.0)
         final_pad_duration = video_window_start + window_duration + frame_duration
+        # NOTE: ``setpts`` must stay AFTER ``tpad``. On the bundled FFmpeg 7.0 a
+        # ``setpts=PTS-STARTPTS`` immediately before ``tpad`` silently disables
+        # the stop-clone padding (the tail frames are never emitted), leaving
+        # the video stream a few frames shorter than the audio timeline. The
+        # incoming xfade chain already starts at PTS 0, so ``settb`` alone is
+        # the correct preparation and the final ``setpts`` re-zeroes the
+        # trimmed window exactly as before.
         lines.append(
-            f"[{video_chain}]settb=AVTB,setpts=PTS-STARTPTS,"
+            f"[{video_chain}]settb=AVTB,"
             f"tpad=stop_mode=clone:stop_duration={_number(final_pad_duration)},"
             f"{trim_expression},setpts=PTS-STARTPTS,format=yuv420p,setsar=1[{visual_label}]"
         )

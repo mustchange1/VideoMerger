@@ -225,6 +225,11 @@ class MediaInfo:
     image_effect: str = ""            # off | crt_scanlines | vhs | broadcast
     image_effect_intensity: int = 0   # 0-100 percent
     image_flicker_speed: str = ""     # slow | normal | fast
+    # Phase 31 Smart Visual Hybrid: a silent, trimmed existing-video element
+    # inserted by the smart visual plan. Renders exactly like a normal clip
+    # except that its original audio is silenced; the flag lets the Phase-30
+    # image timeline planner keep counting only genuine source videos.
+    smart_visual_insertion: bool = False
 
     @property
     def display_name(self) -> str:
@@ -696,6 +701,41 @@ class ExportSettings:
     shorts_global_tv_effect: str = "off"
     shorts_global_tv_effect_intensity: int = 20
     shorts_global_tv_flicker_speed: str = "normal"
+    # ==================================================================
+    # Phase 31: Smart Visual Hybrid - strictly additive and OPT-IN.
+    # ``smart_visual_enabled`` defaults to False, so projects without the
+    # feature keep their historical rendering and every cache identity
+    # byte-identical. Long-Form owns the canonical ``smart_visual_*``
+    # fields (mirroring Phase 30's pattern); Shorts owns the strictly
+    # separate ``shorts_smart_visual_*`` values which ``short_settings()``
+    # resolves onto the canonical fields of each Short job - the two
+    # profiles can never leak into each other.
+    # ==================================================================
+    long_form_smart_visual_folders: list[str] = field(default_factory=list)
+    shorts_smart_visual_folders: list[str] = field(default_factory=list)
+    # Canonical per-job smart visual fields (these ARE the Long-Form values).
+    smart_visual_enabled: bool = False
+    smart_visual_source_priority: str = "balanced"      # video_first | image_first | best_match | balanced
+    smart_visual_threshold_mode: str = "medium"         # low | medium | high | custom
+    smart_visual_threshold_custom: float = 0.5
+    smart_visual_generation_strategy: str = "only_when_no_match"
+    smart_visual_generation_percent: int = 25
+    smart_visual_repetition_window: int = 3             # 0 disables repetition protection
+    smart_visual_style: str = "cinematic"
+    smart_visual_style_custom: str = ""
+    smart_visual_cadence: str = "adaptive"              # adaptive | every_1 .. every_4
+    smart_visual_folders: list[str] = field(default_factory=list)
+    # Shorts profile values, resolved onto the canonical fields per job.
+    shorts_smart_visual_enabled: bool = False
+    shorts_smart_visual_source_priority: str = "balanced"
+    shorts_smart_visual_threshold_mode: str = "medium"
+    shorts_smart_visual_threshold_custom: float = 0.5
+    shorts_smart_visual_generation_strategy: str = "only_when_no_match"
+    shorts_smart_visual_generation_percent: int = 25
+    shorts_smart_visual_repetition_window: int = 3
+    shorts_smart_visual_style: str = "cinematic"
+    shorts_smart_visual_style_custom: str = ""
+    shorts_smart_visual_cadence: str = "adaptive"
     # Stage-2 only: per-clip original-audio gains in composition order
     # (intro/image/main/outro). Filled by MainProjectEngine.add_outro().
     stage2_audio_modes: list[str] = field(default_factory=list)

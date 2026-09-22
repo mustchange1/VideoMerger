@@ -1480,6 +1480,28 @@ class MainWindow(QMainWindow):
         image_timeline_layout.addWidget(self.img_short_box)
         outer.addWidget(image_timeline_group)
 
+        # Phase 31: Smart Visual Hybrid. Strictly opt-in: the switch defaults
+        # to OFF and the folder lists start empty, so the historical rendering
+        # (including Manual/Random/Folder selection and the Phase-30 image
+        # timeline) stays byte-identical until the user explicitly enables a
+        # profile. Long-Form and Shorts own completely independent settings.
+        smart_visual_group = QGroupBox("8 · Smart Visuals (Hybrid Matching & Local Generation)")
+        smart_visual_layout = QVBoxLayout(smart_visual_group)
+        smart_visual_layout.addWidget(QLabel(
+            "Optional: semantic slots from the script are matched against your own "
+            "media folders (folder name = category, optional smart_metadata.json/csv); "
+            "a matching image or video is placed, otherwise local generation may be "
+            "used per strategy. Strictly additive - when disabled, nothing changes. "
+            "Long-Form and Shorts are fully independent."
+        ))
+        self.sv_long_box = QGroupBox("YouTube Long-Form Smart Visuals")
+        self._build_smart_visual_widgets(self.sv_long_box, "sv_long")
+        self.sv_short_box = QGroupBox("YouTube Shorts Smart Visuals")
+        self._build_smart_visual_widgets(self.sv_short_box, "sv_short")
+        smart_visual_layout.addWidget(self.sv_long_box)
+        smart_visual_layout.addWidget(self.sv_short_box)
+        outer.addWidget(smart_visual_group)
+
         action_layout = QHBoxLayout()
         self.analyze_button = QPushButton("Analyze Inputs")
         self.preview_button = QPushButton("Preview Transition")
@@ -2132,6 +2154,7 @@ class MainWindow(QMainWindow):
         self._sync_image_visibility()
         self._load_typewriter_settings()
         self._load_image_timeline_settings()
+        self._load_smart_visual_settings()
         self._sync_subtitle_request()
         self._update_subtitle_live_preview()
         self._update_pool_status()
@@ -2866,6 +2889,484 @@ class MainWindow(QMainWindow):
                 kwargs[f"shorts_image_{key}"] = value
         return kwargs
 
+    # ------------------------------------------------------------------
+    # Phase 31: Smart Visual Hybrid widgets. One section per output profile
+    # (Long-Form / Shorts); each profile owns its folder list, matching
+    # threshold, generation strategy, style and repetition protection. The
+    # feature defaults to DISABLED with empty folders, so the historical
+    # selection paths (Manual/Random/Folder and the Phase-30 image timeline)
+    # stay exactly as they are until it is explicitly switched on.
+    # ------------------------------------------------------------------
+    _SMART_PRIORITY_LABELS = {
+        "balanced": "Balanced (recommended)",
+        "best_match": "Best Match",
+        "image_first": "Image First",
+        "video_first": "Video First",
+    }
+    _SMART_THRESHOLD_LABELS = {
+        "low": "Low (0.35)",
+        "medium": "Medium (0.50)",
+        "high": "High (0.65)",
+        "custom": "Custom …",
+    }
+    _SMART_STRATEGY_LABELS = {
+        "only_when_no_match": "Only When No Match",
+        "every_2nd": "Every 2nd Slot",
+        "every_3rd": "Every 3rd Slot",
+        "every_4th": "Every 4th Slot",
+        "random_25": "Random ~25 %",
+        "random_50": "Random ~50 %",
+        "custom_percent": "Custom Percentage …",
+        "always": "Always Generate",
+    }
+    _SMART_STYLE_LABELS = {
+        "realistic": "Realistic",
+        "cinematic": "Cinematic",
+        "editorial": "Editorial",
+        "documentary": "Documentary",
+        "conceptual": "Conceptual",
+        "minimal": "Minimal",
+        "custom": "Custom …",
+    }
+    _SMART_CADENCE_LABELS = {
+        "adaptive": "Adaptive (group same-topic sentences)",
+        "every_1": "Every Sentence",
+        "every_2": "Every 2 Sentences",
+        "every_3": "Every 3 Sentences",
+        "every_4": "Every 4 Sentences",
+    }
+
+    def _build_smart_visual_widgets(self, parent_box: QGroupBox, prefix: str) -> None:
+        """Build one complete Smart Visual profile section (LF or Shorts)."""
+        layout = QGridLayout(parent_box)
+        w: dict = {}
+
+        def put(widget, row: int, column: int, row_span: int = 1, col_span: int = 1):
+            layout.addWidget(widget, row, column, row_span, col_span)
+            return widget
+
+        row = 0
+        w["enabled"] = put(QCheckBox("Enable Smart Visual Hybrid for this profile"), row, 0, 1, 4)
+        w["enabled"].setToolTip(
+            "Opt-in feature. When OFF (default) the renderer behaves exactly as before: "
+            "Manual/Random/Folder clip selection and the Phase-30 image timeline are untouched."
+        )
+        row += 1
+
+        put(QLabel("Smart Visual Media Folders (folder name = category)"), row, 0, 1, 4)
+        row += 1
+        w["folders"] = put(QListWidget(), row, 0, 2, 3)
+        w["folders"].setSelectionMode(QAbstractItemView.SingleSelection)
+        w["folders"].setMaximumHeight(90)
+        w["folders"].setToolTip(
+            "Images (PNG/JPG/JPEG/WEBP/BMP) and videos (MP4/MOV/MKV/WEBM/M4V/AVI) are "
+            "indexed from these folders. The folder name becomes the category; an optional "
+            "smart_metadata.json or smart_metadata.csv adds titles/keywords. The index is "
+            "cached and only new/changed files are rescanned."
+        )
+        w["add_folder"] = put(QPushButton("Add Media Folder …"), row, 3)
+        w["remove_folder"] = put(QPushButton("Remove"), row + 1, 3)
+        folder_move_row = QHBoxLayout()
+        w["folder_up"] = QPushButton("Move Up")
+        w["folder_down"] = QPushButton("Move Down")
+        w["folder_clear"] = QPushButton("Clear")
+        folder_move_row.addWidget(w["folder_up"])
+        folder_move_row.addWidget(w["folder_down"])
+        folder_move_row.addWidget(w["folder_clear"])
+        layout.addLayout(folder_move_row, row + 2, 0, 1, 4)
+        w["add_folder"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_add_folder(p))
+        w["remove_folder"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_remove_folder(p))
+        w["folder_up"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_move_folder(p, -1))
+        w["folder_down"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_move_folder(p, 1))
+        w["folder_clear"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_clear_folders(p))
+        row += 3
+
+        put(QLabel("Preferred Existing Media"), row, 0)
+        w["priority"] = put(QComboBox(), row, 1)
+        for key, label in self._SMART_PRIORITY_LABELS.items():
+            w["priority"].addItem(label, key)
+        put(QLabel("Cadence"), row, 2)
+        w["cadence"] = put(QComboBox(), row, 3)
+        for key, label in self._SMART_CADENCE_LABELS.items():
+            w["cadence"].addItem(label, key)
+        row += 1
+
+        put(QLabel("Minimum Match Score"), row, 0)
+        w["threshold_mode"] = put(QComboBox(), row, 1)
+        for key, label in self._SMART_THRESHOLD_LABELS.items():
+            w["threshold_mode"].addItem(label, key)
+        w["threshold_mode"].setCurrentIndex(w["threshold_mode"].findData("medium"))
+        threshold_row = QHBoxLayout()
+        w["threshold_custom"] = QDoubleSpinBox()
+        w["threshold_custom"].setRange(0.05, 0.95)
+        w["threshold_custom"].setSingleStep(0.05)
+        w["threshold_custom"].setDecimals(2)
+        w["threshold_custom"].setValue(0.50)
+        w["threshold_custom"].setToolTip("Custom match threshold (only used with 'Custom …').")
+        threshold_row.addWidget(w["threshold_custom"])
+        layout.addLayout(threshold_row, row, 3)
+        row += 1
+
+        put(QLabel("Generation Strategy"), row, 0)
+        w["strategy"] = put(QComboBox(), row, 1)
+        for key, label in self._SMART_STRATEGY_LABELS.items():
+            w["strategy"].addItem(label, key)
+        w["strategy"].setCurrentIndex(w["strategy"].findData("only_when_no_match"))
+        strategy_row = QHBoxLayout()
+        w["strategy_percent"] = QSpinBox()
+        w["strategy_percent"].setRange(0, 100)
+        w["strategy_percent"].setValue(25)
+        w["strategy_percent"].setSuffix(" %")
+        w["strategy_percent"].setToolTip("Share of generated visuals (only used with 'Custom Percentage …').")
+        strategy_row.addWidget(w["strategy_percent"])
+        layout.addLayout(strategy_row, row, 3)
+        row += 1
+
+        put(QLabel("Repetition Protection"), row, 0)
+        repetition_row = QHBoxLayout()
+        w["repetition_window"] = QSpinBox()
+        w["repetition_window"].setRange(0, 10)
+        w["repetition_window"].setValue(3)
+        w["repetition_window"].setSuffix(" slots")
+        w["repetition_window"].setToolTip(
+            "Media used within the last N slots is penalized instead of repeating. 0 disables it."
+        )
+        repetition_row.addWidget(w["repetition_window"])
+        layout.addLayout(repetition_row, row, 1)
+        put(QLabel("Generation Style"), row, 2)
+        w["style"] = put(QComboBox(), row, 3)
+        for key, label in self._SMART_STYLE_LABELS.items():
+            w["style"].addItem(label, key)
+        w["style"].setCurrentIndex(w["style"].findData("cinematic"))
+        row += 1
+
+        put(QLabel("Custom Style Prompt"), row, 0)
+        w["style_custom"] = put(QLineEdit(), row, 1, 1, 3)
+        w["style_custom"].setPlaceholderText("Free-text style description (only used with style 'Custom …')")
+        row += 1
+
+        index_row = QHBoxLayout()
+        w["index_button"] = QPushButton("Build / Refresh Media Index")
+        w["index_button"].setToolTip(
+            "Indexes the configured folders incrementally: unchanged files are reused from the "
+            "cache, only new or changed files are processed. Reports counts, skips and errors."
+        )
+        w["index_button"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_build_index(p))
+        w["index_status"] = QLabel("Index not built yet")
+        w["index_status"].setWordWrap(True)
+        index_row.addWidget(w["index_button"])
+        index_row.addWidget(w["index_status"], 1)
+        layout.addLayout(index_row, row, 0, 1, 4)
+        row += 1
+
+        preview_row = QHBoxLayout()
+        w["plan_button"] = QPushButton("Preview Smart Visual Plan")
+        w["plan_button"].setToolTip(
+            "Builds the visual plan exactly like the render (script + voiceover timing, media "
+            "index, threshold, strategy) and lists time / topic / selected media / match score / "
+            "fallback. Nothing is rendered and no provider model is initialized when disabled."
+        )
+        w["plan_button"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_preview_plan(p))
+        preview_row.addWidget(w["plan_button"])
+        layout.addLayout(preview_row, row, 0, 1, 4)
+        row += 1
+        w["plan_list"] = put(QListWidget(), row, 0, 1, 4)
+        w["plan_list"].setMaximumHeight(140)
+        row += 1
+        w["diagnostics"] = put(QLabel("Local Generation: not checked yet"), row, 0, 1, 4)
+        w["diagnostics"].setWordWrap(True)
+        w["diagnostics"].setStyleSheet("color: #888;")
+        row += 1
+
+        w["enabled"].toggled.connect(lambda _s, p=prefix: self._sync_smart_visual_controls(p))
+        w["threshold_mode"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
+        w["strategy"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
+        w["style"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
+        self._sync_smart_visual_controls(prefix, widgets_override=w)
+        self._smart_visual_widgets = getattr(self, "_smart_visual_widgets", {})
+        self._smart_visual_widgets[prefix] = w
+
+    def _sync_smart_visual_controls(self, prefix: str, widgets_override: dict | None = None) -> None:
+        """Enable only the controls the current state can use."""
+        widgets = widgets_override or getattr(self, "_smart_visual_widgets", {}).get(prefix)
+        if not widgets:
+            return
+        enabled = bool(widgets["enabled"].isChecked())
+        widgets["folders"].setEnabled(enabled)
+        for key in ("add_folder", "remove_folder", "folder_up", "folder_down", "folder_clear"):
+            widgets[key].setEnabled(enabled)
+        for key in ("priority", "cadence", "threshold_mode", "strategy", "repetition_window",
+                    "style", "style_custom", "index_button", "plan_button", "plan_list"):
+            widgets[key].setEnabled(enabled)
+        threshold_mode = str(widgets["threshold_mode"].currentData() or "medium")
+        widgets["threshold_custom"].setEnabled(enabled and threshold_mode == "custom")
+        strategy = str(widgets["strategy"].currentData() or "only_when_no_match")
+        widgets["strategy_percent"].setEnabled(enabled and strategy == "custom_percent")
+        style = str(widgets["style"].currentData() or "cinematic")
+        widgets["style_custom"].setEnabled(enabled and style == "custom")
+
+    def _smart_visual_add_folder(self, prefix: str) -> None:
+        widgets = self._smart_visual_widgets[prefix]
+        start = str(Path.home())
+        current = widgets["folders"].currentItem()
+        if current is not None and Path(current.text()).is_dir():
+            start = current.text()
+        chosen = QFileDialog.getExistingDirectory(self, "Smart Visual Media Folder", start)
+        if not chosen:
+            return
+        existing = [widgets["folders"].item(i).text() for i in range(widgets["folders"].count())]
+        if chosen not in existing:
+            widgets["folders"].addItem(chosen)
+
+    def _smart_visual_remove_folder(self, prefix: str) -> None:
+        widgets = self._smart_visual_widgets[prefix]
+        current = widgets["folders"].currentRow()
+        if current >= 0:
+            widgets["folders"].takeItem(current)
+
+    def _smart_visual_move_folder(self, prefix: str, direction: int) -> None:
+        widgets = self._smart_visual_widgets[prefix]
+        current = widgets["folders"].currentRow()
+        target = current + direction
+        if current < 0 or target < 0 or target >= widgets["folders"].count():
+            return
+        item = widgets["folders"].takeItem(current)
+        widgets["folders"].insertItem(target, item)
+        widgets["folders"].setCurrentRow(target)
+
+    def _smart_visual_clear_folders(self, prefix: str) -> None:
+        self._smart_visual_widgets[prefix]["folders"].clear()
+
+    def _smart_visual_folders(self, prefix: str) -> list[str]:
+        widgets = self._smart_visual_widgets[prefix]
+        return [
+            str(widgets["folders"].item(i).text()).strip()
+            for i in range(widgets["folders"].count())
+            if str(widgets["folders"].item(i).text()).strip()
+        ]
+
+    def _smart_visual_profile_from_ui(self, prefix: str):
+        """Resolve ONE profile's widgets into a normalized smart visual profile."""
+        from ..smart_visuals import (
+            SmartVisualProfile,
+            clamp_generation_percent,
+            clamp_repetition_window,
+            clamp_threshold,
+            normalize_generation_strategy,
+            normalize_smart_visual_cadence,
+            normalize_smart_visual_style,
+            normalize_source_priority,
+            normalize_threshold_mode,
+        )
+
+        w = self._smart_visual_widgets[prefix]
+
+        def data(combo_key: str, fallback: str) -> str:
+            value = w[combo_key].currentData()
+            return str(value) if value is not None else fallback
+
+        return SmartVisualProfile(
+            enabled=bool(w["enabled"].isChecked()),
+            folders=tuple(self._smart_visual_folders(prefix)),
+            source_priority=normalize_source_priority(data("priority", "balanced")),
+            threshold_mode=normalize_threshold_mode(data("threshold_mode", "medium")),
+            threshold_custom=clamp_threshold(w["threshold_custom"].value()),
+            generation_strategy=normalize_generation_strategy(data("strategy", "only_when_no_match")),
+            generation_percent=clamp_generation_percent(w["strategy_percent"].value()),
+            repetition_window=clamp_repetition_window(w["repetition_window"].value()),
+            style=normalize_smart_visual_style(data("style", "cinematic")),
+            style_custom=str(w["style_custom"].text().strip()),
+            cadence=normalize_smart_visual_cadence(data("cadence", "adaptive")),
+        )
+
+    def _smart_visual_build_index(self, prefix: str) -> None:
+        """Build/refresh the media index for this profile (incremental)."""
+        from ..paths import project_root
+        from ..smart_visuals import build_media_index
+
+        widgets = self._smart_visual_widgets[prefix]
+        folders = self._smart_visual_folders(prefix)
+        if not folders:
+            widgets["index_status"].setText("No folders configured.")
+            return
+        try:
+            entries, stats = build_media_index(folders, project_root() / "cache" / "smart_visual_index")
+        except Exception as exc:
+            widgets["index_status"].setText(f"Index error: {exc}")
+            return
+        images = sum(1 for entry in entries if entry.kind == "image")
+        videos = len(entries) - images
+        widgets["index_status"].setText(
+            f"{len(entries)} media indexed ({images} images, {videos} videos) - "
+            f"{stats.indexed} new, {stats.reused} reused from cache, {stats.errors} error(s). "
+            f"Categories: {', '.join(stats.categories) if stats.categories else '–'}"
+        )
+
+    def _smart_visual_preview_plan(self, prefix: str) -> None:
+        """Build the plan exactly like the render and show it (no rendering)."""
+        from ..image_generation import resolve_generation_provider
+        from ..paths import project_root
+        from ..project_assets import probe_audio
+        from ..smart_visuals import build_smart_visual_plan
+
+        widgets = self._smart_visual_widgets[prefix]
+        widgets["plan_list"].clear()
+        profile = self._smart_visual_profile_from_ui(prefix)
+        is_shorts = prefix == "sv_short"
+        width, height = (720, 1280) if is_shorts else (1280, 720)
+
+        provider, provider_notes = resolve_generation_provider()
+        provider_line = (
+            f"Local Generation: available ({provider.name})" if provider else "Local Generation: unavailable"
+        )
+        widgets["diagnostics"].setText(provider_line + " - " + "; ".join(provider_notes[:2]))
+
+        if not profile.active:
+            widgets["plan_list"].addItem("Smart Visuals disabled or no folders - plan stays empty.")
+            return
+
+        script_text = ""
+        script_path = str(self.global_script_edit.text().strip() or getattr(self.saved, "global_script_path", "") or "")
+        if not script_path:
+            unit_scripts = [str(path) for path in (getattr(self.saved, "script_paths", None) or []) if str(path).strip()]
+            script_path = unit_scripts[0] if unit_scripts else ""
+        if script_path and Path(script_path).is_file():
+            try:
+                script_text = Path(script_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                script_text = ""
+
+        program_duration = 0.0
+        try:
+            _ffmpeg, ffprobe = locate_ffmpeg()
+        except Exception:
+            ffprobe = None
+        voiceover_units = list(getattr(self, "voiceover_paths_list", []) or [])
+        if ffprobe is not None:
+            for unit in voiceover_units:
+                try:
+                    program_duration += float(probe_audio(ffprobe, Path(unit)).duration)
+                except Exception:
+                    continue
+        if program_duration <= 0.0:
+            program_duration = 30.0
+
+        try:
+            plan = build_smart_visual_plan(
+                profile=profile,
+                script_text=script_text,
+                program_duration=program_duration,
+                width=width,
+                height=height,
+                fps=30.0,
+                cache_dir=project_root() / "cache",
+                ffprobe_path=ffprobe if ffprobe is not None else "ffprobe",
+                seed_parts=("gui-preview", prefix, "|".join(profile.folders)),
+                log=lambda *_args, **_kwargs: None,
+            )
+        except Exception as exc:
+            widgets["plan_list"].addItem(f"Plan preview failed: {exc}")
+            return
+        if not plan.slots:
+            widgets["plan_list"].addItem("No slots derived (no script text and no duration).")
+        for record in plan.to_records():
+            widgets["plan_list"].addItem(
+                f"[{record['time']}] {record['topic']} → {record['selected']} "
+                f"(match {record['match']}, {record['reason']})"
+            )
+        for note in plan.diagnostics[:4]:
+            widgets["plan_list"].addItem(f"· {note}")
+
+    def _load_smart_visual_settings(self) -> None:
+        """Phase 31: fill BOTH Smart Visual sections from the saved project.
+
+        Missing keys fall back to safe defaults (disabled, empty folders), so
+        every older project loads unchanged. Long-Form reads the canonical
+        ``smart_visual_*`` values, Shorts reads its ``shorts_smart_visual_*``.
+        """
+        widgets = getattr(self, "_smart_visual_widgets", {})
+        if not widgets:
+            return
+        saved = self.saved
+
+        def set_combo(combo: QComboBox, raw_value: str, fallback: str) -> None:
+            index = combo.findData(str(raw_value))
+            if index < 0:
+                index = combo.findData(fallback)
+            combo.setCurrentIndex(max(0, index))
+
+        def apply(prefix: str, settings_prefix: str, folders_key: str) -> None:
+            w = widgets[prefix]
+
+            def value(name: str, default):
+                return getattr(saved, settings_prefix + name, default)
+
+            w["folders"].clear()
+            for folder in (getattr(saved, folders_key, None) or []):
+                text = str(folder).strip()
+                if text:
+                    w["folders"].addItem(text)
+            w["enabled"].setChecked(bool(value("enabled", False)))
+            set_combo(w["priority"], str(value("source_priority", "balanced")), "balanced")
+            set_combo(w["cadence"], str(value("cadence", "adaptive")), "adaptive")
+            set_combo(w["threshold_mode"], str(value("threshold_mode", "medium")), "medium")
+            try:
+                w["threshold_custom"].setValue(max(0.05, min(0.95, float(value("threshold_custom", 0.5)))))
+            except (TypeError, ValueError):
+                w["threshold_custom"].setValue(0.5)
+            set_combo(w["strategy"], str(value("generation_strategy", "only_when_no_match")), "only_when_no_match")
+            try:
+                w["strategy_percent"].setValue(max(0, min(100, int(value("generation_percent", 25)))))
+            except (TypeError, ValueError):
+                w["strategy_percent"].setValue(25)
+            try:
+                w["repetition_window"].setValue(max(0, min(10, int(value("repetition_window", 3)))))
+            except (TypeError, ValueError):
+                w["repetition_window"].setValue(3)
+            set_combo(w["style"], str(value("style", "cinematic")), "cinematic")
+            w["style_custom"].setText(str(value("style_custom", "") or ""))
+
+        apply("sv_long", "smart_visual_", "long_form_smart_visual_folders")
+        apply("sv_short", "shorts_smart_visual_", "shorts_smart_visual_folders")
+        for prefix in ("sv_long", "sv_short"):
+            self._sync_smart_visual_controls(prefix)
+
+    def _smart_visual_settings_kwargs(self) -> dict:
+        """Phase 31: widget state of BOTH Smart Visual profiles.
+
+        Long-Form writes its ``long_form_smart_visual_folders`` plus the
+        canonical ``smart_visual_*`` fields (which ARE the Long-Form profile);
+        Shorts writes its strictly separate ``shorts_smart_visual_*`` fields.
+        """
+        widgets = getattr(self, "_smart_visual_widgets", {})
+        if not widgets:
+            return {}
+
+        def values(prefix: str) -> dict:
+            profile = self._smart_visual_profile_from_ui(prefix)
+            return {
+                "enabled": profile.enabled,
+                "source_priority": profile.source_priority,
+                "threshold_mode": profile.threshold_mode,
+                "threshold_custom": profile.threshold_custom,
+                "generation_strategy": profile.generation_strategy,
+                "generation_percent": profile.generation_percent,
+                "repetition_window": profile.repetition_window,
+                "style": profile.style,
+                "style_custom": profile.style_custom,
+                "cadence": profile.cadence,
+            }
+
+        kwargs: dict = {
+            "long_form_smart_visual_folders": self._smart_visual_folders("sv_long"),
+            "shorts_smart_visual_folders": self._smart_visual_folders("sv_short"),
+        }
+        for key, value in values("sv_long").items():
+            kwargs[f"smart_visual_{key}"] = value
+        for key, value in values("sv_short").items():
+            kwargs[f"shorts_smart_visual_{key}"] = value
+        return kwargs
+
     def _typewriter_browse_background(self, prefix: str) -> None:
         widgets = self._typewriter_widgets[prefix]
         start_path = widgets["background_image_path"].text().strip() or str(Path.home())
@@ -3193,6 +3694,7 @@ class MainWindow(QMainWindow):
             subtitle_output_mode=normalize_subtitle_output_mode(self.subtitle_output_combo.currentData()),
             **self._typewriter_settings_kwargs(),
             **self._image_timeline_settings_kwargs(),
+            **self._smart_visual_settings_kwargs(),
         )
 
     def _typewriter_settings_kwargs(self) -> dict:

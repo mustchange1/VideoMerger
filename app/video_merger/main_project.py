@@ -104,6 +104,11 @@ from .image_timeline import (
     global_effect_identity as image_global_effect_identity,
     profile_from_settings as image_timeline_profile_from_settings,
 )
+from .smart_visuals import (
+    apply_smart_visual_plan,
+    build_smart_visual_plan,
+    smart_visual_profile_from_settings,
+)
 from .validation import validate_output
 from .video_pool import (
     VIDEO_ORDER_RANDOM,
@@ -1041,6 +1046,67 @@ class MainProjectEngine:
             target = 0.0
             program_duration = 0.0
 
+        # Phase 31: Smart Visual Hybrid. Strictly opt-in (disabled default).
+        # Semantic slots are derived from the canonical script text + the
+        # voiceover-driven program duration (NO second ASR), matched against a
+        # cached media index, and the selected media are inserted as genuine
+        # timeline elements BEFORE the Phase-30 generic image pass runs. This
+        # block is fully additive and fail-safe: a disabled plan, missing
+        # folders, or any internal error leaves the fitted sequence, the
+        # timeline target and every cache identity byte-identical. The net
+        # added smart-visual time extends the Stage-1 target exactly like the
+        # Phase-30 images do, so the full program plays to its final frame.
+        smart_profile = smart_visual_profile_from_settings(settings)
+        smart_apply = None
+        smart_target_extension = 0.0
+        if smart_profile.active and render_media:
+            try:
+                smart_canvas = resolve_export(render_media, settings)
+                smart_script_text = "\n".join(
+                    path.read_text(encoding="utf-8", errors="replace")
+                    for path in script_files
+                ) if script_files else ""
+                smart_plan = build_smart_visual_plan(
+                    profile=smart_profile,
+                    script_text=smart_script_text,
+                    program_duration=program_duration or target,
+                    width=smart_canvas.width,
+                    height=smart_canvas.height,
+                    fps=smart_canvas.fps,
+                    cache_dir=project_root() / "cache",
+                    ffprobe_path=self.engine.ffprobe_path,
+                    ffmpeg_path=self.engine.ffmpeg_path,
+                    seed_parts=(
+                        getattr(settings, "export_mode", ""),
+                        getattr(settings, "video_order_mode", "natural"),
+                        video_order_seed if video_order_seed is not None else "auto",
+                        "|".join(smart_profile.folders),
+                    ),
+                    log=log,
+                )
+                if smart_plan.selected_count:
+                    smart_apply = apply_smart_visual_plan(
+                        render_media,
+                        smart_plan,
+                        width=smart_canvas.width,
+                        height=smart_canvas.height,
+                        fps=smart_canvas.fps,
+                        transition_type=settings.transition_type,
+                        image_profile=image_timeline_profile_from_settings(settings),
+                        ffprobe_path=self.engine.ffprobe_path,
+                        log=log,
+                    )
+                    if smart_apply.count:
+                        chain_probe = replace(settings, workflow_stage="", timeline_target_duration=0.0)
+                        before_chain = resolve_export(render_media, chain_probe).expected_duration
+                        render_media = smart_apply.media
+                        after_chain = resolve_export(render_media, chain_probe).expected_duration
+                        smart_target_extension = max(0.0, after_chain - before_chain)
+            except Exception as exc:  # spec section 32: the project stays renderable
+                log(f"Phase 31 Smart Visuals: deaktiviert durch Fallback ({exc}).")
+                smart_apply = None
+                smart_target_extension = 0.0
+
         # Phase 30: Image Timeline. Images become genuine timeline elements
         # BETWEEN the already fitted video occurrences (A -> B -> Image ->
         # C -> Image -> D). This runs strictly AFTER the voiceover-driven fit,
@@ -1078,7 +1144,9 @@ class MainProjectEngine:
                 render_media = image_result.media
                 after_chain = resolve_export(render_media, chain_probe).expected_duration
                 image_target_extension = max(0.0, after_chain - before_chain)
-        effective_target = target + image_target_extension if voice_assets else target
+        effective_target = (
+            target + image_target_extension + smart_target_extension if voice_assets else target
+        )
         image_global_digest = (
             image_global_effect_identity(image_profile)
             if image_profile.global_effect != "off" else None
@@ -1162,6 +1230,10 @@ class MainProjectEngine:
             # historical Stage-1 fingerprint stays byte-identical.
             timeline_images=image_result.identity if image_result is not None else None,
             global_tv_effect=image_global_digest,
+            # Phase 31: None unless the Smart Visual plan really placed at
+            # least one visual, so disabled projects keep their exact
+            # historical Stage-1 fingerprint.
+            smart_visual_plan=smart_apply.identity if smart_apply is not None else None,
         )
         if reuse_cached:
             cached_result = self._try_reuse_cached_main(

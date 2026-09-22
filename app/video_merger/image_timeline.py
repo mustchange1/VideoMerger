@@ -485,7 +485,13 @@ def apply_image_timeline(
     if not files:
         log("Phase 30 Bild-Timeline: keine unterstützten Bilddateien gefunden - Video-Timeline bleibt unverändert.")
         return result
-    video_count = sum(1 for item in render_media if not item.is_image_insertion)
+    # Phase 31: silently inserted smart-visual video elements are not source
+    # videos; without Smart Visuals the flag never exists, so a historical
+    # sequence keeps the exact same video count and positions.
+    video_count = sum(
+        1 for item in render_media
+        if not item.is_image_insertion and not getattr(item, "smart_visual_insertion", False)
+    )
     if video_count < 2:
         return result
     seed = derive_image_seed(*seed_parts, width, height, round(float(fps), 6))
@@ -506,19 +512,26 @@ def apply_image_timeline(
 
     new_media: list = []
     shift = 0
+    video_ordinal = -1
     inserted_paths: list[Path] = []
-    for index, item in enumerate(render_media):
+    for item in render_media:
         new_media.append(item)
-        while specs and specs[0][0] == index:
-            _, path, duration = specs.pop(0)
-            new_media.append(make_image_media(
-                path=path, duration=duration, width=width, height=height, fps=fps,
-                size=probe_image_size(path, ffprobe_path),
-                transition_type=transition_type, profile=profile,
-            ))
-            inserted_paths.append(path)
-            result.inserted.append((index + shift, path, duration))
-            shift += 1
+        # Phase 31: positions address GENUINE source videos, so interleaved
+        # smart-visual elements never shift where a generic image lands. With
+        # Smart Visuals disabled the ordinal equals the historical index, so
+        # the placement (and every identity derived from it) is unchanged.
+        if not item.is_image_insertion and not getattr(item, "smart_visual_insertion", False):
+            video_ordinal += 1
+            while specs and specs[0][0] == video_ordinal:
+                _, path, duration = specs.pop(0)
+                new_media.append(make_image_media(
+                    path=path, duration=duration, width=width, height=height, fps=fps,
+                    size=probe_image_size(path, ffprobe_path),
+                    transition_type=transition_type, profile=profile,
+                ))
+                inserted_paths.append(path)
+                result.inserted.append((video_ordinal + shift, path, duration))
+                shift += 1
     result.media = new_media
     result.identity = image_plan_identity(
         profile, inserted_paths, position_set, (width, height, fps),

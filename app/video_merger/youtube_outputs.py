@@ -26,6 +26,16 @@ from .image_timeline import (
     normalize_tv_effect,
 )
 from .music_tracks import effective_short_music_tracks, normalize_sequence_mode
+from .smart_visuals import (
+    clamp_generation_percent,
+    clamp_repetition_window,
+    clamp_threshold,
+    normalize_generation_strategy,
+    normalize_smart_visual_cadence,
+    normalize_smart_visual_style,
+    normalize_source_priority,
+    normalize_threshold_mode,
+)
 from .models import (
     DEFAULT_TRANSITION_TYPE,
     LONG_FORM_INTRO_SECONDS,
@@ -545,6 +555,42 @@ def long_form_settings(settings: ExportSettings) -> ExportSettings:
         timeline_image_mode=normalize_insertion_mode(
             getattr(settings, "timeline_image_mode", "disabled")
         ),
+        # Phase 31: the Long-Form Smart Visual Hybrid profile. The canonical
+        # ``smart_visual_*`` fields ARE the Long-Form values; its own folder
+        # list becomes this job's smart visual source pool. Disabled mode
+        # (the default) or no folders keeps the historical rendering and all
+        # cache identities untouched. Shorts values never leak into this job.
+        smart_visual_folders=[
+            str(folder)
+            for folder in (getattr(settings, "long_form_smart_visual_folders", None) or [])
+            if str(folder).strip()
+        ],
+        smart_visual_enabled=bool(getattr(settings, "smart_visual_enabled", False)),
+        smart_visual_source_priority=normalize_source_priority(
+            getattr(settings, "smart_visual_source_priority", "balanced")
+        ),
+        smart_visual_threshold_mode=normalize_threshold_mode(
+            getattr(settings, "smart_visual_threshold_mode", "medium")
+        ),
+        smart_visual_threshold_custom=clamp_threshold(
+            getattr(settings, "smart_visual_threshold_custom", 0.5)
+        ),
+        smart_visual_generation_strategy=normalize_generation_strategy(
+            getattr(settings, "smart_visual_generation_strategy", "only_when_no_match")
+        ),
+        smart_visual_generation_percent=clamp_generation_percent(
+            getattr(settings, "smart_visual_generation_percent", 25)
+        ),
+        smart_visual_repetition_window=clamp_repetition_window(
+            getattr(settings, "smart_visual_repetition_window", 3)
+        ),
+        smart_visual_style=normalize_smart_visual_style(
+            getattr(settings, "smart_visual_style", "cinematic")
+        ),
+        smart_visual_style_custom=str(getattr(settings, "smart_visual_style_custom", "") or ""),
+        smart_visual_cadence=normalize_smart_visual_cadence(
+            getattr(settings, "smart_visual_cadence", "adaptive")
+        ),
         render_variant_key="youtube-long-form",
     )
 
@@ -826,6 +872,43 @@ def short_settings(
         ),
         global_tv_flicker_speed=normalize_flicker_speed(
             getattr(settings, "shorts_global_tv_flicker_speed", "normal")
+        ),
+        # Phase 31: the Shorts Smart Visual Hybrid profile is strictly
+        # separate from the Long-Form one. Its own folder list and its own
+        # matching rules are resolved onto the canonical per-job fields of
+        # THIS Short; the Long-Form job keeps reading its unprefixed values
+        # and the two profiles can never leak into each other. Disabled mode
+        # or no folders keeps the historical rendering byte-identical.
+        smart_visual_folders=[
+            str(folder)
+            for folder in (getattr(settings, "shorts_smart_visual_folders", None) or [])
+            if str(folder).strip()
+        ],
+        smart_visual_enabled=bool(getattr(settings, "shorts_smart_visual_enabled", False)),
+        smart_visual_source_priority=normalize_source_priority(
+            getattr(settings, "shorts_smart_visual_source_priority", "balanced")
+        ),
+        smart_visual_threshold_mode=normalize_threshold_mode(
+            getattr(settings, "shorts_smart_visual_threshold_mode", "medium")
+        ),
+        smart_visual_threshold_custom=clamp_threshold(
+            getattr(settings, "shorts_smart_visual_threshold_custom", 0.5)
+        ),
+        smart_visual_generation_strategy=normalize_generation_strategy(
+            getattr(settings, "shorts_smart_visual_generation_strategy", "only_when_no_match")
+        ),
+        smart_visual_generation_percent=clamp_generation_percent(
+            getattr(settings, "shorts_smart_visual_generation_percent", 25)
+        ),
+        smart_visual_repetition_window=clamp_repetition_window(
+            getattr(settings, "shorts_smart_visual_repetition_window", 3)
+        ),
+        smart_visual_style=normalize_smart_visual_style(
+            getattr(settings, "shorts_smart_visual_style", "cinematic")
+        ),
+        smart_visual_style_custom=str(getattr(settings, "shorts_smart_visual_style_custom", "") or ""),
+        smart_visual_cadence=normalize_smart_visual_cadence(
+            getattr(settings, "shorts_smart_visual_cadence", "adaptive")
         ),
         render_variant_key=job.cache_key,
     )

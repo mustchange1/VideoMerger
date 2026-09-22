@@ -275,6 +275,7 @@ def build_stage1_payload(
     typewriter_intro: str | None = None,
     timeline_images: str | None = None,
     global_tv_effect: str | None = None,
+    smart_visual_plan: str | None = None,
 ) -> dict[str, Any]:
     """Build the complete canonical payload used by the Stage-1 digest."""
     values: dict[str, Any] = {
@@ -410,6 +411,11 @@ def build_stage1_payload(
         payload["timeline_images"] = str(timeline_images)
     if global_tv_effect:
         payload["global_tv_effect"] = str(global_tv_effect)
+    # Phase 31: Smart Visual Hybrid. The plan identity is added ONLY when the
+    # feature is active and at least one visual was placed, so a disabled plan
+    # keeps the exact historical Stage-1 fingerprint and cache identity.
+    if smart_visual_plan:
+        payload["smart_visual_plan"] = str(smart_visual_plan)
     return payload
 
 
@@ -427,6 +433,7 @@ def stage1_fingerprint(
     typewriter_intro: str | None = None,
     timeline_images: str | None = None,
     global_tv_effect: str | None = None,
+    smart_visual_plan: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return ``(sha256, canonical_payload)`` for a Stage-1 render."""
     payload = build_stage1_payload(
@@ -442,6 +449,7 @@ def stage1_fingerprint(
         typewriter_intro=typewriter_intro,
         timeline_images=timeline_images,
         global_tv_effect=global_tv_effect,
+        smart_visual_plan=smart_visual_plan,
     )
     encoded = _canonical_json(payload).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), payload
