@@ -39,6 +39,12 @@ TYPEWRITER_SOUND_FREQUENCIES: tuple[str, ...] = (
 TYPEWRITER_SOUND_PRESETS: tuple[str, ...] = (
     "typewriter_1", "typewriter_2", "mechanical", "soft_keyboard", "off",
 )
+#: Phase 32: completion (Enter/Return) sound presets, played exactly once at
+#: the end of the typing sequence - independent from the per-character SFX.
+TYPEWRITER_COMPLETION_PRESETS: tuple[str, ...] = (
+    "enter_return", "mechanical_keypress", "typewriter_return", "off",
+)
+DEFAULT_COMPLETION_SOUND_VOLUME = 40
 #: Exactly five canonical vertical positions; each maps to ONE rendered spot.
 TYPEWRITER_POSITIONS: tuple[str, ...] = (
     "Top", "Upper-Middle", "Center", "Lower-Middle", "Bottom",
@@ -126,6 +132,18 @@ def clamp_sound_volume(value: object) -> int:
         return 30
 
 
+def normalize_completion_sound_preset(value: object) -> str:
+    key = str(value or "").strip().casefold()
+    return key if key in TYPEWRITER_COMPLETION_PRESETS else "enter_return"
+
+
+def clamp_completion_sound_volume(value: object) -> int:
+    try:
+        return max(0, min(100, int(round(float(value)))))
+    except (TypeError, ValueError):
+        return DEFAULT_COMPLETION_SOUND_VOLUME
+
+
 def clamp_hold_seconds(value: object) -> float:
     try:
         return max(0.0, min(MAX_HOLD_SECONDS, float(value)))
@@ -178,6 +196,12 @@ class TypewriterProfile:
     hold_seconds: float
     transition: str
     music_mode: str
+    # Phase 32: one short Enter/Return click at the end of the typing
+    # sequence. ON by default and fully independent from the per-character
+    # SFX; "off"/disabled keep the historical SFX track untouched.
+    completion_sound_enabled: bool = True
+    completion_sound_preset: str = "enter_return"
+    completion_sound_volume: int = DEFAULT_COMPLETION_SOUND_VOLUME
 
     @property
     def active(self) -> bool:
@@ -228,6 +252,15 @@ def profile_from_settings(settings: object, *, short: bool = False) -> Typewrite
         hold_seconds=clamp_hold_seconds(get("hold_seconds", 0.5)),
         transition=str(get("transition", "project") or "project"),
         music_mode=normalize_music_mode(get("music_mode", "start_with_video")),
+        # Phase 32 completion sound (prefix-aware: typewriter_* /
+        # short_typewriter_* - the two profiles can never leak).
+        completion_sound_enabled=bool(get("completion_sound_enabled", True)),
+        completion_sound_preset=normalize_completion_sound_preset(
+            get("completion_sound_preset", "enter_return")
+        ),
+        completion_sound_volume=clamp_completion_sound_volume(
+            get("completion_sound_volume", DEFAULT_COMPLETION_SOUND_VOLUME)
+        ),
     )
 
 
@@ -443,6 +476,96 @@ def variant_for_char(char_index: int, char: str) -> int:
     return (char_index * 7 + ord(char)) % KEY_VARIANTS
 
 
+# ---------------------------------------------------------------------------
+# Phase 32: completion (Enter/Return) sound synthesis
+# ---------------------------------------------------------------------------
+def _filtered_noise(rnd, samples: int, center_hz: float, drift_to_hz: float = 0.0) -> list[float]:
+    """One-pole lowpassed noise; an optional ``drift_to_hz`` glides the
+    cutoff deterministically (used for the carriage-return sweep)."""
+    out: list[float] = []
+    lp = 0.0
+    for i in range(samples):
+        target = center_hz if drift_to_hz <= 0 else center_hz + (drift_to_hz - center_hz) * (i / max(1, samples - 1))
+        alpha = 1.0 - math.exp(-2.0 * math.pi * max(40.0, target) / SFX_SAMPLE_RATE)
+        lp += alpha * ((rnd() * 2.0 - 1.0) - lp)
+        out.append(lp)
+    return out
+
+
+def synthesize_completion_sound(preset: str) -> list[float]:
+    """One deterministic completion click (mono float, SFX_SAMPLE_RATE).
+
+    Short, clear and recognizable as a typewriter Enter/Return action; every
+    preset is a pure function of its name (no randomness, no wall-clock), so
+    cached intro assets stay byte-reproducible.
+    """
+    preset = normalize_completion_sound_preset(preset)
+    if preset == "off":
+        return []
+    if preset == "enter_return":
+        # Bright key click + low thump + short metallic ring (~110 ms).
+        length = 0.110
+        samples = int(SFX_SAMPLE_RATE * length)
+        rnd = _lcg(0x0D15EA5E)
+        noise = _filtered_noise(rnd, samples, 2600.0)
+        out: list[float] = []
+        for i in range(samples):
+            t = i / SFX_SAMPLE_RATE
+            click = noise[i] * 0.85 * math.exp(-i / (samples * 0.10))
+            thump = math.sin(2.0 * math.pi * 92.0 * t) * 0.60 * math.exp(-i / (samples * 0.30))
+            ring = math.sin(2.0 * math.pi * 1150.0 * t) * 0.22 * math.exp(-i / (samples * 0.45))
+            out.append(click + thump + ring)
+        return out
+    if preset == "mechanical_keypress":
+        # One heavier, deeper keystroke (~70 ms).
+        length = 0.070
+        samples = int(SFX_SAMPLE_RATE * length)
+        rnd = _lcg(0x5EC0DE)
+        noise = _filtered_noise(rnd, samples, 1400.0)
+        out = []
+        for i in range(samples):
+            t = i / SFX_SAMPLE_RATE
+            click = noise[i] * 0.65 * math.exp(-i / (samples * 0.14))
+            thump = math.sin(2.0 * math.pi * 74.0 * t) * 0.85 * math.exp(-i / (samples * 0.38))
+            out.append(click + thump)
+        return out
+    # typewriter_return: click + descending carriage sweep (~210 ms).
+    length = 0.210
+    samples = int(SFX_SAMPLE_RATE * length)
+    rnd = _lcg(0xCA441A6E)
+    sweep = _filtered_noise(rnd, samples, 1900.0, drift_to_hz=650.0)
+    click_noise = _filtered_noise(_lcg(0xBE11), samples, 2500.0)
+    out = []
+    for i in range(samples):
+        t = i / SFX_SAMPLE_RATE
+        click = click_noise[i] * 0.75 * math.exp(-i / (samples * 0.05))
+        whoosh = sweep[i] * 0.30 * math.exp(-i / (samples * 0.55))
+        thump = math.sin(2.0 * math.pi * 88.0 * t) * 0.45 * math.exp(-i / (samples * 0.18))
+        out.append(click + whoosh + thump)
+    return out
+
+
+_COMPLETION_CACHE: dict[str, list[float]] = {}
+
+
+def completion_sound_samples(preset: str) -> list[float]:
+    key = normalize_completion_sound_preset(preset)
+    if key not in _COMPLETION_CACHE:
+        _COMPLETION_CACHE[key] = synthesize_completion_sound(key)
+    return _COMPLETION_CACHE[key]
+
+
+def completion_sound_start(timeline: TypewriterTimeline) -> float:
+    """Deterministic start time of the completion click.
+
+    Fires at the end of the typing sequence (immediately after the final
+    character, before the intro-to-video transition) and is clamped so the
+    whole click always fits inside the rendered intro track - it can never
+    land after the video has started.
+    """
+    return max(0.0, float(timeline.typing_end))
+
+
 def synthesize_sfx_wav(
     timeline: TypewriterTimeline,
     profile: TypewriterProfile,
@@ -466,6 +589,20 @@ def synthesize_sfx_wav(
                 target = start + offset
                 if 0 <= target < total_samples:
                     buffer[target] += value * gain * peak
+    # Phase 32: one completion (Enter/Return) click at the end of the typing
+    # sequence. Independent from the per-character SFX above: it plays even
+    # when those are switched off, exactly once, clamped to finish inside
+    # the intro track so it never lands after the video has started.
+    if profile.completion_sound_enabled and timeline.char_count > 0:
+        completion = completion_sound_samples(profile.completion_sound_preset)
+        if completion:
+            completion_gain = profile.completion_sound_volume / 100.0
+            start = int(round(completion_sound_start(timeline) * SFX_SAMPLE_RATE))
+            start = min(start, max(0, total_samples - len(completion)))
+            for offset, value in enumerate(completion):
+                target = start + offset
+                if 0 <= target < total_samples:
+                    buffer[target] += value * completion_gain
     # Clamp and interleave to stereo.
     frames = bytearray()
     for value in buffer:

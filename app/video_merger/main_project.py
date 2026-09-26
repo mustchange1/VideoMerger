@@ -1082,6 +1082,20 @@ class MainProjectEngine:
                         video_order_seed if video_order_seed is not None else "auto",
                         "|".join(smart_profile.folders),
                     ),
+                    # Phase 32: the profile's dedicated image rendering feeds
+                    # the plan preview and the conditional plan identity.
+                    image_transition_type=str(
+                        getattr(settings, "timeline_image_transition_type", "project") or "project"
+                    ),
+                    image_transition_duration=getattr(
+                        settings, "timeline_image_transition_duration", None
+                    ),
+                    image_visual_effect=str(
+                        getattr(settings, "timeline_image_visual_effect", "none") or "none"
+                    ),
+                    image_visual_effect_intensity=str(
+                        getattr(settings, "timeline_image_visual_effect_intensity", "low") or "low"
+                    ),
                     log=log,
                 )
                 if smart_plan.selected_count:

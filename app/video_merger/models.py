@@ -230,6 +230,12 @@ class MediaInfo:
     # except that its original audio is silenced; the flag lets the Phase-30
     # image timeline planner keep counting only genuine source videos.
     smart_visual_insertion: bool = False
+    # Phase 32: dedicated subtle visual effect applied to this image element
+    # ONLY (never to normal videos, subtitles or audio). Empty strings are
+    # the historical state: the command builder reads these fields only for
+    # image-timeline insertions and adds nothing to the chain when empty.
+    image_visual_effect: str = ""            # "" | none | soft_shimmer | gentle_flicker | film_flicker | crt_broadcast | soft_glow_pulse
+    image_visual_effect_intensity: str = ""  # "" | low | medium | high
 
     @property
     def display_name(self) -> str:
@@ -736,6 +742,61 @@ class ExportSettings:
     shorts_smart_visual_style: str = "cinematic"
     shorts_smart_visual_style_custom: str = ""
     shorts_smart_visual_cadence: str = "adaptive"
+    # ==================================================================
+    # Phase 32: Smart Visual fallback control, dedicated image
+    # transitions, subtle image visual-effect presets and the Typewriter
+    # completion sound. Strictly additive: EVERY default below reproduces
+    # the exact Phase-31 behavior, so an unchanged project keeps its
+    # historical rendering and all cache identities byte-identical.
+    # Long-Form and Shorts stay strictly separate; the per-profile values
+    # are resolved onto the canonical per-job fields by
+    # ``long_form_settings()`` / ``short_settings()``.
+    # ==================================================================
+    # Smart Visual generation toggle. ON (the historical Phase-31 state)
+    # keeps the existing generation path; OFF guarantees that no provider
+    # is ever asked to generate - the configured fallback policy decides.
+    smart_visual_allow_generated: bool = True
+    # Smart Visual fallback policy when no media reaches the threshold:
+    # generate_image | random_video | random_image | best_available | skip.
+    # ``generate_image`` IS the historical Phase-31 behavior (try the
+    # generation path, then the best existing media, then skip).
+    smart_visual_fallback: str = "generate_image"
+    shorts_smart_visual_allow_generated: bool = True
+    shorts_smart_visual_fallback: str = "generate_image"
+    # Dedicated image transitions, independent from the normal video
+    # transitions. "project" = follow the profile's video transition (the
+    # historical behavior); any explicit type is used at every boundary
+    # adjacent to a timeline/smart image. The duration ``None`` follows the
+    # project transition duration; an explicit value (seconds) is clamped
+    # per boundary exactly like the shared duration.
+    long_form_image_transition_type: str = "project"
+    long_form_image_transition_duration: float | None = None
+    shorts_image_transition_type: str = "project"
+    shorts_image_transition_duration: float | None = None
+    # Canonical per-job image transition fields (these ARE the Long-Form
+    # values; short_settings() maps the Shorts pair for each Short job).
+    timeline_image_transition_type: str = "project"
+    timeline_image_transition_duration: float | None = None
+    # Image visual-effect presets (applied to inserted images only):
+    # none | soft_shimmer | gentle_flicker | film_flicker | crt_broadcast
+    # | soft_glow_pulse, with a coarse Low/Medium/High intensity. "none"
+    # (default) leaves every historical image chain untouched.
+    long_form_image_visual_effect: str = "none"
+    long_form_image_visual_effect_intensity: str = "low"
+    shorts_image_visual_effect: str = "none"
+    shorts_image_visual_effect_intensity: str = "low"
+    # Canonical per-job image visual-effect fields.
+    timeline_image_visual_effect: str = "none"
+    timeline_image_visual_effect_intensity: str = "low"
+    # Typewriter Hook Intro completion sound: one short Enter/Return click
+    # at the end of the typing sequence, independent from the per-character
+    # SFX. ON by default; Long-Form and Shorts are strictly separate.
+    typewriter_completion_sound_enabled: bool = True
+    typewriter_completion_sound_preset: str = "enter_return"
+    typewriter_completion_sound_volume: int = 40
+    short_typewriter_completion_sound_enabled: bool = True
+    short_typewriter_completion_sound_preset: str = "enter_return"
+    short_typewriter_completion_sound_volume: int = 40
     # Stage-2 only: per-clip original-audio gains in composition order
     # (intro/image/main/outro). Filled by MainProjectEngine.add_outro().
     stage2_audio_modes: list[str] = field(default_factory=list)

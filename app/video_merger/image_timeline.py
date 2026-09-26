@@ -38,6 +38,28 @@ FLICKER_SPEEDS: tuple[str, ...] = ("slow", "normal", "fast")
 IMAGE_DURATION_CHOICES: tuple[float, ...] = (1.0, 2.0, 2.5, 3.0, 4.0, 5.0)
 IMAGE_DURATION_MODES: tuple[str, ...] = ("fixed", "range")
 
+#: Phase 32: dedicated image transition types. "project" follows the
+#: profile's video transition (the historical behavior); the other keys are
+#: exactly the existing stable transition engine's families plus "none"
+#: (a hard cut). No second transition engine is introduced.
+IMAGE_TRANSITION_CHOICES: tuple[str, ...] = (
+    "project", "cross_dissolve", "smooth_blur", "film_dissolve",
+    "additive_dissolve", "none",
+)
+#: Phase 32: subtle image visual-effect presets. Every effect is a
+#: deterministic pure function of time/frame - identical settings always
+#: render identical frames. "crt_broadcast" reuses the Phase-30 CRT chain.
+IMAGE_VISUAL_EFFECTS: tuple[str, ...] = (
+    "none", "soft_shimmer", "gentle_flicker", "film_flicker",
+    "crt_broadcast", "soft_glow_pulse",
+)
+IMAGE_VISUAL_INTENSITIES: tuple[str, ...] = ("low", "medium", "high")
+#: Design-tuned intensity factors (polished, never flashy). Each effect
+#: scales its subtle base amplitude by this factor.
+IMAGE_VISUAL_INTENSITY_FACTORS: dict[str, float] = {
+    "low": 0.60, "medium": 1.00, "high": 1.50,
+}
+
 MIN_IMAGE_DURATION = 0.5
 MAX_IMAGE_DURATION = 15.0
 DEFAULT_IMAGE_DURATION = 2.5
@@ -73,6 +95,35 @@ def normalize_flicker_speed(value: object) -> str:
 def normalize_duration_mode(value: object) -> str:
     key = str(value or "").strip().casefold()
     return key if key in IMAGE_DURATION_MODES else "fixed"
+
+
+def normalize_image_transition_choice(value: object) -> str:
+    """Phase 32: canonical image transition choice ("project" default)."""
+    key = str(value or "").strip().casefold()
+    return key if key in IMAGE_TRANSITION_CHOICES else "project"
+
+
+def clamp_image_transition_duration(value: object) -> float | None:
+    """Phase 32: explicit image transition duration or None (= project)."""
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0.0:
+        return None
+    return round(max(0.1, min(5.0, parsed)), 3)
+
+
+def normalize_visual_effect(value: object) -> str:
+    key = str(value or "").strip().casefold()
+    return key if key in IMAGE_VISUAL_EFFECTS else "none"
+
+
+def normalize_visual_effect_intensity(value: object) -> str:
+    key = str(value or "").strip().casefold()
+    return key if key in IMAGE_VISUAL_INTENSITIES else "low"
 
 
 def clamp_image_timeline_duration(value: object) -> float:
@@ -120,6 +171,14 @@ class ImageTimelineProfile:
     global_effect: str
     global_intensity: int
     global_flicker_speed: str
+    # Phase 32: dedicated image transition + subtle image visual effect.
+    # Defaults reproduce the historical behavior exactly: "project" keeps
+    # the profile's video transition at every image boundary, None follows
+    # the project transition duration and "none" adds no effect chain.
+    transition_type: str = "project"
+    transition_duration: float | None = None
+    visual_effect: str = "none"
+    visual_effect_intensity: str = "low"
 
     @property
     def active(self) -> bool:
@@ -127,6 +186,16 @@ class ImageTimelineProfile:
         return (
             self.mode != "disabled"
             and any(str(folder).strip() for folder in self.folders)
+        )
+
+    @property
+    def phase32_active(self) -> bool:
+        """True when ANY Phase-32 image setting deviates from the
+        historical defaults - only then may identities gain extra keys."""
+        return (
+            self.transition_type != "project"
+            or self.transition_duration is not None
+            or self.visual_effect != "none"
         )
 
 
@@ -170,6 +239,19 @@ def profile_from_settings(settings: object) -> ImageTimelineProfile:
         global_effect=normalize_tv_effect(getattr(settings, "global_tv_effect", "off")),
         global_intensity=clamp_intensity(getattr(settings, "global_tv_effect_intensity", DEFAULT_EFFECT_INTENSITY)),
         global_flicker_speed=normalize_flicker_speed(getattr(settings, "global_tv_flicker_speed", "normal")),
+        # Phase 32: canonical per-job image transition + visual effect.
+        transition_type=normalize_image_transition_choice(
+            getattr(settings, "timeline_image_transition_type", "project")
+        ),
+        transition_duration=clamp_image_transition_duration(
+            getattr(settings, "timeline_image_transition_duration", None)
+        ),
+        visual_effect=normalize_visual_effect(
+            getattr(settings, "timeline_image_visual_effect", "none")
+        ),
+        visual_effect_intensity=normalize_visual_effect_intensity(
+            getattr(settings, "timeline_image_visual_effect_intensity", "low")
+        ),
     )
 
 
@@ -354,6 +436,16 @@ def image_plan_identity(
         "fps": round(float(widths_heights_fps[2]), 6),
         "images": [file_signature(path) for path in image_paths],
     }
+    # Phase 32: dedicated image transition + visual effect extend the
+    # identity ONLY when they deviate from the historical defaults, so
+    # every pre-Phase-32 plan keeps its exact identity and cache reuse.
+    if profile.phase32_active:
+        payload["phase32"] = {
+            "transition_type": profile.transition_type,
+            "transition_duration": profile.transition_duration,
+            "visual_effect": profile.visual_effect,
+            "visual_effect_intensity": profile.visual_effect_intensity,
+        }
     canonical = _canonical(payload)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -415,10 +507,22 @@ def make_image_media(
     The existing image input path in the command builder loops the still for
     the full section duration, so the entry needs no probing at render time;
     ``size`` only feeds geometry diagnostics and the cache fingerprint.
+
+    Phase 32: when the profile carries an explicit image transition type
+    (anything other than "project"), it becomes the element's boundary
+    transition - video boundaries keep the project transition untouched.
+    The dedicated visual effect fields stay empty (historical) unless the
+    profile enables one, so unchanged projects keep byte-identical items.
     """
     from .models import MediaInfo
 
     fps_fraction = f"{int(round(float(fps)))}/1"
+    boundary_transition = (
+        profile.transition_type
+        if profile.transition_type not in ("", "project")
+        else transition_type
+    )
+    visual_effect = normalize_visual_effect(profile.visual_effect)
     return MediaInfo(
         path=path,
         duration=float(duration),
@@ -436,12 +540,17 @@ def make_image_media(
         image_fit_mode="fill",
         image_zoom=100,
         image_filter="natural",
-        image_transition_type=transition_type,
+        image_transition_type=boundary_transition,
         image_motion=profile.motion,
         image_effect=profile.effect,
         image_effect_intensity=profile.effect_intensity,
         image_flicker_speed=profile.flicker_speed,
         image_timeline_insertion=True,
+        image_visual_effect="" if visual_effect == "none" else visual_effect,
+        image_visual_effect_intensity=(
+            "" if visual_effect == "none"
+            else normalize_visual_effect_intensity(profile.visual_effect_intensity)
+        ),
     )
 
 
@@ -723,4 +832,74 @@ def tv_effect_chain(
         f"noise=alls={max(2, int(round(8 * k)))}:allf=t,"
         f"geq=lum='if(between(mod(Y+{flick:.3f}*T*{h}\\,{h})\\,{band_top}\\,{band_bottom})"
         f"\\,p(X\\,Y)*(1-{dim})+{lift}\\,p(X\\,Y))':cb='p(X\\,Y)':cr='p(X\\,Y)'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 32: subtle image visual-effect presets (image sections only)
+# ---------------------------------------------------------------------------
+def image_visual_effect_chain(
+    effect: str,
+    intensity: str,
+    height: int,
+) -> str:
+    """Deterministic subtle visual effect for an inserted image section.
+
+    Every chain is a pure function of time (``T`` seconds) and frame
+    geometry - identical settings always render identical frames, and the
+    whole motion/effect stack stays reproducible. Amplitudes stay in the
+    "polished, never flashy" band; the coarse Low/Medium/High intensity
+    scales each effect's designed base amplitude. ``none`` returns "" and
+    adds nothing to the historical chain.
+
+    Effects apply ONLY to image sections (the command builder calls this
+    exclusively for timeline/smart image items): normal videos, subtitles
+    and audio are never touched.
+    """
+    effect = normalize_visual_effect(effect)
+    if effect == "none":
+        return ""
+    k = IMAGE_VISUAL_INTENSITY_FACTORS[normalize_visual_effect_intensity(intensity)]
+    if effect == "soft_shimmer":
+        # Very subtle slow diagonal light band drifting across the image.
+        amplitude = round(4.5 * k, 2)  # luminance units out of 255
+        return (
+            f"geq=lum='min(255\\,max(0\\,p(X\\,Y)+{amplitude:.2f}"
+            f"*sin((X/W+Y/H)*6.2832+T*1.3)))':cb='p(X\\,Y)':cr='p(X\\,Y)'"
+        )
+    if effect == "gentle_flicker":
+        # Tiny natural brightness breathing (two deterministic sines that
+        # never align into a visible strobe).
+        amp_a = round(0.012 * k, 4)
+        amp_b = round(0.006 * k, 4)
+        return (
+            f"eq=brightness='{amp_a:.4f}*sin(2*PI*0.9*T)+{amp_b:.4f}*sin(2*PI*2.3*T+1.1)'"
+        )
+    if effect == "film_flicker":
+        # Projector-like exposure instability: a shutter-synchronized step
+        # (deterministic, frame-quantized) plus a slow exposure drift and a
+        # very slight saturation variation. No geometric shaking.
+        step = round(0.014 * k, 4)
+        drift = round(0.007 * k, 4)
+        sat = round(0.05 * k, 3)
+        return (
+            f"eq=brightness='if(mod(floor(T*24)\\,2)\\,{step:.4f}\\,-{step * 0.6:.4f})"
+            f"+{drift:.4f}*sin(2*PI*0.35*T)'"
+            f":saturation='1+{sat:.3f}*sin(2*PI*0.22*T+0.7)'"
+        )
+    if effect == "crt_broadcast":
+        # Reuses the Phase-30 CRT scanline chain (the existing engine) at a
+        # gentle image-scope strength, plus a faint analog flicker.
+        scanlines = tv_effect_chain(
+            "crt_scanlines", int(round(16 * k)), "normal", height, scope="image"
+        )
+        flicker_amp = round(0.008 * k, 4)
+        flicker = f"eq=brightness='{flicker_amp:.4f}*sin(2*PI*1.7*T)'"
+        return f"{scanlines},{flicker}" if scanlines else flicker
+    # soft_glow_pulse: a very slow, subtle bloom-style brightness/glow pulse.
+    pulse = round(0.020 * k, 4)
+    sat_pulse = round(0.04 * k, 3)
+    return (
+        f"eq=brightness='{pulse:.4f}*(0.5+0.5*sin(2*PI*0.45*T))'"
+        f":saturation='1+{sat_pulse:.3f}*(0.5+0.5*sin(2*PI*0.45*T))'"
     )

@@ -18,23 +18,33 @@ from pathlib import Path
 from .errors import VideoMergerError
 from .image_timeline import (
     clamp_image_timeline_duration,
+    clamp_image_transition_duration,
     clamp_intensity,
     normalize_duration_mode,
     normalize_flicker_speed,
+    normalize_image_transition_choice,
     normalize_insertion_mode,
     normalize_motion,
     normalize_tv_effect,
+    normalize_visual_effect,
+    normalize_visual_effect_intensity,
 )
 from .music_tracks import effective_short_music_tracks, normalize_sequence_mode
 from .smart_visuals import (
     clamp_generation_percent,
     clamp_repetition_window,
     clamp_threshold,
+    normalize_fallback_policy,
     normalize_generation_strategy,
     normalize_smart_visual_cadence,
     normalize_smart_visual_style,
     normalize_source_priority,
     normalize_threshold_mode,
+)
+from .typewriter_intro import (
+    DEFAULT_COMPLETION_SOUND_VOLUME,
+    clamp_completion_sound_volume,
+    normalize_completion_sound_preset,
 )
 from .models import (
     DEFAULT_TRANSITION_TYPE,
@@ -591,6 +601,28 @@ def long_form_settings(settings: ExportSettings) -> ExportSettings:
         smart_visual_cadence=normalize_smart_visual_cadence(
             getattr(settings, "smart_visual_cadence", "adaptive")
         ),
+        # Phase 32: Long-Form Smart Visual fallback + generation toggle. The
+        # canonical smart_visual_* fields ARE the Long-Form values; defaults
+        # reproduce the exact Phase-31 behavior. Shorts values never leak in.
+        smart_visual_allow_generated=bool(getattr(settings, "smart_visual_allow_generated", True)),
+        smart_visual_fallback=normalize_fallback_policy(
+            getattr(settings, "smart_visual_fallback", "generate_image")
+        ),
+        # Phase 32: Long-Form dedicated image transition + image visual
+        # effect, resolved onto the canonical per-job fields. "project" and
+        # "none" keep the historical rendering and cache identity untouched.
+        timeline_image_transition_type=normalize_image_transition_choice(
+            getattr(settings, "long_form_image_transition_type", "project")
+        ),
+        timeline_image_transition_duration=clamp_image_transition_duration(
+            getattr(settings, "long_form_image_transition_duration", None)
+        ),
+        timeline_image_visual_effect=normalize_visual_effect(
+            getattr(settings, "long_form_image_visual_effect", "none")
+        ),
+        timeline_image_visual_effect_intensity=normalize_visual_effect_intensity(
+            getattr(settings, "long_form_image_visual_effect_intensity", "low")
+        ),
         render_variant_key="youtube-long-form",
     )
 
@@ -909,6 +941,37 @@ def short_settings(
         smart_visual_style_custom=str(getattr(settings, "shorts_smart_visual_style_custom", "") or ""),
         smart_visual_cadence=normalize_smart_visual_cadence(
             getattr(settings, "shorts_smart_visual_cadence", "adaptive")
+        ),
+        # Phase 32: the Shorts Smart Visual fallback + generation toggle are
+        # strictly separate from the Long-Form values; defaults reproduce the
+        # exact Phase-31 behavior and the two profiles can never leak.
+        smart_visual_allow_generated=bool(getattr(settings, "shorts_smart_visual_allow_generated", True)),
+        smart_visual_fallback=normalize_fallback_policy(
+            getattr(settings, "shorts_smart_visual_fallback", "generate_image")
+        ),
+        # Phase 32: Shorts dedicated image transition + image visual effect,
+        # resolved onto the canonical per-job fields of THIS Short only.
+        timeline_image_transition_type=normalize_image_transition_choice(
+            getattr(settings, "shorts_image_transition_type", "project")
+        ),
+        timeline_image_transition_duration=clamp_image_transition_duration(
+            getattr(settings, "shorts_image_transition_duration", None)
+        ),
+        timeline_image_visual_effect=normalize_visual_effect(
+            getattr(settings, "shorts_image_visual_effect", "none")
+        ),
+        timeline_image_visual_effect_intensity=normalize_visual_effect_intensity(
+            getattr(settings, "shorts_image_visual_effect_intensity", "low")
+        ),
+        # Phase 32: Shorts Typewriter completion sound (strictly separate).
+        typewriter_completion_sound_enabled=bool(
+            getattr(settings, "short_typewriter_completion_sound_enabled", True)
+        ),
+        typewriter_completion_sound_preset=normalize_completion_sound_preset(
+            getattr(settings, "short_typewriter_completion_sound_preset", "enter_return")
+        ),
+        typewriter_completion_sound_volume=clamp_completion_sound_volume(
+            getattr(settings, "short_typewriter_completion_sound_volume", DEFAULT_COMPLETION_SOUND_VOLUME)
         ),
         render_variant_key=job.cache_key,
     )

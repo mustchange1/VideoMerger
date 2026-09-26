@@ -90,6 +90,53 @@ def safe_transition_durations(durations: list[float], requested: float, fps: flo
     return effective, transitions
 
 
+def _image_transition_overrides(
+    media: MediaSequence,
+    effective: list[float],
+    transitions: list[float],
+    settings: ExportSettings,
+) -> list[float]:
+    """Phase 32: dedicated durations for boundaries adjacent to timeline/smart
+    images. "project" (the default) returns the historical list unchanged;
+    "none" forces a hard cut (0.0) at image boundaries; an explicit duration
+    is clamped per boundary exactly like the shared one. Video-to-video
+    boundaries are never touched.
+    """
+    override_type = str(
+        getattr(settings, "timeline_image_transition_type", "project") or "project"
+    ).strip().casefold()
+    if override_type == "project":
+        return transitions
+    raw_duration = getattr(settings, "timeline_image_transition_duration", None)
+    try:
+        requested = float(raw_duration) if raw_duration is not None else None
+    except (TypeError, ValueError):
+        requested = None
+    if requested is not None:
+        requested = max(0.0, min(requested, 5.0))
+    result = list(transitions)
+    for boundary in range(len(result)):
+        left = media[boundary]
+        right = media[boundary + 1]
+        touches_image = bool(
+            getattr(left, "image_timeline_insertion", False)
+            or getattr(right, "image_timeline_insertion", False)
+        )
+        if not touches_image:
+            continue
+        if override_type == "none":
+            result[boundary] = 0.0
+            continue
+        if requested is None:
+            continue  # follow the project transition duration (already set)
+        if requested <= 0.0:
+            result[boundary] = 0.0
+            continue
+        value = min(requested, effective[boundary] * 0.45, effective[boundary + 1] * 0.45)
+        result[boundary] = max(0.01, round(value, 6))
+    return result
+
+
 def resolve_export(media: MediaSequence, settings: ExportSettings) -> ResolvedExport:
     if not media:
         raise VideoMergerError("Es wurden keine analysierten Clips übergeben.")
@@ -105,6 +152,9 @@ def resolve_export(media: MediaSequence, settings: ExportSettings) -> ResolvedEx
         raise VideoMergerError("Für 9:16 muss die Höhe größer als die Breite sein.")
     fps, fps_expr = choose_fps(media, settings.fps_choice)
     effective, transitions = safe_transition_durations([m.duration for m in media], settings.transition_duration, fps)
+    # Phase 32: dedicated image boundary durations (default "project" returns
+    # the historical list untouched).
+    transitions = _image_transition_overrides(media, effective, transitions, settings)
     chain_duration = max(0.0, sum(effective) - sum(transitions))
     # Stage 1 has an authoritative voiceover-derived endpoint. The selected
     # sequence may intentionally extend a few frames beyond it (for example

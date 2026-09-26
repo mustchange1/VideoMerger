@@ -241,6 +241,14 @@ def _media_payload(item: MediaInfo) -> dict[str, Any]:
         payload["image_effect"] = str(getattr(item, "image_effect", "") or "")
         payload["image_effect_intensity"] = int(getattr(item, "image_effect_intensity", 0) or 0)
         payload["image_flicker_speed"] = str(getattr(item, "image_flicker_speed", "") or "")
+        # Phase 32: the dedicated image visual effect joins the payload ONLY
+        # when it is configured, so unchanged projects keep their exact
+        # payload shape and Stage-1 cache reuse.
+        if getattr(item, "image_visual_effect", ""):
+            payload["image_visual_effect"] = str(item.image_visual_effect)
+            payload["image_visual_effect_intensity"] = str(
+                getattr(item, "image_visual_effect_intensity", "") or "low"
+            )
     return payload
 
 

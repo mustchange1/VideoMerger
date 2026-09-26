@@ -214,9 +214,22 @@ def test_sfx_wav_is_deterministic_and_volume_scaled(tmp_path):
     assert first.read_bytes() == second.read_bytes()
     loud = synthesize_sfx_wav(timeline, replace(profile, sound_volume=90), tmp_path / "c.wav")
     assert loud.read_bytes() != first.read_bytes()
-    silent = synthesize_sfx_wav(timeline, replace(profile, sound_preset="off"), tmp_path / "d.wav")
+    # Phase 32: the completion click is an INDEPENDENT sound (tested below
+    # and in the Phase-32 suite); a fully silent track requires the
+    # per-character SFX AND the completion sound to be off.
+    silent = synthesize_sfx_wav(
+        timeline,
+        replace(profile, sound_preset="off", completion_sound_enabled=False),
+        tmp_path / "d.wav",
+    )
     data = silent.read_bytes()
     assert all(byte == 0 for byte in data[44:])
+    # Per-character SFX off with the (default) completion sound ON renders
+    # exactly the completion click and nothing else.
+    completion_only = synthesize_sfx_wav(
+        timeline, replace(profile, sound_preset="off"), tmp_path / "e.wav"
+    )
+    assert completion_only.read_bytes() != silent.read_bytes()
 
 
 def test_sfx_wav_length_matches_timeline(tmp_path):

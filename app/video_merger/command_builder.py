@@ -215,7 +215,7 @@ def _timeline_image_framing(item, width: int, height: int, duration: float) -> s
     aspect ratio (scale-up cover + smart center crop) and the effect is
     applied ONLY to this image element - never to video clips.
     """
-    from .image_timeline import cover_crop_chain, tv_effect_chain
+    from .image_timeline import cover_crop_chain, image_visual_effect_chain, tv_effect_chain
 
     motion = normalize_image_motion(getattr(item, "image_motion", ""))
     framing = "" if motion != "none" else cover_crop_chain(width, height)
@@ -228,6 +228,17 @@ def _timeline_image_framing(item, width: int, height: int, duration: float) -> s
     )
     if effect:
         framing = f"{framing},{effect}" if framing else effect
+    # Phase 32: dedicated subtle image visual effect. Applied ONLY to this
+    # image element and ONLY when configured; the deterministic composition
+    # order is motion -> cover geometry -> Phase-30 TV effect -> Phase-32
+    # visual effect. Empty field = the exact historical chain.
+    visual_effect = image_visual_effect_chain(
+        getattr(item, "image_visual_effect", "") or "",
+        getattr(item, "image_visual_effect_intensity", "") or "low",
+        height,
+    )
+    if visual_effect:
+        framing = f"{framing},{visual_effect}" if framing else visual_effect
     return framing or "null"
 
 

@@ -73,6 +73,27 @@ CADENCE_CHOICES = ("adaptive", "every_1", "every_2", "every_3", "every_4")
 
 SOURCE_PRIORITIES = ("video_first", "image_first", "best_match", "balanced")
 
+#: Phase 32: explicit fallback policy when no media reaches the threshold.
+#: ``generate_image`` IS the historical Phase-31 behavior (try generation,
+#: then the best existing media, then skip); the other policies are new,
+#: strictly opt-in choices.
+FALLBACK_CHOICES = (
+    "generate_image",
+    "random_video",
+    "random_image",
+    "best_available",
+    "skip",
+)
+
+#: Phase 32: per-slot diagnostics tags (plan preview + render log).
+SLOT_MODE_MATCH = "MATCH"
+SLOT_MODE_GENERATED = "GENERATED"
+SLOT_MODE_FALLBACK_GENERATED = "FALLBACK_GENERATED"
+SLOT_MODE_FALLBACK_RANDOM_VIDEO = "FALLBACK_RANDOM_VIDEO"
+SLOT_MODE_FALLBACK_RANDOM_IMAGE = "FALLBACK_RANDOM_IMAGE"
+SLOT_MODE_FALLBACK_BEST_AVAILABLE = "FALLBACK_BEST_AVAILABLE"
+SLOT_MODE_SKIPPED = "SKIPPED"
+
 MIN_SLOT_SECONDS = 1.0
 MAX_SLOT_SECONDS = 8.0
 
@@ -129,6 +150,12 @@ def normalize_smart_visual_cadence(value: object) -> str:
     return text if text in CADENCE_CHOICES else "adaptive"
 
 
+def normalize_fallback_policy(value: object) -> str:
+    """Phase 32: canonical fallback policy (historical default preserved)."""
+    text = str(value or "generate_image").strip().casefold()
+    return text if text in FALLBACK_CHOICES else "generate_image"
+
+
 # ---------------------------------------------------------------------------
 # Profile
 # ---------------------------------------------------------------------------
@@ -145,6 +172,11 @@ class SmartVisualProfile:
     style: str = "cinematic"
     style_custom: str = ""
     cadence: str = "adaptive"
+    # Phase 32: generation toggle + explicit fallback policy. The defaults
+    # reproduce the exact Phase-31 behavior (generation allowed; below the
+    # threshold try generation, then best existing media, then skip).
+    allow_generated: bool = True
+    fallback_policy: str = "generate_image"
 
     @property
     def active(self) -> bool:
@@ -154,6 +186,12 @@ class SmartVisualProfile:
     @property
     def threshold(self) -> float:
         return smart_visual_threshold(self.threshold_mode, self.threshold_custom)
+
+    @property
+    def phase32_active(self) -> bool:
+        """True when a Phase-32 setting deviates from the historical
+        defaults - only then may identities gain extra keys."""
+        return not self.allow_generated or self.fallback_policy != "generate_image"
 
 
 def smart_visual_profile_from_settings(settings: object) -> SmartVisualProfile:
@@ -182,6 +220,9 @@ def smart_visual_profile_from_settings(settings: object) -> SmartVisualProfile:
         style=normalize_smart_visual_style(getattr(settings, "smart_visual_style", "cinematic")),
         style_custom=str(getattr(settings, "smart_visual_style_custom", "") or ""),
         cadence=normalize_smart_visual_cadence(getattr(settings, "smart_visual_cadence", "adaptive")),
+        # Phase 32: generation toggle + explicit fallback policy.
+        allow_generated=bool(getattr(settings, "smart_visual_allow_generated", True)),
+        fallback_policy=normalize_fallback_policy(getattr(settings, "smart_visual_fallback", "generate_image")),
     )
 
 
@@ -710,6 +751,10 @@ class SmartVisualSlot:
     reason: str = ""
     generation_used: bool = False
     prompt: str = ""
+    # Phase 32: explicit diagnostics tag (MATCH / GENERATED /
+    # FALLBACK_GENERATED / FALLBACK_RANDOM_VIDEO / FALLBACK_RANDOM_IMAGE /
+    # FALLBACK_BEST_AVAILABLE / SKIPPED). Empty until the slot is decided.
+    fallback_mode: str = ""
 
     @property
     def clamped_duration(self) -> float:
@@ -722,6 +767,11 @@ class SmartVisualPlan:
     slots: list[SmartVisualSlot] = field(default_factory=list)
     diagnostics: list[str] = field(default_factory=list)
     identity: str = ""
+    # Phase 32: image-rendering context shown in the plan preview. Uniform
+    # for the whole plan; empty strings render as "project / none" labels.
+    image_transition_label: str = ""
+    image_effect_label: str = ""
+    image_effect_intensity_label: str = ""
 
     @property
     def selected_count(self) -> int:
@@ -740,6 +790,13 @@ class SmartVisualPlan:
                     "match": f"{slot.score:.2f}",
                     "reason": slot.reason,
                     "generation_used": slot.generation_used,
+                    # Phase 32 preview extensions:
+                    "fallback_mode": slot.fallback_mode
+                    or ("MATCH" if slot.selected_kind else "SKIPPED"),
+                    "duration": round(slot.clamped_duration, 2),
+                    "image_transition": self.image_transition_label or "project",
+                    "image_effect": self.image_effect_label or "none",
+                    "image_effect_intensity": self.image_effect_intensity_label or "low",
                 }
             )
         return records
@@ -749,8 +806,28 @@ def smart_plan_identity(
     profile: SmartVisualProfile,
     slots: list[SmartVisualSlot],
     geometry: tuple[int, int, float],
+    phase32: dict | None = None,
 ) -> str:
     """Deterministic Stage-1 identity of the smart visual plan."""
+    slot_records: list[dict] = []
+    for slot in slots:
+        if not slot.selected_kind:
+            continue
+        record = {
+            "start": round(slot.start, 4),
+            "end": round(slot.end, 4),
+            "kind": slot.selected_kind,
+            "path": slot.selected_path,
+            "score": round(slot.score, 6),
+            "reason": slot.reason,
+            "prompt": slot.prompt,
+        }
+        # Phase 32: the diagnostics tag joins the identity ONLY when the
+        # fallback/generation settings deviate from the Phase-31 defaults,
+        # so unchanged projects keep their exact plan identity.
+        if phase32:
+            record["fallback_mode"] = slot.fallback_mode
+        slot_records.append(record)
     payload = {
         "enabled": bool(profile.enabled),
         "priority": profile.source_priority,
@@ -762,20 +839,14 @@ def smart_plan_identity(
         "style_custom": profile.style_custom,
         "cadence": profile.cadence,
         "geometry": [int(geometry[0]), int(geometry[1]), round(float(geometry[2]), 6)],
-        "slots": [
-            {
-                "start": round(slot.start, 4),
-                "end": round(slot.end, 4),
-                "kind": slot.selected_kind,
-                "path": slot.selected_path,
-                "score": round(slot.score, 6),
-                "reason": slot.reason,
-                "prompt": slot.prompt,
-            }
-            for slot in slots
-            if slot.selected_kind
-        ],
+        "slots": slot_records,
     }
+    # Phase 32: fallback policy/generation toggle and the dedicated image
+    # rendering settings extend the identity ONLY when they deviate from
+    # the historical defaults, so unchanged projects keep their exact
+    # Phase-31 plan identity and cache reuse.
+    if phase32:
+        payload["phase32"] = phase32
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -830,12 +901,39 @@ def build_smart_visual_plan(
     ffprobe_path: str | Path,
     seed_parts: tuple = (),
     ffmpeg_path: str | Path | None = None,
+    image_transition_type: str = "project",
+    image_transition_duration: float | None = None,
+    image_visual_effect: str = "none",
+    image_visual_effect_intensity: str = "low",
     log=print,
 ) -> SmartVisualPlan:
-    """Build the complete Smart Visual plan BEFORE any rendering happens."""
+    """Build the complete Smart Visual plan BEFORE any rendering happens.
+
+    Phase 32: the ``image_*`` parameters describe the profile's dedicated
+    image rendering (transition type/duration, visual effect + intensity).
+    They feed the plan preview and the plan identity; the defaults keep the
+    exact Phase-31 plan behavior and identity.
+    """
     from .image_generation import resolve_generation_provider
+    from .image_timeline import (
+        normalize_image_transition_choice,
+        normalize_visual_effect,
+        normalize_visual_effect_intensity,
+    )
+
+    image_transition_type = normalize_image_transition_choice(image_transition_type)
+    image_visual_effect = normalize_visual_effect(image_visual_effect)
+    image_visual_effect_intensity = normalize_visual_effect_intensity(image_visual_effect_intensity)
 
     plan = SmartVisualPlan(enabled=bool(profile.enabled))
+    # Phase 32 preview labels (uniform for all slots of this plan).
+    if image_transition_type == "project":
+        plan.image_transition_label = "project"
+    else:
+        duration_text = f" ({image_transition_duration:.2f}s)" if image_transition_duration else ""
+        plan.image_transition_label = f"{image_transition_type}{duration_text}"
+    plan.image_effect_label = image_visual_effect
+    plan.image_effect_intensity_label = image_visual_effect_intensity
     if not profile.active:
         return plan
     try:
@@ -859,8 +957,16 @@ def build_smart_visual_plan(
         entry_vectors = {entry.path: concept_vector(list(entry.keywords) + [entry.category]) for entry in entries}
 
         # Stage D: provider availability (no model init when disabled).
-        provider, provider_notes = resolve_generation_provider(ffmpeg_path)
-        plan.diagnostics.extend(provider_notes)
+        # Phase 32: when generation is toggled OFF, NO provider is resolved
+        # at all - no generation request can ever be made.
+        if profile.allow_generated:
+            provider, provider_notes = resolve_generation_provider(ffmpeg_path)
+            plan.diagnostics.extend(provider_notes)
+        else:
+            provider = None
+            plan.diagnostics.append(
+                "Erzeugung deaktiviert (Allow Generated Images OFF) - die Fallback-Richtlinie entscheidet."
+            )
 
         generation_dir = Path(cache_dir) / "smart_visual_generated"
         seed_material = "|".join(str(part) for part in seed_parts) + f"|{width}x{height}@{round(float(fps), 6)}"
@@ -890,13 +996,13 @@ def build_smart_visual_plan(
             )
             plan.slots.append(visual)
 
-            wants_generation = strategy_wants_generation(
+            wants_generation = bool(profile.allow_generated) and strategy_wants_generation(
                 profile.generation_strategy, profile.generation_percent, number, rng
             )
             prompt = build_generation_prompt(query_keywords, profile.style, profile.style_custom, width, height)
             visual.prompt = prompt
 
-            def try_generate(reason: str) -> bool:
+            def try_generate(reason: str, mode: str) -> bool:
                 if provider is None:
                     return False
                 # The seed derives from the PROMPT, not the slot number: a
@@ -915,11 +1021,12 @@ def build_smart_visual_plan(
                 visual.selected_label = f"Generated ({provider.name})"
                 visual.reason = reason
                 visual.generation_used = True
+                visual.fallback_mode = mode
                 return True
 
             matched = [(score, entry) for score, entry in candidates if score >= threshold]
 
-            def pick_existing(pool: list[tuple[float, MediaIndexEntry]], reason: str) -> bool:
+            def pick_existing(pool: list[tuple[float, MediaIndexEntry]], reason: str, mode: str) -> bool:
                 if not pool:
                     return False
                 preferred: list[tuple[float, MediaIndexEntry]]
@@ -941,28 +1048,94 @@ def build_smart_visual_plan(
                 visual.selected_label = f"{Path(entry.path).name} [{entry.kind}, {entry.category}]"
                 visual.score = score
                 visual.reason = reason
+                visual.fallback_mode = mode
                 return True
 
-            if wants_generation and try_generate("generation_strategy"):
+            def pick_random(kind: str, reason: str, mode: str) -> bool:
+                """Phase 32 random fallback: deterministic seeded draw from
+                the configured smart visual pool (no content analysis).
+                Repetition protection is respected whenever alternatives
+                exist; the draw never leaves the profile's own folders."""
+                pool = [entry for entry in entries if entry.kind == kind]
+                if not pool:
+                    return False
+                recent_set = set(recent[-window:]) if window else set()
+                fresh = [entry for entry in pool if entry.path not in recent_set]
+                chosen = rng.choice(fresh if fresh else pool)
+                visual.selected_kind = chosen.kind
+                visual.selected_path = chosen.path
+                visual.selected_label = f"{Path(chosen.path).name} [{chosen.kind}, {chosen.category}]"
+                visual.score = 0.0
+                visual.reason = reason
+                visual.fallback_mode = mode
+                return True
+
+            if wants_generation and try_generate("generation_strategy", SLOT_MODE_GENERATED):
                 pass
-            elif matched and pick_existing(matched, "matched"):
+            elif matched and pick_existing(matched, "matched", SLOT_MODE_MATCH):
                 pass
-            elif try_generate("below_threshold_generated"):
-                pass
-            elif pick_existing(candidates, "fallback_best_existing"):
-                plan.diagnostics.append(
-                    f"Slot {number}: kein Treffer über Schwelle {threshold:.2f} - bestes vorhandenes Medium als Fallback."
-                )
             else:
+                # Phase 32: the explicit fallback policy decides below the
+                # threshold. "generate_image" keeps the exact historical
+                # Phase-31 flow (generate, then best existing, then skip).
+                policy = profile.fallback_policy
+                if policy == "generate_image":
+                    if try_generate("below_threshold_generated", SLOT_MODE_FALLBACK_GENERATED):
+                        pass
+                    elif pick_existing(candidates, "fallback_best_existing", SLOT_MODE_FALLBACK_BEST_AVAILABLE):
+                        plan.diagnostics.append(
+                            f"Slot {number}: kein Treffer über Schwelle {threshold:.2f} - bestes vorhandenes Medium als Fallback."
+                        )
+                elif policy == "random_video":
+                    if not pick_random("video", "fallback_random_video", SLOT_MODE_FALLBACK_RANDOM_VIDEO):
+                        plan.diagnostics.append(
+                            f"Slot {number}: Random-Video-Fallback ohne verfügbare Videos - Slot übersprungen."
+                        )
+                elif policy == "random_image":
+                    if not pick_random("image", "fallback_random_image", SLOT_MODE_FALLBACK_RANDOM_IMAGE):
+                        plan.diagnostics.append(
+                            f"Slot {number}: Random-Bild-Fallback ohne verfügbare Bilder - Slot übersprungen."
+                        )
+                elif policy == "best_available":
+                    if pick_existing(candidates, "fallback_best_existing", SLOT_MODE_FALLBACK_BEST_AVAILABLE):
+                        plan.diagnostics.append(
+                            f"Slot {number}: kein Treffer über Schwelle {threshold:.2f} - bestes vorhandenes Medium als Fallback."
+                        )
+                # policy == "skip" falls through to the skip branch below.
+            if not visual.selected_kind:
                 visual.reason = "skipped_no_media"
+                visual.fallback_mode = SLOT_MODE_SKIPPED
                 plan.diagnostics.append(f"Slot {number}: keine Medien und keine Erzeugung - Slot übersprungen.")
                 continue
             recent.append(visual.selected_path)
             if window and len(recent) > window:
                 recent = recent[-window:]
 
+        # Phase 32: conditional plan-identity extension. Fallback/generation
+        # settings join only when they deviate from the Phase-31 defaults;
+        # the dedicated image rendering joins only when it deviates from the
+        # project defaults AND at least one image-type visual was selected
+        # (pure-video plans are unaffected by image settings). Unchanged
+        # projects therefore keep their exact Phase-31 plan identity.
+        phase32_identity: dict = {}
+        if profile.phase32_active:
+            phase32_identity["allow_generated"] = bool(profile.allow_generated)
+            phase32_identity["fallback_policy"] = profile.fallback_policy
+        has_image_visuals = any(
+            slot.selected_kind in ("image", "generated") for slot in plan.slots
+        )
+        if has_image_visuals:
+            if image_transition_type != "project" or image_transition_duration is not None:
+                phase32_identity["image_transition_type"] = image_transition_type
+                phase32_identity["image_transition_duration"] = image_transition_duration
+            if image_visual_effect != "none":
+                phase32_identity["image_visual_effect"] = image_visual_effect
+                phase32_identity["image_visual_effect_intensity"] = image_visual_effect_intensity
         if any(slot.selected_kind for slot in plan.slots):
-            plan.identity = smart_plan_identity(profile, plan.slots, (width, height, fps))
+            plan.identity = smart_plan_identity(
+                profile, plan.slots, (width, height, fps),
+                phase32=phase32_identity or None,
+            )
         log(
             f"Phase 31 Smart Visuals: {plan.selected_count}/{len(plan.slots)} Slot(s) belegt "
             f"(Schwelle {threshold:.2f}, Strategie {profile.generation_strategy})."
