@@ -2210,6 +2210,17 @@ class MainWindow(QMainWindow):
             w["hold_seconds"].setValue(float(value("hold_seconds", 0.5)))
             set_combo("transition", str(value("transition", "project")), "project")
             set_combo("music_mode", str(value("music_mode", "start_with_video")), "start_with_video")
+            # Phase 32 completion sound (default ON / Enter-Return / 40 %).
+            w["completion_sound_enabled"].setChecked(bool(value("completion_sound_enabled", True)))
+            set_combo(
+                "completion_sound_preset",
+                str(value("completion_sound_preset", "enter_return")),
+                "enter_return",
+            )
+            try:
+                w["completion_sound_volume"].setValue(max(0, min(100, int(value("completion_sound_volume", 40)))))
+            except (TypeError, ValueError):
+                w["completion_sound_volume"].setValue(40)
 
         apply("tw_long", "typewriter_")
         apply("tw_short", "short_typewriter_")
@@ -2254,6 +2265,12 @@ class MainWindow(QMainWindow):
         "mechanical": "Mechanical",
         "soft_keyboard": "Soft Keyboard",
         "off": "Off",
+    }
+    _TYPEWRITER_COMPLETION_LABELS = {
+        "enter_return": "Enter / Return (default)",
+        "mechanical_keypress": "Mechanical Keypress",
+        "typewriter_return": "Typewriter Return",
+        "off": "None",
     }
     _TYPEWRITER_MUSIC_LABELS = {
         "start_with_video": "Music starts with main video (default)",
@@ -2367,6 +2384,32 @@ class MainWindow(QMainWindow):
         w["music_mode"] = put(QComboBox(), row, 3)
         for key in TYPEWRITER_MUSIC_MODES:
             w["music_mode"].addItem(self._TYPEWRITER_MUSIC_LABELS.get(key, key), key)
+        row += 1
+
+        # Phase 32: completion (Enter/Return) sound - one short click at the
+        # end of the typing sequence, independent from the per-character SFX.
+        w["completion_sound_enabled"] = put(
+            QCheckBox("Typewriter Completion Sound (default ON)"), row, 0, 1, 2
+        )
+        w["completion_sound_enabled"].setChecked(True)
+        w["completion_sound_enabled"].setToolTip(
+            "Plays one short Enter/Return click when the final character has completed, "
+            "immediately before the transition into the video. Independent from the "
+            "per-character typing SFX above."
+        )
+        put(QLabel("Completion Sound"), row, 2)
+        w["completion_sound_preset"] = put(QComboBox(), row, 3)
+        for key, label in self._TYPEWRITER_COMPLETION_LABELS.items():
+            w["completion_sound_preset"].addItem(label, key)
+        row += 1
+
+        put(QLabel("Completion Volume %"), row, 0)
+        w["completion_sound_volume"] = put(QSpinBox(), row, 1)
+        w["completion_sound_volume"].setRange(0, 100)
+        w["completion_sound_volume"].setValue(40)
+        w["completion_sound_volume"].setToolTip(
+            "Moderate default so the click never overpowers voiceover or music."
+        )
         row += 1
 
         preview_button = put(QPushButton("Open Large Intro Preview"), row, 0, 1, 2)
@@ -2935,6 +2978,36 @@ class MainWindow(QMainWindow):
         "every_3": "Every 3 Sentences",
         "every_4": "Every 4 Sentences",
     }
+    # Phase 32: fallback policy, dedicated image transitions and the subtle
+    # image visual-effect presets (keys are the canonical engine values).
+    _SMART_FALLBACK_LABELS = {
+        "generate_image": "Generate Image (default)",
+        "random_video": "Random Video",
+        "random_image": "Random Image",
+        "best_available": "Best Available Media",
+        "skip": "Skip / No Replacement",
+    }
+    _IMAGE_TRANSITION_LABELS = {
+        "project": "Project (follow video transition)",
+        "cross_dissolve": "Cross Dissolve",
+        "smooth_blur": "Smooth Blur",
+        "film_dissolve": "Film Dissolve",
+        "additive_dissolve": "Additive Dissolve",
+        "none": "None (hard cut)",
+    }
+    _IMAGE_VISUAL_EFFECT_LABELS = {
+        "none": "None",
+        "soft_shimmer": "Soft Shimmer",
+        "gentle_flicker": "Gentle Flicker",
+        "film_flicker": "Film / Projector Flicker",
+        "crt_broadcast": "CRT / Broadcast Glow",
+        "soft_glow_pulse": "Soft Glow Pulse",
+    }
+    _IMAGE_VISUAL_INTENSITY_LABELS = {
+        "low": "Low (polished default)",
+        "medium": "Medium",
+        "high": "High",
+    }
 
     def _build_smart_visual_widgets(self, parent_box: QGroupBox, prefix: str) -> None:
         """Build one complete Smart Visual profile section (LF or Shorts)."""
@@ -3045,6 +3118,63 @@ class MainWindow(QMainWindow):
         w["style_custom"].setPlaceholderText("Free-text style description (only used with style 'Custom …')")
         row += 1
 
+        # Phase 32: Media / Fallback --------------------------------------
+        w["allow_generated"] = put(QCheckBox("Allow Generated Images (default ON)"), row, 0, 1, 2)
+        w["allow_generated"].setChecked(True)
+        w["allow_generated"].setToolTip(
+            "OFF guarantees that no generation request is ever made: the fallback policy "
+            "below decides what happens when no media reaches the match threshold."
+        )
+        put(QLabel("Smart Visual Fallback"), row, 2)
+        w["fallback"] = put(QComboBox(), row, 3)
+        for key, label in self._SMART_FALLBACK_LABELS.items():
+            w["fallback"].addItem(label, key)
+        w["fallback"].setToolTip(
+            "Used when no existing media reaches the threshold. Generate Image keeps the "
+            "historical behavior (generate, then best existing media, then skip). Random "
+            "Video / Random Image draw deterministically from THIS profile's media folders "
+            "(repetition protection respected, no content analysis). Skip leaves the slot empty."
+        )
+        row += 1
+
+        # Phase 32: Image Rendering (independent from video transitions) --
+        put(QLabel("Image Transition"), row, 0)
+        w["image_transition"] = put(QComboBox(), row, 1)
+        for key, label in self._IMAGE_TRANSITION_LABELS.items():
+            w["image_transition"].addItem(label, key)
+        w["image_transition"].setToolTip(
+            "Dedicated transition for boundaries adjacent to inserted images (video→image, "
+            "image→video, image→image). Video→video transitions stay untouched. "
+            "'Project' follows the normal video transition (historical behavior)."
+        )
+        put(QLabel("Image Transition Duration (s)"), row, 2)
+        duration_row = QHBoxLayout()
+        w["image_transition_duration"] = QDoubleSpinBox()
+        w["image_transition_duration"].setRange(0.0, 5.0)
+        w["image_transition_duration"].setSingleStep(0.1)
+        w["image_transition_duration"].setDecimals(2)
+        w["image_transition_duration"].setValue(0.0)
+        w["image_transition_duration"].setToolTip(
+            "Independent duration for image transitions. 0 = follow the project transition duration."
+        )
+        duration_row.addWidget(w["image_transition_duration"])
+        layout.addLayout(duration_row, row, 3)
+        row += 1
+
+        put(QLabel("Image Effect"), row, 0)
+        w["image_visual_effect"] = put(QComboBox(), row, 1)
+        for key, label in self._IMAGE_VISUAL_EFFECT_LABELS.items():
+            w["image_visual_effect"].addItem(label, key)
+        w["image_visual_effect"].setToolTip(
+            "Subtle visual effect applied to inserted images only (never to videos, subtitles "
+            "or audio). Composes with image motion and transitions in a fixed deterministic order."
+        )
+        put(QLabel("Image Effect Intensity"), row, 2)
+        w["image_visual_effect_intensity"] = put(QComboBox(), row, 3)
+        for key, label in self._IMAGE_VISUAL_INTENSITY_LABELS.items():
+            w["image_visual_effect_intensity"].addItem(label, key)
+        row += 1
+
         index_row = QHBoxLayout()
         w["index_button"] = QPushButton("Build / Refresh Media Index")
         w["index_button"].setToolTip(
@@ -3082,6 +3212,8 @@ class MainWindow(QMainWindow):
         w["threshold_mode"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
         w["strategy"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
         w["style"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
+        w["allow_generated"].toggled.connect(lambda _s, p=prefix: self._sync_smart_visual_controls(p))
+        w["image_visual_effect"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
         self._sync_smart_visual_controls(prefix, widgets_override=w)
         self._smart_visual_widgets = getattr(self, "_smart_visual_widgets", {})
         self._smart_visual_widgets[prefix] = w
@@ -3104,6 +3236,19 @@ class MainWindow(QMainWindow):
         widgets["strategy_percent"].setEnabled(enabled and strategy == "custom_percent")
         style = str(widgets["style"].currentData() or "cinematic")
         widgets["style_custom"].setEnabled(enabled and style == "custom")
+        # Phase 32 controls: enabled together with the profile. Generation
+        # strategy/style only matter while generation is allowed; the image
+        # effect intensity only matters while an effect is selected.
+        if "allow_generated" in widgets:
+            allow_generated = bool(widgets["allow_generated"].isChecked())
+            for key in ("fallback", "image_transition", "image_transition_duration",
+                        "image_visual_effect", "image_visual_effect_intensity"):
+                widgets[key].setEnabled(enabled)
+            widgets["strategy"].setEnabled(enabled and allow_generated)
+            widgets["style"].setEnabled(enabled and allow_generated)
+            widgets["style_custom"].setEnabled(enabled and allow_generated and style == "custom")
+            effect = str(widgets["image_visual_effect"].currentData() or "none")
+            widgets["image_visual_effect_intensity"].setEnabled(enabled and effect != "none")
 
     def _smart_visual_add_folder(self, prefix: str) -> None:
         widgets = self._smart_visual_widgets[prefix]
@@ -3152,6 +3297,7 @@ class MainWindow(QMainWindow):
             clamp_generation_percent,
             clamp_repetition_window,
             clamp_threshold,
+            normalize_fallback_policy,
             normalize_generation_strategy,
             normalize_smart_visual_cadence,
             normalize_smart_visual_style,
@@ -3177,7 +3323,45 @@ class MainWindow(QMainWindow):
             style=normalize_smart_visual_style(data("style", "cinematic")),
             style_custom=str(w["style_custom"].text().strip()),
             cadence=normalize_smart_visual_cadence(data("cadence", "adaptive")),
+            # Phase 32: generation toggle + explicit fallback policy.
+            allow_generated=bool(w["allow_generated"].isChecked()),
+            fallback_policy=normalize_fallback_policy(data("fallback", "generate_image")),
         )
+
+    def _smart_visual_image_rendering_from_ui(self, prefix: str) -> dict:
+        """Phase 32: the profile's dedicated image rendering values.
+
+        Shared by the plan preview, the settings kwargs and any future
+        render-time caller, so one profile can never drift between them.
+        """
+        from ..image_timeline import (
+            clamp_image_transition_duration,
+            normalize_image_transition_choice,
+            normalize_visual_effect,
+            normalize_visual_effect_intensity,
+        )
+
+        w = self._smart_visual_widgets[prefix]
+
+        def data(combo_key: str, fallback: str) -> str:
+            value = w[combo_key].currentData()
+            return str(value) if value is not None else fallback
+
+        raw_duration = float(w["image_transition_duration"].value())
+        return {
+            "image_transition_type": normalize_image_transition_choice(
+                data("image_transition", "project")
+            ),
+            "image_transition_duration": clamp_image_transition_duration(
+                raw_duration if raw_duration > 0 else None
+            ),
+            "image_visual_effect": normalize_visual_effect(
+                data("image_visual_effect", "none")
+            ),
+            "image_visual_effect_intensity": normalize_visual_effect_intensity(
+                data("image_visual_effect_intensity", "low")
+            ),
+        }
 
     def _smart_visual_build_index(self, prefix: str) -> None:
         """Build/refresh the media index for this profile (incremental)."""
@@ -3251,6 +3435,7 @@ class MainWindow(QMainWindow):
         if program_duration <= 0.0:
             program_duration = 30.0
 
+        image_rendering = self._smart_visual_image_rendering_from_ui(prefix)
         try:
             plan = build_smart_visual_plan(
                 profile=profile,
@@ -3262,6 +3447,10 @@ class MainWindow(QMainWindow):
                 cache_dir=project_root() / "cache",
                 ffprobe_path=ffprobe if ffprobe is not None else "ffprobe",
                 seed_parts=("gui-preview", prefix, "|".join(profile.folders)),
+                image_transition_type=image_rendering["image_transition_type"],
+                image_transition_duration=image_rendering["image_transition_duration"],
+                image_visual_effect=image_rendering["image_visual_effect"],
+                image_visual_effect_intensity=image_rendering["image_visual_effect_intensity"],
                 log=lambda *_args, **_kwargs: None,
             )
         except Exception as exc:
@@ -3270,9 +3459,17 @@ class MainWindow(QMainWindow):
         if not plan.slots:
             widgets["plan_list"].addItem("No slots derived (no script text and no duration).")
         for record in plan.to_records():
+            # Phase 32 preview: selected media, source type, match score,
+            # fallback mode, duration and the image rendering per slot.
             widgets["plan_list"].addItem(
                 f"[{record['time']}] {record['topic']} → {record['selected']} "
-                f"(match {record['match']}, {record['reason']})"
+                f"({record['kind']}, match {record['match']}, {record['fallback_mode']}, "
+                f"{record['duration']:.1f}s)"
+            )
+            widgets["plan_list"].addItem(
+                f"    Transition: {record['image_transition']} · Effect: {record['image_effect']} "
+                f"({record['image_effect_intensity']}) · Fallback: "
+                f"{'Not Used' if record['fallback_mode'] == 'MATCH' else record['fallback_mode']}"
             )
         for note in plan.diagnostics[:4]:
             widgets["plan_list"].addItem(f"· {note}")
@@ -3295,11 +3492,14 @@ class MainWindow(QMainWindow):
                 index = combo.findData(fallback)
             combo.setCurrentIndex(max(0, index))
 
-        def apply(prefix: str, settings_prefix: str, folders_key: str) -> None:
+        def apply(prefix: str, settings_prefix: str, folders_key: str, image_prefix: str) -> None:
             w = widgets[prefix]
 
             def value(name: str, default):
                 return getattr(saved, settings_prefix + name, default)
+
+            def image_value(name: str, default):
+                return getattr(saved, image_prefix + name, default)
 
             w["folders"].clear()
             for folder in (getattr(saved, folders_key, None) or []):
@@ -3325,9 +3525,26 @@ class MainWindow(QMainWindow):
                 w["repetition_window"].setValue(3)
             set_combo(w["style"], str(value("style", "cinematic")), "cinematic")
             w["style_custom"].setText(str(value("style_custom", "") or ""))
+            # Phase 32: generation toggle, fallback policy and the dedicated
+            # image rendering (missing keys fall back to the safe defaults).
+            w["allow_generated"].setChecked(bool(value("allow_generated", True)))
+            set_combo(w["fallback"], str(value("fallback", "generate_image")), "generate_image")
+            set_combo(w["image_transition"], str(image_value("transition_type", "project")), "project")
+            try:
+                raw_duration = image_value("transition_duration", None)
+                duration = 0.0 if raw_duration is None else max(0.0, min(5.0, float(raw_duration)))
+            except (TypeError, ValueError):
+                duration = 0.0
+            w["image_transition_duration"].setValue(duration)
+            set_combo(w["image_visual_effect"], str(image_value("visual_effect", "none")), "none")
+            set_combo(
+                w["image_visual_effect_intensity"],
+                str(image_value("visual_effect_intensity", "low")),
+                "low",
+            )
 
-        apply("sv_long", "smart_visual_", "long_form_smart_visual_folders")
-        apply("sv_short", "shorts_smart_visual_", "shorts_smart_visual_folders")
+        apply("sv_long", "smart_visual_", "long_form_smart_visual_folders", "long_form_image_")
+        apply("sv_short", "shorts_smart_visual_", "shorts_smart_visual_folders", "shorts_image_")
         for prefix in ("sv_long", "sv_short"):
             self._sync_smart_visual_controls(prefix)
 
@@ -3355,6 +3572,9 @@ class MainWindow(QMainWindow):
                 "style": profile.style,
                 "style_custom": profile.style_custom,
                 "cadence": profile.cadence,
+                # Phase 32:
+                "allow_generated": profile.allow_generated,
+                "fallback": profile.fallback_policy,
             }
 
         kwargs: dict = {
@@ -3365,6 +3585,15 @@ class MainWindow(QMainWindow):
             kwargs[f"smart_visual_{key}"] = value
         for key, value in values("sv_short").items():
             kwargs[f"shorts_smart_visual_{key}"] = value
+        # Phase 32: dedicated image rendering per profile (Long-Form keeps
+        # the long_form_* fields, Shorts keeps its strictly separate
+        # shorts_* fields).
+        for prefix, field_prefix in (("sv_long", "long_form_image_"), ("sv_short", "shorts_image_")):
+            rendering = self._smart_visual_image_rendering_from_ui(prefix)
+            kwargs[f"{field_prefix}transition_type"] = rendering["image_transition_type"]
+            kwargs[f"{field_prefix}transition_duration"] = rendering["image_transition_duration"]
+            kwargs[f"{field_prefix}visual_effect"] = rendering["image_visual_effect"]
+            kwargs[f"{field_prefix}visual_effect_intensity"] = rendering["image_visual_effect_intensity"]
         return kwargs
 
     def _typewriter_browse_background(self, prefix: str) -> None:
@@ -3416,6 +3645,9 @@ class MainWindow(QMainWindow):
             hold_seconds=clamp_hold_seconds(w["hold_seconds"].value()),
             transition=data("transition", "project"),
             music_mode=normalize_music_mode(data("music_mode", "start_with_video")),
+            completion_sound_enabled=bool(w["completion_sound_enabled"].isChecked()),
+            completion_sound_preset=str(w["completion_sound_preset"].currentData() or "enter_return"),
+            completion_sound_volume=int(w["completion_sound_volume"].value()),
         )
 
     def _open_typewriter_preview(self, prefix: str) -> None:
@@ -3736,6 +3968,10 @@ class MainWindow(QMainWindow):
                 "hold_seconds": float(w["hold_seconds"].value()),
                 "transition": str(w["transition"].currentData() or "project"),
                 "music_mode": str(w["music_mode"].currentData() or "start_with_video"),
+                # Phase 32 completion sound.
+                "completion_sound_enabled": bool(w["completion_sound_enabled"].isChecked()),
+                "completion_sound_preset": str(w["completion_sound_preset"].currentData() or "enter_return"),
+                "completion_sound_volume": int(w["completion_sound_volume"].value()),
             }
 
         kwargs: dict = {}

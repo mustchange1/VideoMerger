@@ -1059,8 +1059,13 @@ def build_smart_visual_plan(
                 pool = [entry for entry in entries if entry.kind == kind]
                 if not pool:
                     return False
-                recent_set = set(recent[-window:]) if window else set()
+                recent_list = recent[-window:] if window else []
+                recent_set = set(recent_list)
                 fresh = [entry for entry in pool if entry.path not in recent_set]
+                if not fresh and recent_list:
+                    # The window is larger than the pool: still avoid the
+                    # IMMEDIATELY previous pick whenever an alternative exists.
+                    fresh = [entry for entry in pool if entry.path != recent_list[-1]]
                 chosen = rng.choice(fresh if fresh else pool)
                 visual.selected_kind = chosen.kind
                 visual.selected_path = chosen.path
