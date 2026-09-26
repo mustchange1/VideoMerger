@@ -203,7 +203,11 @@ def test_long_form_real_render_progressive_text_synced_sfx_and_transition(ffmpeg
     )
     program_duration = _probe_duration(ffprobe, baseline.video)
 
-    settings = _base_settings(voice, script, **HOOK)
+    # Phase 32: the completion (Enter/Return) click is ON by default and
+    # intentionally plays inside the hold; this Phase-29 contract test pins
+    # the ORIGINAL silent-hold behavior, so it switches the click OFF. The
+    # default-ON behavior is covered by tests/test_phase32_e2e.py instead.
+    settings = _base_settings(voice, script, **HOOK, typewriter_completion_sound_enabled=False)
     logs: list[str] = []
     result = MainProjectEngine(engine).create_main(
         media, settings, tmp_path / "out_intro", aligner=aligner, log=logs.append,

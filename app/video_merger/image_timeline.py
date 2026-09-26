@@ -872,8 +872,11 @@ def image_visual_effect_chain(
         # never align into a visible strobe).
         amp_a = round(0.012 * k, 4)
         amp_b = round(0.006 * k, 4)
+        # NOTE: the ``eq`` filter expression language defines the frame time
+        # as lowercase ``t`` (uppercase ``T`` is unknown there) - verified
+        # against real FFmpeg.
         return (
-            f"eq=brightness='{amp_a:.4f}*sin(2*PI*0.9*T)+{amp_b:.4f}*sin(2*PI*2.3*T+1.1)'"
+            f"eq=brightness='{amp_a:.4f}*sin(2*PI*0.9*t)+{amp_b:.4f}*sin(2*PI*2.3*t+1.1)'"
         )
     if effect == "film_flicker":
         # Projector-like exposure instability: a shutter-synchronized step
@@ -883,9 +886,9 @@ def image_visual_effect_chain(
         drift = round(0.007 * k, 4)
         sat = round(0.05 * k, 3)
         return (
-            f"eq=brightness='if(mod(floor(T*24)\\,2)\\,{step:.4f}\\,-{step * 0.6:.4f})"
-            f"+{drift:.4f}*sin(2*PI*0.35*T)'"
-            f":saturation='1+{sat:.3f}*sin(2*PI*0.22*T+0.7)'"
+            f"eq=brightness='if(mod(floor(t*24)\\,2)\\,{step:.4f}\\,-{step * 0.6:.4f})"
+            f"+{drift:.4f}*sin(2*PI*0.35*t)'"
+            f":saturation='1+{sat:.3f}*sin(2*PI*0.22*t+0.7)'"
         )
     if effect == "crt_broadcast":
         # Reuses the Phase-30 CRT scanline chain (the existing engine) at a
@@ -894,12 +897,12 @@ def image_visual_effect_chain(
             "crt_scanlines", int(round(16 * k)), "normal", height, scope="image"
         )
         flicker_amp = round(0.008 * k, 4)
-        flicker = f"eq=brightness='{flicker_amp:.4f}*sin(2*PI*1.7*T)'"
+        flicker = f"eq=brightness='{flicker_amp:.4f}*sin(2*PI*1.7*t)'"
         return f"{scanlines},{flicker}" if scanlines else flicker
     # soft_glow_pulse: a very slow, subtle bloom-style brightness/glow pulse.
     pulse = round(0.020 * k, 4)
     sat_pulse = round(0.04 * k, 3)
     return (
-        f"eq=brightness='{pulse:.4f}*(0.5+0.5*sin(2*PI*0.45*T))'"
-        f":saturation='1+{sat_pulse:.3f}*(0.5+0.5*sin(2*PI*0.45*T))'"
+        f"eq=brightness='{pulse:.4f}*(0.5+0.5*sin(2*PI*0.45*t))'"
+        f":saturation='1+{sat_pulse:.3f}*(0.5+0.5*sin(2*PI*0.45*t))'"
     )
