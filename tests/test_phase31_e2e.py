@@ -1,6 +1,6 @@
 """Phase 31 e2e: Smart Visual Hybrid with REAL FFmpeg renders.
 
-Mandatory end-to-end tests (spec section 47):
+Original Phase-31 matrix (spec section 47):
 A  disabled Smart Visuals keep the historical render byte-identical,
 B  a matching existing IMAGE is chosen and nothing is generated,
 C  a matching existing VIDEO is chosen (video-first priority),
@@ -13,6 +13,12 @@ I  disabled Smart Visuals + Typewriter intro stay unchanged,
 J  subtitles + music + transitions stay intact with Smart Visuals,
 K  generated images reuse the Phase-30 motion + TV effect pipeline,
 L  video -> generated image -> video transitions render correctly.
+
+PHASE 33 CONTRACT CHANGE (documented): Smart Visuals NEVER generates. The
+generation-oriented expectations of D/E/F/K were replaced 1:1 by their
+selection-engine equivalents (random existing fallback, deterministic
+selection, portrait selection, selected-image rendering); A/B/C/H/I/J and
+the passing parts of the former generation tests stay as they were.
 """
 from __future__ import annotations
 
@@ -20,7 +26,6 @@ from pathlib import Path
 
 import pytest
 
-from app.video_merger.image_timeline import probe_image_size
 from app.video_merger.main_project import MainProjectEngine
 from tests.conftest import make_clip
 from tests.test_phase30_e2e import (
@@ -262,52 +267,65 @@ def test_C_matching_video_chosen_with_video_first_priority(ffmpeg_paths, tmp_pat
 # ---------------------------------------------------------------------------
 # D/G - no match -> generated image (landscape geometry for Long-Form)
 # ---------------------------------------------------------------------------
-def test_D_no_match_generates_image_and_G_landscape_geometry(ffmpeg_paths, tmp_path):
+def test_D_no_match_falls_back_to_existing_image_and_G_landscape_geometry(ffmpeg_paths, tmp_path):
+    # Phase 33 contract change: a weak/unrelated context NO LONGER generates
+    # an image - it falls back to an existing pool asset. The Long-Form
+    # output keeps the landscape geometry (part G of the former test).
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, GLACIER_SCRIPT)
     city = _city_folder(tmp_path, ffmpeg)
 
     result = MainProjectEngine(engine).create_main(
         media, _base_settings(voice, script, **_smart_lf(city)),
-        tmp_path / "smart_gen", aligner=aligner,
+        tmp_path / "smart_fallback", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
 
-    generated = sorted(_generated_dir(tmp_path).glob("*.png"))
-    assert generated, "no match above threshold must trigger local generation"
-    width, height = probe_image_size(generated[0], ffprobe)
-    assert width > height, "Long-Form generation must be landscape"
-    assert (width, height) == (320, 180)
+    generated = _generated_dir(tmp_path)
+    assert not generated.exists() or not list(generated.glob("*.png")), \
+        "Phase 33: nothing may be generated, ever"
 
     out_width, out_height = _probe_size(ffprobe, result.video)
+    assert out_width > out_height, "Long-Form output must stay landscape"
     duration = _probe_duration(ffprobe, result.video)
-    windows = _find_windows(ffmpeg, result.video, out_width, out_height, duration, _generated_predicate)
-    assert windows, "the generated image section must be visible in the render"
+    windows = _find_windows(ffmpeg, result.video, out_width, out_height, duration, _yellow_predicate)
+    assert windows, "the random existing image must be visible in the render"
 
 
 # ---------------------------------------------------------------------------
-# E - repeated sentence reuses the generation cache
+# E - repeated sentence: deterministic selection, no generation cache
 # ---------------------------------------------------------------------------
-def test_E_repeated_sentence_reuses_generation_cache(ffmpeg_paths, tmp_path):
+def test_E_repeated_sentence_selection_is_deterministic(ffmpeg_paths, tmp_path):
+    # Phase 33 contract change: the former generation-cache-reuse test now
+    # proves that identical repeated sentences render deterministically with
+    # pure selection - and that no generation cache appears.
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, NIGHT_SCRIPT)
     city = _city_folder(tmp_path, ffmpeg)
 
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(
-            voice, script, **_smart_lf(city, smart_visual_generation_strategy="always"),
-        ),
-        tmp_path / "smart_repeat", aligner=aligner,
+    first = MainProjectEngine(engine).create_main(
+        media, _base_settings(voice, script, **_smart_lf(city)),
+        tmp_path / "smart_repeat_1", aligner=aligner,
     )
-    assert result.video.is_file() and result.report.ok
-    generated = list(_generated_dir(tmp_path).glob("*.png"))
-    assert len(generated) == 1, "identical prompts must reuse the same cached generation"
+    second = MainProjectEngine(engine).create_main(
+        media, _base_settings(voice, script, **_smart_lf(city)),
+        tmp_path / "smart_repeat_2", aligner=aligner,
+    )
+    assert first.video.is_file() and first.report.ok
+    assert second.video.is_file() and second.report.ok
+    assert _probe_duration(ffprobe, first.video) == pytest.approx(
+        _probe_duration(ffprobe, second.video), abs=0.05,
+    ), "the same seed must reproduce the same smart visual assignment"
+    generated = _generated_dir(tmp_path)
+    assert not generated.exists() or not list(generated.glob("*.png"))
 
 
 # ---------------------------------------------------------------------------
 # F - Shorts use the portrait geometry and their own profile
 # ---------------------------------------------------------------------------
-def test_F_shorts_portrait_generation_and_profile_separation(ffmpeg_paths, tmp_path):
+def test_F_shorts_portrait_selection_and_profile_separation(ffmpeg_paths, tmp_path):
+    # Phase 33 contract change: Shorts SELECT from their own profile (never
+    # generate) and keep the portrait 9:16 geometry.
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, MOUNTAIN_SCRIPT)
     city = _city_folder(tmp_path, ffmpeg)
@@ -317,7 +335,6 @@ def test_F_shorts_portrait_generation_and_profile_separation(ffmpeg_paths, tmp_p
             voice, script,
             shorts_smart_visual_enabled=True,
             shorts_smart_visual_folders=[str(city)],
-            shorts_smart_visual_generation_strategy="always",
             shorts_smart_visual_cadence="every_1",
         ),
         tmp_path / "smart_shorts", aligner=aligner,
@@ -325,19 +342,25 @@ def test_F_shorts_portrait_generation_and_profile_separation(ffmpeg_paths, tmp_p
     shorts = result.shorts
     assert shorts and shorts[0].video.is_file()
 
-    generated = sorted(_generated_dir(tmp_path).glob("*.png"))
-    assert generated, "the Short must generate from its own profile"
-    width, height = probe_image_size(generated[0], ffprobe)
-    assert (width, height) == (720, 1280), "Shorts generation must be portrait 9:16"
+    generated = _generated_dir(tmp_path)
+    assert not generated.exists() or not list(generated.glob("*.png")), \
+        "Phase 33: Shorts must select, never generate"
+    width, height = _probe_size(ffprobe, shorts[0].video)
+    assert height > width, "Shorts output must stay portrait 9:16"
+    duration = _probe_duration(ffprobe, shorts[0].video)
+    windows = _find_windows(ffmpeg, shorts[0].video, width, height, duration, _yellow_predicate)
+    assert windows, "the Short must place an existing image from its own profile"
 
     # The Long-Form profile was never enabled: a Long-Form job of the same
-    # project must not generate anything.
-    before = set(_generated_dir(tmp_path).glob("*.png"))
+    # project keeps the historical render (no smart visuals).
     lf = MainProjectEngine(engine).create_main(
         media, _base_settings(voice, script), tmp_path / "lf_no_smart", aligner=aligner,
     )
     assert lf.video.is_file() and lf.report.ok
-    assert set(_generated_dir(tmp_path).glob("*.png")) == before
+    lf_width, lf_height = _probe_size(ffprobe, lf.video)
+    lf_duration = _probe_duration(ffprobe, lf.video)
+    assert not _find_windows(ffmpeg, lf.video, lf_width, lf_height, lf_duration, _yellow_predicate), \
+        "the disabled Long-Form profile must not insert images"
 
 
 # ---------------------------------------------------------------------------
@@ -446,17 +469,35 @@ def test_J_subtitles_music_transitions_intact_with_smart_visuals(ffmpeg_paths, t
 # ---------------------------------------------------------------------------
 # K - generated images reuse the Phase-30 motion + TV effect pipeline
 # ---------------------------------------------------------------------------
-def test_K_generated_image_reuses_motion_and_tv_effect(ffmpeg_paths, tmp_path):
-    ffmpeg, ffprobe = ffmpeg_paths
-    engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, GLACIER_SCRIPT)
-    city = _city_folder(tmp_path, ffmpeg)
+def _textured_city_folder(tmp_path: Path, ffmpeg: Path) -> Path:
+    """Yellow-dominant TEXTURED images (solid colors would make motion and
+    TV effects invisible - a gradient keeps the yellow predicate true while
+    giving ken_burns/VHS something to change)."""
+    folder = tmp_path / "city"
+    for name in ("city street.png", "city market.png"):
+        path = folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _run([
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "gradients=s=160x120:c0=yellow:c1=gold:d=1", "-frames:v", "1", str(path),
+        ])
+    return folder
 
-    def render(name: str, motion: str) -> Path:
+
+def test_K_selected_image_reuses_motion_and_tv_effect(ffmpeg_paths, tmp_path):
+    # Phase 33 contract change: the inserted visual is a SELECTED existing
+    # image (never generated); motion + TV effect compose with it exactly
+    # like before.
+    ffmpeg, ffprobe = ffmpeg_paths
+    engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, CITY_SCRIPT)
+    city = _textured_city_folder(tmp_path, ffmpeg)
+
+    def render(name: str, motion: str, effect: str = "none") -> Path:
         result = MainProjectEngine(engine).create_main(
             media, _base_settings(
                 voice, script,
                 timeline_image_motion=motion,
-                timeline_image_effect="vhs",
+                timeline_image_effect=effect,
                 timeline_image_effect_intensity=80,
                 **_smart_lf(city),
             ),
@@ -465,22 +506,28 @@ def test_K_generated_image_reuses_motion_and_tv_effect(ffmpeg_paths, tmp_path):
         assert result.video.is_file() and result.report.ok
         return result.video
 
+    # Motion and TV effect are asserted separately: the VHS flicker varies
+    # over time and would drown the ken_burns comparison if combined.
     still = render("k_still", "none")
     moving = render("k_moving", "ken_burns")
+    vhs = render("k_vhs", "none", "vhs")
     width, height = _probe_size(ffprobe, moving)
     duration = _probe_duration(ffprobe, moving)
-    windows = _find_windows(ffmpeg, moving, width, height, duration, _generated_predicate)
-    assert windows, "generated section must be visible"
+    windows = _find_windows(ffmpeg, moving, width, height, duration, _yellow_predicate)
+    assert windows, "the selected image section must be visible"
     start, end = windows[0]
     mid = (start + end) / 2
+    t_a, t_b = max(0.05, mid - 0.25), min(duration - 0.05, mid + 0.25)
 
-    still_a = _frame_rgb(ffmpeg, still, max(0.05, mid - 0.25), width, height)
-    still_b = _frame_rgb(ffmpeg, still, min(duration - 0.05, mid + 0.25), width, height)
-    moving_a = _frame_rgb(ffmpeg, moving, max(0.05, mid - 0.25), width, height)
-    moving_b = _frame_rgb(ffmpeg, moving, min(duration - 0.05, mid + 0.25), width, height)
+    still_a = _frame_rgb(ffmpeg, still, t_a, width, height)
+    still_b = _frame_rgb(ffmpeg, still, t_b, width, height)
+    moving_a = _frame_rgb(ffmpeg, moving, t_a, width, height)
+    moving_b = _frame_rgb(ffmpeg, moving, t_b, width, height)
     assert _mean_abs_diff(moving_a, moving_b) > _mean_abs_diff(still_a, still_b), \
-        "ken_burns motion must visibly move the generated image"
-    assert _mean_abs_diff(still_a, moving_a) > 2.0, "motion + VHS effect must change the frames"
+        "ken_burns motion must visibly move the selected image"
+
+    vhs_a = _frame_rgb(ffmpeg, vhs, t_a, width, height)
+    assert _mean_abs_diff(still_a, vhs_a) > 2.0, "the VHS effect must change the selected image frames"
 
 
 # ---------------------------------------------------------------------------

@@ -1209,7 +1209,11 @@ def assign_smart_visual_selections(
             if chosen is not None:
                 visual.source_mode = SLOT_SOURCE_RANDOM
                 visual.reason = "random_only_mode"
-                visual.fallback_mode = SLOT_MODE_FALLBACK_RANDOM_IMAGE
+                visual.fallback_mode = (
+                    SLOT_MODE_FALLBACK_RANDOM_VIDEO
+                    if chosen.kind == "video"
+                    else SLOT_MODE_FALLBACK_RANDOM_IMAGE
+                )
         else:
             query_vector = concept_vector(slot.draft.text)
             scored = sorted(
@@ -1273,7 +1277,11 @@ def assign_smart_visual_selections(
                 if chosen is not None:
                     visual.source_mode = SLOT_SOURCE_RANDOM
                     visual.reason = reason
-                    visual.fallback_mode = SLOT_MODE_FALLBACK_RANDOM_IMAGE
+                    visual.fallback_mode = (
+                        SLOT_MODE_FALLBACK_RANDOM_VIDEO
+                        if chosen.kind == "video"
+                        else SLOT_MODE_FALLBACK_RANDOM_IMAGE
+                    )
 
         if chosen is None:
             visual.reason = "skipped_no_media"

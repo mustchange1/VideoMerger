@@ -25,6 +25,7 @@ from app.video_merger.smart_visuals import (
     SMART_MODE_SMART_INSERTS,
     SMART_MODE_SMART_MATCH,
     SLOT_MODE_FALLBACK_RANDOM_IMAGE,
+    SLOT_MODE_FALLBACK_RANDOM_VIDEO,
     SLOT_MODE_MATCH,
     SLOT_MODE_SKIPPED,
     SLOT_SOURCE_RANDOM,
@@ -194,7 +195,9 @@ def test_random_only_mode_never_matches_and_never_generates(tmp_path, monkeypatc
     assert filled
     for slot in filled:
         assert slot.source_mode == SLOT_SOURCE_RANDOM
-        assert slot.fallback_mode == SLOT_MODE_FALLBACK_RANDOM_IMAGE
+        assert slot.fallback_mode in {
+            SLOT_MODE_FALLBACK_RANDOM_IMAGE, SLOT_MODE_FALLBACK_RANDOM_VIDEO,
+        }
         assert slot.score == 0.0
         assert Path(slot.selected_path).exists()
 

@@ -1,7 +1,7 @@
 """Phase 32 e2e: REAL FFmpeg renders for fallback policies, image rendering
 and the typewriter completion sound.
 
-Verifies on actual encoded output:
+Original Phase-32 matrix:
 A  all-default Phase-32 settings keep the Phase-31 smart visual render
    byte-identical,
 B  Random Video / Random Image fallbacks insert pool media (never generated),
@@ -12,6 +12,12 @@ F  an image visual effect changes image frames without changing timing,
 G  Shorts use their own fallback/rendering profile (LF/Shorts separation),
 H  the typewriter completion sound plays exactly once at typing end,
    without disturbing intro timing, typing SFX or the video frames.
+
+PHASE 33 CONTRACT CHANGE (documented): the explicit fallback POLICIES and
+the generation path were replaced by the selection MODES. B/B2/C/G/I were
+reworked 1:1 to their selection-engine equivalents (random draws from the
+pool, empty-pool skip, Shorts selection mode, legacy-generation-settings
+inertness); A/D/E/E2/F/H keep their original meaning and pass unchanged.
 """
 from __future__ import annotations
 
@@ -152,7 +158,10 @@ def test_A_phase32_defaults_keep_phase31_render_byte_identical(ffmpeg_paths, tmp
 # ---------------------------------------------------------------------------
 # B - Random Video / Random Image fallbacks
 # ---------------------------------------------------------------------------
-def test_B_random_video_fallback_inserts_pool_video_without_generation(ffmpeg_paths, tmp_path):
+def test_B_random_fallback_inserts_pool_video_without_generation(ffmpeg_paths, tmp_path):
+    # Phase 33 contract change: the explicit random_video POLICY is gone -
+    # with a video-only pool the seeded random fallback draws pool VIDEOS
+    # (never generated) exactly like the former policy did.
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _smart_project_factory(
         tmp_path, ffmpeg, ffprobe, MOUNTAIN_SCRIPT
@@ -161,12 +170,11 @@ def test_B_random_video_fallback_inserts_pool_video_without_generation(ffmpeg_pa
 
     settings = _base_settings(
         voice, script,
-        **_smart_lf(videos, smart_visual_threshold_mode="custom", smart_visual_threshold_custom=0.99,
-                    smart_visual_fallback="random_video"),
+        **_smart_lf(videos, smart_visual_mode="random_only"),
     )
     slots = _plan_slots(settings, MOUNTAIN_SCRIPT, tmp_path, ffmpeg, ffprobe)
     assert any(slot.fallback_mode == "FALLBACK_RANDOM_VIDEO" for slot in slots), \
-        "per-slot diagnostic must tag the random-video fallback"
+        "per-slot diagnostic must tag the random-video draw"
     result = MainProjectEngine(engine).create_main(
         media, settings, tmp_path / "rv", aligner=aligner,
     )
@@ -185,7 +193,10 @@ def test_B_random_video_fallback_inserts_pool_video_without_generation(ffmpeg_pa
     assert found, "no pool video frame visible in the fallback slot"
 
 
-def test_B2_random_image_fallback_inserts_pool_image(ffmpeg_paths, tmp_path):
+def test_B2_random_fallback_inserts_pool_image(ffmpeg_paths, tmp_path):
+    # Phase 33 contract change: weak matches fall back to a random EXISTING
+    # image from the pool - the former random_image policy behavior without
+    # any policy setting.
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _smart_project_factory(
         tmp_path, ffmpeg, ffprobe, CITY_SCRIPT
@@ -195,13 +206,11 @@ def test_B2_random_image_fallback_inserts_pool_image(ffmpeg_paths, tmp_path):
 
     settings = _base_settings(
         voice, script,
-        **_smart_lf(city, smart_visual_threshold_mode="custom", smart_visual_threshold_custom=0.99,
-                    smart_visual_fallback="random_image",
-                    smart_visual_source_priority="image_first"),
+        **_smart_lf(city, smart_visual_mode="random_only"),
     )
     slots = _plan_slots(settings, CITY_SCRIPT, tmp_path, ffmpeg, ffprobe)
     assert any(slot.fallback_mode == "FALLBACK_RANDOM_IMAGE" for slot in slots), \
-        "per-slot diagnostic must tag the random-image fallback"
+        "per-slot diagnostic must tag the random-image draw"
     result = MainProjectEngine(engine).create_main(
         media, settings, tmp_path / "ri", aligner=aligner,
     )
@@ -212,24 +221,23 @@ def test_B2_random_image_fallback_inserts_pool_image(ffmpeg_paths, tmp_path):
 # ---------------------------------------------------------------------------
 # C - Skip keeps the video-only render
 # ---------------------------------------------------------------------------
-def test_C_skip_fallback_matches_video_only_render(ffmpeg_paths, tmp_path):
+def test_C_empty_pool_matches_video_only_render(ffmpeg_paths, tmp_path):
+    # Phase 33 contract change: the explicit "skip" POLICY is gone. Its
+    # guarantee lives on: with NO usable media (empty pool) every slot is
+    # skipped cleanly and the render stays byte-identical to the historical
+    # video-only output - nothing generated, nothing inserted.
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _smart_project_factory(
         tmp_path, ffmpeg, ffprobe, MOUNTAIN_SCRIPT
     )
-    # The pool keywords can never reach the (clamped) max threshold against
-    # the mountain script, so every slot must be SKIPPED.
-    videos = _video_only_folder(tmp_path, ffmpeg)
+    empty = tmp_path / "empty_pool"
+    empty.mkdir()
 
-    settings = _base_settings(
-        voice, script,
-        **_smart_lf(videos, smart_visual_threshold_mode="custom", smart_visual_threshold_custom=0.99,
-                    smart_visual_fallback="skip"),
-    )
+    settings = _base_settings(voice, script, **_smart_lf(empty))
     slots = _plan_slots(settings, MOUNTAIN_SCRIPT, tmp_path, ffmpeg, ffprobe)
     assert slots
     assert all(slot.fallback_mode == "SKIPPED" for slot in slots), \
-        "skip policy must skip every below-threshold slot"
+        "an empty pool must skip every slot cleanly"
 
     baseline = MainProjectEngine(engine).create_main(
         media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
@@ -276,43 +284,47 @@ def test_D_allow_generated_off_never_generates(ffmpeg_paths, tmp_path):
     assert found, "the matching pool image must still be inserted with generation OFF"
 
 
-def test_I_generation_enabled_fallback_generates_real_images(ffmpeg_paths, tmp_path):
-    """Feature F counterpart: with generation allowed (the default), the
-    generate_image policy still generates locally on a real render."""
+def test_I_legacy_generation_settings_never_generate_anymore(ffmpeg_paths, tmp_path):
+    """Phase 33 contract change (replaces the generation-enabled proof):
+    even a project that still stores the legacy ``allow_generated=True`` +
+    ``generate_image`` fallback renders with PURE selection - the unrelated
+    pool image is placed as a random fallback and NOTHING is generated."""
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _smart_project_factory(
         tmp_path, ffmpeg, ffprobe, MOUNTAIN_SCRIPT
     )
-    # Only unrelated media in the pool -> nothing can match the mountain
-    # script at the clamped max threshold.
+    # Only unrelated media in the pool -> nothing matches the mountain
+    # script, so every slot becomes a random EXISTING fallback.
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
     _make_image(ffmpeg, unrelated / "zebra savanna animal.png", "magenta")
 
     settings = _base_settings(
         voice, script,
-        **_smart_lf(unrelated, smart_visual_threshold_mode="custom",
-                    smart_visual_threshold_custom=0.99,
+        **_smart_lf(unrelated,
                     smart_visual_fallback="generate_image",
-                    smart_visual_allow_generated=True),
+                    smart_visual_allow_generated=True,
+                    smart_visual_generation_strategy="always"),
     )
     slots = _plan_slots(settings, MOUNTAIN_SCRIPT, tmp_path, ffmpeg, ffprobe)
     assert slots
-    assert all(slot.fallback_mode == "FALLBACK_GENERATED" for slot in slots), \
-        "the generate_image policy must generate when generation is allowed"
+    assert all(slot.fallback_mode == "FALLBACK_RANDOM_IMAGE" for slot in slots), \
+        "legacy generation settings are inert: random existing fallback wins"
+    assert not any(slot.generation_used for slot in slots)
 
     result = MainProjectEngine(engine).create_main(
         media, settings, tmp_path / "gen", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
-    generated = sorted(_generated_dir(tmp_path).glob("*.png"))
-    assert generated, "the local provider must produce real image files"
-    # A generated visual is visible inside the program.
+    generated = _generated_dir(tmp_path)
+    assert not generated.exists() or not list(generated.glob("*.png")), \
+        "Phase 33: no generation capability remains in Smart Visuals"
+    # The existing pool image is visible inside the program.
     found = any(
-        not _is_video_color_frame(_frame_rgb(ffmpeg, result.video, t, 320, 180))
-        for t in (0.75, 1.05, 1.35)
+        _color_ratio(_frame_rgb(ffmpeg, result.video, t, 320, 180), (255, 0, 255)) > 0.5
+        for t in (0.75, 1.05, 1.35, 1.65)
     )
-    assert found, "no generated visual visible in the render"
+    assert found, "the random existing image must be visible in the render"
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +478,10 @@ def test_F_image_visual_effect_changes_frames_without_timing_change(ffmpeg_paths
 # ---------------------------------------------------------------------------
 # G - Shorts use their own fallback + rendering settings
 # ---------------------------------------------------------------------------
-def test_G_shorts_use_their_own_fallback_and_rendering_profile(ffmpeg_paths, tmp_path):
+def test_G_shorts_use_their_own_selection_mode_and_rendering_profile(ffmpeg_paths, tmp_path):
+    # Phase 33 contract change: Shorts own their SELECTION MODE (here
+    # Random Only) and their image rendering - strictly separate from the
+    # Long-Form profile, never generating anything.
     from tests.test_phase30_e2e import _shorts_settings
 
     ffmpeg, ffprobe = ffmpeg_paths
@@ -480,23 +495,24 @@ def test_G_shorts_use_their_own_fallback_and_rendering_profile(ffmpeg_paths, tmp
         voice, script,
         shorts_smart_visual_enabled=True,
         shorts_smart_visual_folders=[str(city)],
-        shorts_smart_visual_threshold_mode="custom",
-        shorts_smart_visual_threshold_custom=0.99,
         shorts_smart_visual_cadence="every_1",
-        shorts_smart_visual_fallback="random_image",
-        shorts_smart_visual_allow_generated=True,
+        shorts_smart_visual_mode="random_only",
+        shorts_smart_visual_image_duration=3.0,
         shorts_image_visual_effect="gentle_flicker",
         shorts_image_visual_effect_intensity="medium",
     )
     slots = _plan_slots(settings, CITY_SCRIPT, tmp_path, ffmpeg, ffprobe, short=True)
     assert any(slot.fallback_mode == "FALLBACK_RANDOM_IMAGE" for slot in slots), \
-        "the Short profile must use its own Shorts fallback setting"
+        "the Short profile must use its own Shorts selection mode"
+    assert all(slot.source_mode != "SMART" for slot in slots), \
+        "random_only must not match semantically"
     result = MainProjectEngine(engine).create_youtube_exports(
         media, settings, tmp_path / "short", aligner=aligner,
     )
     shorts = result.shorts
     assert shorts and shorts[0].video.is_file() and shorts[0].report.ok
-    assert not _generated_dir(tmp_path).exists()
+    generated = _generated_dir(tmp_path)
+    assert not generated.exists() or not list(generated.glob("*.png"))
     # Portrait geometry preserved.
     from tests.test_phase30_e2e import _probe_size
 
