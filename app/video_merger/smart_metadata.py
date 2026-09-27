@@ -48,6 +48,7 @@ MATCH_MORPHOLOGICAL = 0.90
 MATCH_SYNONYM = 0.78
 MATCH_PHRASE = 0.85
 MATCH_PHRASE_PARTIAL = 0.55
+MATCH_PHRASE_ANCHOR = 0.45   # one anchor token of a short use-phrase
 
 #: Analyzer evidence hierarchy (spec section 14): direct > strong
 #: association > contextual > metaphorical. Weak classes are NEVER deleted -
@@ -382,6 +383,88 @@ def analysis_payload_for_cache(
 
 
 # ---------------------------------------------------------------------------
+# Word-family normalization (spec section 12): meditate / meditating /
+# meditation and philosopher / philosophy / philosophical must resolve into
+# compatible conceptual families. Controlled local rules only - no
+# uncontrolled synonym expansion.
+# ---------------------------------------------------------------------------
+_FAMILY_MIN_STEM = 3
+
+
+def word_family(token: str) -> str:
+    """Canonical word-family key for one lowercased token."""
+    t = str(token or "").casefold()
+    if len(t) < _FAMILY_MIN_STEM + 1:
+        return t
+
+    def _cut(suffix: str, append: str = "", min_stem: int = _FAMILY_MIN_STEM) -> str | None:
+        if t.endswith(suffix) and len(t) - len(suffix) + len(append) >= min_stem:
+            return t[: len(t) - len(suffix)] + append
+        return None
+
+    # Derivational noun/verb families first (first match wins).
+    for suffix, append in (
+        ("ations", "ate"), ("ation", "ate"), ("ating", "ate"), ("ated", "ate"),
+        ("ates", "ate"),
+        ("tions", "te"), ("tion", "te"),
+    ):
+        mapped = _cut(suffix, append)
+        if mapped is not None:
+            return mapped
+    # Inflectional + derivational stripping. "ical"/"ic" keep a longer stem
+    # guard so real words survive ("medical" must not collapse to "med").
+    for suffix in (
+        "ings", "ing", "ments", "ment", "ness",
+        "ers", "er", "ors", "or", "ies", "ses", "xes", "zes", "ches", "shes",
+        "es", "ed", "ly", "us",
+    ):
+        if suffix == "ies":
+            mapped = _cut(suffix, "y")
+        else:
+            mapped = _cut(suffix)
+        if mapped is not None:
+            return mapped
+    for suffix in ("ical", "ic"):
+        if t.endswith(suffix) and len(t) - len(suffix) >= 4:
+            return t[: len(t) - len(suffix)]
+    if not t.endswith("ss"):
+        mapped = _cut("s")
+        if mapped is not None:
+            return mapped
+    if not t.endswith("ey"):
+        mapped = _cut("y")
+        if mapped is not None:
+            return mapped
+    return t
+
+
+def sentence_content_tokens(text: str) -> list[str]:
+    """Lowercased, stopword-free tokens WITHOUT suffix stripping.
+
+    The Phase-34 matcher derives word families from the ORIGINAL word forms
+    (``word_family``); running the light suffix stemmer first would destroy
+    derivational families (``meditation`` must stay ``meditation`` so it can
+    meet ``meditate``/``meditating`` in one family).
+    """
+    result: list[str] = []
+    for token in tokenize_text(text):
+        if token in STOPWORDS or len(token) < 2:
+            continue
+        result.append(token)
+    return result
+
+
+def family_tokens(text: str) -> list[tuple[str, str]]:
+    """(raw content token, word-family key) pairs for one text."""
+    return [(token, word_family(token)) for token in sentence_content_tokens(text)]
+
+
+def family_key_set(text: str) -> frozenset:
+    """Word-family keys of one text (used for negative/description sets)."""
+    return frozenset(family for _raw, family in family_tokens(text))
+
+
+# ---------------------------------------------------------------------------
 # Query representation (spec sections 5, 6, 42)
 # ---------------------------------------------------------------------------
 @dataclass(slots=True)
@@ -399,11 +482,15 @@ class SentenceQuery:
 
 def build_sentence_queries(sentences: list[str]) -> list[SentenceQuery]:
     """One independent query per sentence; continuation sentences inherit the
-    previous topic as a SECONDARY component only (evaluated independently)."""
+    previous topic as a SECONDARY component only (evaluated independently).
+
+    Tokens are the raw content words (no suffix stripping) so word-family
+    matching sees the original forms (spec sections 5, 6, 12, 42).
+    """
     queries: list[SentenceQuery] = []
     previous: tuple[str, ...] = ()
     for index, sentence in enumerate(sentences):
-        tokens = tuple(content_tokens(sentence))
+        tokens = tuple(sentence_content_tokens(sentence))
         queries.append(
             SentenceQuery(
                 sentence_index=index,
@@ -422,7 +509,7 @@ def build_sentence_queries(sentences: list[str]) -> list[SentenceQuery]:
 @dataclass(slots=True)
 class _EvidenceItem:
     label: str
-    tokens: tuple[str, ...]
+    tokens: tuple                    # ((raw, word_family), ...) pairs
     relevance: float
     class_factor: float
     focus_factor: float
@@ -439,18 +526,31 @@ class PreparedAsset:
     quality: float
 
 
-def _token_forms(token: str) -> tuple[str, str, str]:
-    """(raw, stripped, concept) forms used by the matcher."""
+def _token_forms(token: str) -> tuple[str, str, str, str]:
+    """(raw, stripped, family, concept) forms used by the matcher.
+
+    ``family`` is the Phase-34 word-family key (meditate/meditating/
+    meditation -> one family); ``concept`` is the existing local synonym
+    concept. Morphological matching runs on the family key, so analyzer
+    keywords and script word forms meet even when the light suffix stemmer
+    keeps them apart.
+    """
     stripped = strip_suffix(token)
+    family = word_family(token)
     concept = _WORD_TO_CONCEPT.get(token) or _WORD_TO_CONCEPT.get(stripped) or ""
-    return token, stripped, concept
+    return token, stripped, family, concept
 
 
 def prepare_asset(metadata: AssetMetadata) -> PreparedAsset:
-    """Flatten one asset's analyzer metadata into matchable evidence items."""
+    """Flatten one asset's analyzer metadata into matchable evidence items.
+
+    Every evidence item keeps its tokens as ``(raw, word_family)`` pairs so
+    the matcher can distinguish exact from morphological matches while the
+    numeric ``relevance_score`` values stay attached to their keyword.
+    """
     items: list[_EvidenceItem] = []
     for entry in metadata.keywords:
-        tokens = tuple(content_tokens(entry.term))
+        tokens = tuple(family_tokens(entry.term))
         if not tokens:
             continue
         items.append(
@@ -465,7 +565,7 @@ def prepare_asset(metadata: AssetMetadata) -> PreparedAsset:
             )
         )
     for term, score in metadata.concepts:
-        tokens = tuple(content_tokens(term))
+        tokens = tuple(family_tokens(term))
         if not tokens:
             continue
         items.append(
@@ -479,11 +579,15 @@ def prepare_asset(metadata: AssetMetadata) -> PreparedAsset:
                 kind="concept",
             )
         )
-    for class_name, phrases in metadata.uses.items():
+    for raw_class, phrases in metadata.uses.items():
+        # The analyzer schema stores ``direct_uses`` / ``strong_associations``
+        # / ``contextual_uses`` / ``metaphorical_uses``; the factor tables
+        # are keyed by the evidence class itself.
+        class_name = str(raw_class).replace("_uses", "").replace("_associations", "_association")
         factor = USE_CLASS_FACTORS.get(class_name, 0.35)
         base = USE_CLASS_BASE_SCORES.get(class_name, 45.0)
         for phrase in phrases:
-            tokens = tuple(content_tokens(phrase))
+            tokens = tuple(family_tokens(phrase))
             if not tokens:
                 continue
             items.append(
@@ -498,7 +602,7 @@ def prepare_asset(metadata: AssetMetadata) -> PreparedAsset:
                 )
             )
     for phrase in metadata.search_phrases:
-        tokens = tuple(content_tokens(phrase))
+        tokens = tuple(family_tokens(phrase))
         if not tokens:
             continue
         items.append(
@@ -514,74 +618,89 @@ def prepare_asset(metadata: AssetMetadata) -> PreparedAsset:
         )
     negatives: list[tuple[str, frozenset]] = []
     for phrase in metadata.negative_matches:
-        tokens = frozenset(content_tokens(phrase))
+        tokens = family_key_set(phrase)
         if tokens:
             negatives.append((phrase, tokens))
     return PreparedAsset(
         asset_path=metadata.asset_path,
         items=tuple(items),
         negative_token_sets=tuple(negatives),
-        description_tokens=frozenset(content_tokens(metadata.description)),
+        description_tokens=family_key_set(metadata.description),
         quality=metadata.quality,
     )
 
 
 def _query_token_index(query: SentenceQuery) -> dict:
-    """Token forms for primary + context tokens, keyed by raw/stripped."""
+    """Token forms for primary + context tokens.
+
+    Indexed by raw, stripped AND word-family key so a single lookup answers
+    exact vs morphological matching for any evidence token.
+    """
     primary: dict[str, tuple[float, str]] = {}
     for token in query.tokens:
-        raw, stripped, _concept = _token_forms(token)
+        raw, stripped, family, _concept = _token_forms(token)
         primary.setdefault(raw, (1.0, raw))
         primary.setdefault(stripped, (1.0, raw))
+        primary.setdefault(family, (1.0, raw))
     context: dict[str, tuple[float, str]] = {}
     for token in query.context_tokens:
-        raw, stripped, _concept = _token_forms(token)
+        raw, stripped, family, _concept = _token_forms(token)
         context.setdefault(raw, (CONTEXT_INHERIT_WEIGHT, raw))
         context.setdefault(stripped, (CONTEXT_INHERIT_WEIGHT, raw))
+        context.setdefault(family, (CONTEXT_INHERIT_WEIGHT, raw))
     return {"primary": primary, "context": context}
 
 
 def _match_item_tokens(
-    item_tokens: tuple[str, ...],
+    item_tokens: tuple,
     query: SentenceQuery,
     index: dict,
 ) -> tuple[float, str, str]:
-    """(match_factor, matched_query_token, match_kind) or (0, "", "")."""
+    """(match_factor, matched_query_token, match_kind) or (0, "", "").
+
+    ``item_tokens`` is a tuple of ``(raw, word_family)`` pairs.
+    """
     if len(item_tokens) == 1:
-        token = item_tokens[0]
-        forms = _token_forms(token)
+        raw, family = item_tokens[0]
+        _r, stripped, item_family, concept = _token_forms(raw)
         for bucket_name in ("primary", "context"):
             bucket = index[bucket_name]
-            # A. exact keyword match
-            if forms[0] in bucket:
-                return MATCH_EXACT, bucket[forms[0]][1], "exact"
-            # B. normalized word-form match
-            if forms[1] in bucket:
-                return MATCH_MORPHOLOGICAL, bucket[forms[1]][1], "morphological"
+            # A. exact keyword match (identical surface form)
+            if raw in bucket and bucket[raw][1] == raw:
+                return MATCH_EXACT, bucket[raw][1], "exact"
+        for bucket_name in ("primary", "context"):
+            bucket = index[bucket_name]
+            # B. normalized word-form / word-family match
+            if item_family in bucket or stripped in bucket:
+                key = item_family if item_family in bucket else stripped
+                return MATCH_MORPHOLOGICAL, bucket[key][1], "morphological"
         # C. synonym / semantic-equivalent match
-        concept = forms[2]
         if concept:
             for bucket_name in ("primary", "context"):
-                for raw_token in query.tokens if bucket_name == "primary" else query.context_tokens:
-                    _r, _s, other_concept = _token_forms(raw_token)
-                    if other_concept == concept:
+                tokens = query.tokens if bucket_name == "primary" else query.context_tokens
+                for raw_token in tokens:
+                    if _token_forms(raw_token)[3] == concept:
                         return MATCH_SYNONYM, raw_token, "synonym"
         return 0.0, "", ""
 
-    # D. phrase match: all tokens present (exact/morphological), ideally
-    # adjacent in the query text.
+    # D. phrase match: count how many of the evidence tokens are present in
+    # the query (exact or word-family match). Full coverage is a phrase
+    # match; a clear majority still counts partially; a single anchor token
+    # in a long use-phrase contributes weak support (sections 11 D, 14).
     matched_tokens: list[str] = []
-    for token in item_tokens:
-        forms = _token_forms(token)
+    for raw, family in item_tokens:
+        _r, stripped, item_family, concept = _token_forms(raw)
         found = ""
-        for raw_token in query.tokens:
-            other = _token_forms(raw_token)
-            if forms[0] == other[0] or forms[1] == other[1]:
-                found = raw_token
-                break
-        if not found:
+        bucket = index["primary"]
+        if raw in bucket:
+            found = bucket[raw][1]
+        elif item_family in bucket:
+            found = bucket[item_family][1]
+        elif stripped in bucket:
+            found = bucket[stripped][1]
+        elif concept:
             for raw_token in query.tokens:
-                if _token_forms(raw_token)[2] and _token_forms(raw_token)[2] == forms[2]:
+                if _token_forms(raw_token)[3] == concept:
                     found = raw_token
                     break
         if found:
@@ -593,13 +712,15 @@ def _match_item_tokens(
         return MATCH_PHRASE, " ".join(matched_tokens), "phrase"
     if ratio >= 0.5:
         return MATCH_PHRASE_PARTIAL, " ".join(matched_tokens), "phrase"
+    if len(item_tokens) <= 4:
+        return MATCH_PHRASE_ANCHOR, " ".join(matched_tokens), "phrase"
     return 0.0, "", ""
 
 
 def _query_concepts(query: SentenceQuery) -> set[str]:
     concepts = set()
     for token in query.all_tokens:
-        concept = _token_forms(token)[2]
+        concept = _token_forms(token)[3]
         if concept:
             concepts.add(concept)
     return concepts
@@ -652,7 +773,8 @@ def score_asset(query: SentenceQuery, prepared: PreparedAsset) -> MatchResult:
 
     description_support = 0.0
     if matched and prepared.description_tokens:
-        shared = len(prepared.description_tokens & set(query.tokens))
+        query_families = {word_family(token) for token in query.tokens}
+        shared = len(prepared.description_tokens & query_families)
         description_support = min(
             DESCRIPTION_SUPPORT_MAX, DESCRIPTION_SUPPORT_PER_TOKEN * shared
         )
@@ -668,18 +790,26 @@ def score_asset(query: SentenceQuery, prepared: PreparedAsset) -> MatchResult:
         score += min(EVIDENCE_BONUS_CAP, EVIDENCE_BONUS_RATE * bonus * 10.0)
         score += description_support
 
-    # Negative matches suppress false positives (spec section 15).
+    # Negative matches suppress false positives (spec section 15). The
+    # negative token sets are word-family keys; a conflict exists when the
+    # query literally shares the negative's words or when a negative word
+    # resolves to a concept the query is clearly about ("medical treatment"
+    # clashes with a health/wellness script).
     conflicts: list[str] = []
     if matched and prepared.negative_token_sets:
         query_concepts = _query_concepts(query)
-        query_token_set = set(query.all_tokens)
+        query_family_keys = {word_family(token) for token in query.all_tokens}
         for phrase, tokens in prepared.negative_token_sets:
-            literal_overlap = len(tokens & query_token_set) >= max(
+            literal_overlap = len(tokens & query_family_keys) >= max(
                 1, (len(tokens) + 1) // 2
             )
             concept_clash = False
             for token in tokens:
-                concept = _token_forms(token)[2]
+                concept = (
+                    _WORD_TO_CONCEPT.get(token)
+                    or _WORD_TO_CONCEPT.get(strip_suffix(token))
+                    or ""
+                )
                 if concept and concept in query_concepts:
                     concept_clash = True
                     break
@@ -702,13 +832,15 @@ def score_asset(query: SentenceQuery, prepared: PreparedAsset) -> MatchResult:
     )
 
 
-def _in_primary(item_tokens: tuple[str, ...], query: SentenceQuery) -> bool:
-    primary = set(query.tokens)
-    first = item_tokens[0]
-    if first in primary:
-        return True
-    stripped = strip_suffix(first)
-    return any(strip_suffix(token) == stripped for token in primary)
+def _in_primary(item_tokens: tuple, query: SentenceQuery) -> bool:
+    """True when the evidence matches the sentence itself (not only the
+    inherited previous-topic context)."""
+    first_raw, first_family = item_tokens[0]
+    for token in query.tokens:
+        _raw, _stripped, family, _concept = _token_forms(token)
+        if token == first_raw or family == first_family:
+            return True
+    return False
 
 
 def compare_with_quality(

@@ -1341,7 +1341,7 @@ def assign_smart_visual_selections(
         previous_tokens: tuple[str, ...] = ()
         for slot in timed:
             text = slot.draft.text
-            tokens = tuple(content_tokens(text))
+            tokens = tuple(smart_metadata.sentence_content_tokens(text))
             queries.append(
                 smart_metadata.SentenceQuery(
                     sentence_index=slot.draft.anchor_sentence,
@@ -1641,10 +1641,30 @@ def assign_smart_visual_selections(
     # Applies only to analyzer-scored SMART selections; compatible-context
     # and random placements keep the full target (no visual churn).
     # ------------------------------------------------------------------
-    score_lookup = {
-        index: {record[1].path: record[0] for record in candidate_lists[index]}
-        for index in range(len(timed))
-    }
+    def _bare_fit(entry: MediaIndexEntry, text: str) -> float:
+        """How well one asset fits ONE sentence on its own merits.
+
+        The sentence-boundary duration decision must not be fooled by topic
+        inherited from the previous sentence, so this scores the asset
+        against the sentence's own tokens only (no context component).
+        """
+        if entry.path in prepared:
+            bare = smart_metadata.SentenceQuery(
+                sentence_index=-1,
+                text=text,
+                tokens=tuple(smart_metadata.sentence_content_tokens(text)),
+                context_tokens=(),
+            )
+            result = smart_metadata.score_asset(bare, prepared[entry.path])
+            return result.score / smart_metadata.SCORE_SCALE
+        draft_tokens = content_tokens(text)
+        if entry.path not in entry_vectors:
+            entry_vectors[entry.path] = concept_vector(entry.concept_key())
+        return score_candidate(
+            concept_vector(text), draft_tokens, entry, entry_vectors[entry.path]
+        )
+
+    entry_by_path = {entry.path: entry for entry in pool}
     for index in range(len(slots) - 1):
         current = slots[index]
         following = slots[index + 1]
@@ -1656,11 +1676,13 @@ def assign_smart_visual_selections(
             continue
         if following.score < gate:
             continue
-        # Topic continuity check: when the NEXT sentence still fits the
-        # current visual (it scores above the gate for it), the relevant
-        # image may stay on screen - no unnecessary visual churn (section 43).
-        fit_next = score_lookup[index + 1].get(current.selected_path, 0.0)
-        if fit_next >= gate:
+        # Topic continuity check (section 43): when the NEXT sentence still
+        # fits the current visual on its own merits, the relevant image may
+        # stay on screen - no unnecessary visual churn. Otherwise the target
+        # duration yields to the new topic's sentence boundary (section 8).
+        current_entry = entry_by_path.get(current.selected_path)
+        next_text = timed[index + 1].draft.text
+        if current_entry is not None and _bare_fit(current_entry, next_text) > gate:
             continue
         gap = float(following.start) - float(current.start)
         if gap <= 0 or gap >= float(current.insert_duration):
