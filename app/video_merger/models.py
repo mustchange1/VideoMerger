@@ -617,7 +617,9 @@ class ExportSettings:
     typewriter_background_blur: bool = False
     typewriter_background_zoom: bool = False
     # Hold of the fully typed text before the transition into the video.
-    typewriter_hold_seconds: float = 0.5
+    # Phase 33: the default for NEW/unset configurations is 3.0 s; an
+    # explicitly saved value always wins (see SettingsStore loading).
+    typewriter_hold_seconds: float = 3.0
     # "project" = the profile's existing transition; else one transition key.
     typewriter_transition: str = "project"
     # "start_with_video" (default, historical music placement) or
@@ -652,7 +654,9 @@ class ExportSettings:
     short_typewriter_background_darken: int = 0
     short_typewriter_background_blur: bool = False
     short_typewriter_background_zoom: bool = False
-    short_typewriter_hold_seconds: float = 0.5
+    # Phase 33: same new/unset default as the Long-Form profile (3.0 s);
+    # explicitly saved values are preserved.
+    short_typewriter_hold_seconds: float = 3.0
     short_typewriter_transition: str = "project"
     short_typewriter_music_mode: str = "start_with_video"
     # ==================================================================
@@ -760,9 +764,33 @@ class ExportSettings:
     # generate_image | random_video | random_image | best_available | skip.
     # ``generate_image`` IS the historical Phase-31 behavior (try the
     # generation path, then the best existing media, then skip).
+    # Phase 33: both fields above are RETAINED for backward compatibility
+    # only. The Smart Visual workflow no longer generates anything; the
+    # selection mode below fully governs the behavior and weak matches fall
+    # back to a random EXISTING pool asset. Old projects keep loading.
     smart_visual_fallback: str = "generate_image"
     shorts_smart_visual_allow_generated: bool = True
     shorts_smart_visual_fallback: str = "generate_image"
+    # ==================================================================
+    # Phase 33: Smart Visuals selection engine. Strictly additive: every
+    # default reproduces the requested safe behavior for projects that do
+    # not carry the new keys. Long-Form owns the canonical ``smart_visual_*``
+    # fields; Shorts owns the strictly separate ``shorts_smart_visual_*``
+    # values resolved onto the canonical fields per Short job.
+    #   mode: smart_match | smart_inserts | random_only
+    #   image_duration: ONE inserted-image duration in seconds (default 5.0)
+    #   insert_percent: Smart Inserts only - share of insert opportunities
+    #                   that try a strong semantic match (default 25 %)
+    #   randomize_nonce: Randomize counter (new valid assignment per click)
+    # ==================================================================
+    smart_visual_mode: str = "smart_match"
+    smart_visual_image_duration: float = 5.0
+    smart_visual_insert_percent: int = 25
+    smart_visual_randomize_nonce: int = 0
+    shorts_smart_visual_mode: str = "smart_match"
+    shorts_smart_visual_image_duration: float = 5.0
+    shorts_smart_visual_insert_percent: int = 25
+    shorts_smart_visual_randomize_nonce: int = 0
     # Dedicated image transitions, independent from the normal video
     # transitions. "project" = follow the profile's video transition (the
     # historical behavior); any explicit type is used at every boundary

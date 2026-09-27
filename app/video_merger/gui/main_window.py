@@ -1485,7 +1485,7 @@ class MainWindow(QMainWindow):
         # (including Manual/Random/Folder selection and the Phase-30 image
         # timeline) stays byte-identical until the user explicitly enables a
         # profile. Long-Form and Shorts own completely independent settings.
-        smart_visual_group = QGroupBox("8 · Smart Visuals (Hybrid Matching & Local Generation)")
+        smart_visual_group = QGroupBox("8 · Smart Visuals (Content-Aware Media Selection)")
         smart_visual_layout = QVBoxLayout(smart_visual_group)
         smart_visual_layout.addWidget(QLabel(
             "Optional: semantic slots from the script are matched against your own "
@@ -2940,52 +2940,12 @@ class MainWindow(QMainWindow):
     # selection paths (Manual/Random/Folder and the Phase-30 image timeline)
     # stay exactly as they are until it is explicitly switched on.
     # ------------------------------------------------------------------
-    _SMART_PRIORITY_LABELS = {
-        "balanced": "Balanced (recommended)",
-        "best_match": "Best Match",
-        "image_first": "Image First",
-        "video_first": "Video First",
-    }
-    _SMART_THRESHOLD_LABELS = {
-        "low": "Low (0.35)",
-        "medium": "Medium (0.50)",
-        "high": "High (0.65)",
-        "custom": "Custom …",
-    }
-    _SMART_STRATEGY_LABELS = {
-        "only_when_no_match": "Only When No Match",
-        "every_2nd": "Every 2nd Slot",
-        "every_3rd": "Every 3rd Slot",
-        "every_4th": "Every 4th Slot",
-        "random_25": "Random ~25 %",
-        "random_50": "Random ~50 %",
-        "custom_percent": "Custom Percentage …",
-        "always": "Always Generate",
-    }
-    _SMART_STYLE_LABELS = {
-        "realistic": "Realistic",
-        "cinematic": "Cinematic",
-        "editorial": "Editorial",
-        "documentary": "Documentary",
-        "conceptual": "Conceptual",
-        "minimal": "Minimal",
-        "custom": "Custom …",
-    }
-    _SMART_CADENCE_LABELS = {
-        "adaptive": "Adaptive (group same-topic sentences)",
-        "every_1": "Every Sentence",
-        "every_2": "Every 2 Sentences",
-        "every_3": "Every 3 Sentences",
-        "every_4": "Every 4 Sentences",
-    }
-    # Phase 32: fallback policy, dedicated image transitions and the subtle
-    # image visual-effect presets (keys are the canonical engine values).
-    _SMART_FALLBACK_LABELS = {
-        "generate_image": "Generate Image (default)",
-        "random_video": "Random Video",
-        "random_image": "Random Image",
-        "best_available": "Best Available Media",
-        "skip": "Skip / No Replacement",
+    # Phase 33: Smart Visuals selection modes. Generation is no longer part
+    # of the workflow; weak matches fall back to a random EXISTING asset.
+    _SMART_MODE_LABELS = {
+        "smart_match": "Smart Match (smart whenever possible)",
+        "smart_inserts": "Mostly Random (strong matches at insert frequency)",
+        "random_only": "Random Only (baseline / debug)",
     }
     _IMAGE_TRANSITION_LABELS = {
         "project": "Project (follow video transition)",
@@ -3054,87 +3014,50 @@ class MainWindow(QMainWindow):
         w["folder_clear"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_clear_folders(p))
         row += 3
 
-        put(QLabel("Preferred Existing Media"), row, 0)
-        w["priority"] = put(QComboBox(), row, 1)
-        for key, label in self._SMART_PRIORITY_LABELS.items():
-            w["priority"].addItem(label, key)
-        put(QLabel("Cadence"), row, 2)
-        w["cadence"] = put(QComboBox(), row, 3)
-        for key, label in self._SMART_CADENCE_LABELS.items():
-            w["cadence"].addItem(label, key)
-        row += 1
-
-        put(QLabel("Minimum Match Score"), row, 0)
-        w["threshold_mode"] = put(QComboBox(), row, 1)
-        for key, label in self._SMART_THRESHOLD_LABELS.items():
-            w["threshold_mode"].addItem(label, key)
-        w["threshold_mode"].setCurrentIndex(w["threshold_mode"].findData("medium"))
-        threshold_row = QHBoxLayout()
-        w["threshold_custom"] = QDoubleSpinBox()
-        w["threshold_custom"].setRange(0.05, 0.95)
-        w["threshold_custom"].setSingleStep(0.05)
-        w["threshold_custom"].setDecimals(2)
-        w["threshold_custom"].setValue(0.50)
-        w["threshold_custom"].setToolTip("Custom match threshold (only used with 'Custom …').")
-        threshold_row.addWidget(w["threshold_custom"])
-        layout.addLayout(threshold_row, row, 3)
-        row += 1
-
-        put(QLabel("Generation Strategy"), row, 0)
-        w["strategy"] = put(QComboBox(), row, 1)
-        for key, label in self._SMART_STRATEGY_LABELS.items():
-            w["strategy"].addItem(label, key)
-        w["strategy"].setCurrentIndex(w["strategy"].findData("only_when_no_match"))
-        strategy_row = QHBoxLayout()
-        w["strategy_percent"] = QSpinBox()
-        w["strategy_percent"].setRange(0, 100)
-        w["strategy_percent"].setValue(25)
-        w["strategy_percent"].setSuffix(" %")
-        w["strategy_percent"].setToolTip("Share of generated visuals (only used with 'Custom Percentage …').")
-        strategy_row.addWidget(w["strategy_percent"])
-        layout.addLayout(strategy_row, row, 3)
-        row += 1
-
-        put(QLabel("Repetition Protection"), row, 0)
-        repetition_row = QHBoxLayout()
-        w["repetition_window"] = QSpinBox()
-        w["repetition_window"].setRange(0, 10)
-        w["repetition_window"].setValue(3)
-        w["repetition_window"].setSuffix(" slots")
-        w["repetition_window"].setToolTip(
-            "Media used within the last N slots is penalized instead of repeating. 0 disables it."
+        # Phase 33: Smart Visuals is a pure selection engine. The UI exposes
+        # exactly: Selection Mode, Image Duration, Smart Insert Frequency,
+        # Analyze Timeline and Randomize Timeline. Nothing here ever
+        # generates media - weak matches fall back to a random EXISTING
+        # asset from the configured folders.
+        put(QLabel("Selection Mode"), row, 0)
+        w["mode"] = put(QComboBox(), row, 1)
+        for key, label in self._SMART_MODE_LABELS.items():
+            w["mode"].addItem(label, key)
+        w["mode"].setCurrentIndex(w["mode"].findData("smart_match"))
+        w["mode"].setToolTip(
+            "Smart Match: the best semantic match per timeline region; a random existing "
+            "asset only when nothing is relevant. Mostly Random: the timeline stays random, "
+            "strong matches are placed at the Smart Insert Frequency share of the insert "
+            "opportunities. Random Only: seeded random draws, no matching (baseline/debug)."
         )
-        repetition_row.addWidget(w["repetition_window"])
-        layout.addLayout(repetition_row, row, 1)
-        put(QLabel("Generation Style"), row, 2)
-        w["style"] = put(QComboBox(), row, 3)
-        for key, label in self._SMART_STYLE_LABELS.items():
-            w["style"].addItem(label, key)
-        w["style"].setCurrentIndex(w["style"].findData("cinematic"))
+        put(QLabel("Image Duration (s)"), row, 2)
+        duration_row = QHBoxLayout()
+        w["image_duration"] = QDoubleSpinBox()
+        w["image_duration"].setRange(0.5, 15.0)
+        w["image_duration"].setSingleStep(0.5)
+        w["image_duration"].setDecimals(1)
+        w["image_duration"].setValue(5.0)
+        w["image_duration"].setSuffix(" s")
+        w["image_duration"].setToolTip(
+            "Duration of every inserted image (one single value, default 5.0 s). Placement "
+            "never moves voiceover, subtitles, audio or transitions."
+        )
+        duration_row.addWidget(w["image_duration"])
+        layout.addLayout(duration_row, row, 3)
         row += 1
 
-        put(QLabel("Custom Style Prompt"), row, 0)
-        w["style_custom"] = put(QLineEdit(), row, 1, 1, 3)
-        w["style_custom"].setPlaceholderText("Free-text style description (only used with style 'Custom …')")
-        row += 1
-
-        # Phase 32: Media / Fallback --------------------------------------
-        w["allow_generated"] = put(QCheckBox("Allow Generated Images (default ON)"), row, 0, 1, 2)
-        w["allow_generated"].setChecked(True)
-        w["allow_generated"].setToolTip(
-            "OFF guarantees that no generation request is ever made: the fallback policy "
-            "below decides what happens when no media reaches the match threshold."
+        put(QLabel("Smart Insert Frequency"), row, 0)
+        frequency_row = QHBoxLayout()
+        w["insert_percent"] = QSpinBox()
+        w["insert_percent"].setRange(0, 100)
+        w["insert_percent"].setValue(25)
+        w["insert_percent"].setSuffix(" %")
+        w["insert_percent"].setToolTip(
+            "Mostly Random mode only: share of the insert opportunities that try a strong "
+            "semantic match; every other opportunity stays random."
         )
-        put(QLabel("Smart Visual Fallback"), row, 2)
-        w["fallback"] = put(QComboBox(), row, 3)
-        for key, label in self._SMART_FALLBACK_LABELS.items():
-            w["fallback"].addItem(label, key)
-        w["fallback"].setToolTip(
-            "Used when no existing media reaches the threshold. Generate Image keeps the "
-            "historical behavior (generate, then best existing media, then skip). Random "
-            "Video / Random Image draw deterministically from THIS profile's media folders "
-            "(repetition protection respected, no content analysis). Skip leaves the slot empty."
-        )
+        frequency_row.addWidget(w["insert_percent"])
+        layout.addLayout(frequency_row, row, 1)
         row += 1
 
         # Phase 32: Image Rendering (independent from video transitions) --
@@ -3189,30 +3112,36 @@ class MainWindow(QMainWindow):
         layout.addLayout(index_row, row, 0, 1, 4)
         row += 1
 
-        preview_row = QHBoxLayout()
-        w["plan_button"] = QPushButton("Preview Smart Visual Plan")
-        w["plan_button"].setToolTip(
-            "Builds the visual plan exactly like the render (script + voiceover timing, media "
-            "index, threshold, strategy) and lists time / topic / selected media / match score / "
-            "fallback. Nothing is rendered and no provider model is initialized when disabled."
+        # Phase 33: Analyze Timeline + Randomize Timeline. Analyze builds the
+        # REAL selection plan (script context + media index + uniqueness) and
+        # lists every region - nothing is rendered. Randomize creates a new
+        # valid seed-respecting assignment (mode, duration and the fitted
+        # timeline stay untouched; uniqueness is preserved).
+        analyze_row = QHBoxLayout()
+        w["analyze_button"] = QPushButton("Analyze Timeline")
+        w["analyze_button"].setToolTip(
+            "Analyzes the timeline WITHOUT rendering: lists every visual region with "
+            "start/end/duration, media type and file name, topic, whether the asset was "
+            "chosen by Smart matching or Random, and the match score + reason."
         )
-        w["plan_button"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_preview_plan(p))
-        preview_row.addWidget(w["plan_button"])
-        layout.addLayout(preview_row, row, 0, 1, 4)
+        w["analyze_button"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_analyze_timeline(p))
+        w["randomize_button"] = QPushButton("Randomize Timeline")
+        w["randomize_button"].setToolTip(
+            "Creates a NEW valid assignment from the same pools (new seed): uniqueness is "
+            "preserved, the mode, the image duration and the timeline itself stay as they "
+            "are. In Smart Match mode alternate good matches are explored."
+        )
+        w["randomize_button"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_randomize_timeline(p))
+        analyze_row.addWidget(w["analyze_button"])
+        analyze_row.addWidget(w["randomize_button"])
+        layout.addLayout(analyze_row, row, 0, 1, 4)
         row += 1
-        w["plan_list"] = put(QListWidget(), row, 0, 1, 4)
-        w["plan_list"].setMaximumHeight(140)
-        row += 1
-        w["diagnostics"] = put(QLabel("Local Generation: not checked yet"), row, 0, 1, 4)
-        w["diagnostics"].setWordWrap(True)
-        w["diagnostics"].setStyleSheet("color: #888;")
+        w["analyze_list"] = put(QListWidget(), row, 0, 1, 4)
+        w["analyze_list"].setMaximumHeight(150)
         row += 1
 
         w["enabled"].toggled.connect(lambda _s, p=prefix: self._sync_smart_visual_controls(p))
-        w["threshold_mode"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
-        w["strategy"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
-        w["style"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
-        w["allow_generated"].toggled.connect(lambda _s, p=prefix: self._sync_smart_visual_controls(p))
+        w["mode"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
         w["image_visual_effect"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_smart_visual_controls(p))
         self._sync_smart_visual_controls(prefix, widgets_override=w)
         self._smart_visual_widgets = getattr(self, "_smart_visual_widgets", {})
@@ -3227,28 +3156,19 @@ class MainWindow(QMainWindow):
         widgets["folders"].setEnabled(enabled)
         for key in ("add_folder", "remove_folder", "folder_up", "folder_down", "folder_clear"):
             widgets[key].setEnabled(enabled)
-        for key in ("priority", "cadence", "threshold_mode", "strategy", "repetition_window",
-                    "style", "style_custom", "index_button", "plan_button", "plan_list"):
+        # Phase 33 control set: mode, image duration, the dedicated image
+        # rendering and the Analyze/Randomize/index tools.
+        for key in ("mode", "image_duration", "index_button",
+                    "analyze_button", "randomize_button", "analyze_list",
+                    "image_transition", "image_transition_duration",
+                    "image_visual_effect"):
             widgets[key].setEnabled(enabled)
-        threshold_mode = str(widgets["threshold_mode"].currentData() or "medium")
-        widgets["threshold_custom"].setEnabled(enabled and threshold_mode == "custom")
-        strategy = str(widgets["strategy"].currentData() or "only_when_no_match")
-        widgets["strategy_percent"].setEnabled(enabled and strategy == "custom_percent")
-        style = str(widgets["style"].currentData() or "cinematic")
-        widgets["style_custom"].setEnabled(enabled and style == "custom")
-        # Phase 32 controls: enabled together with the profile. Generation
-        # strategy/style only matter while generation is allowed; the image
-        # effect intensity only matters while an effect is selected.
-        if "allow_generated" in widgets:
-            allow_generated = bool(widgets["allow_generated"].isChecked())
-            for key in ("fallback", "image_transition", "image_transition_duration",
-                        "image_visual_effect", "image_visual_effect_intensity"):
-                widgets[key].setEnabled(enabled)
-            widgets["strategy"].setEnabled(enabled and allow_generated)
-            widgets["style"].setEnabled(enabled and allow_generated)
-            widgets["style_custom"].setEnabled(enabled and allow_generated and style == "custom")
-            effect = str(widgets["image_visual_effect"].currentData() or "none")
-            widgets["image_visual_effect_intensity"].setEnabled(enabled and effect != "none")
+        # Smart Insert Frequency only means something in Mostly Random mode.
+        mode = str(widgets["mode"].currentData() or "smart_match")
+        widgets["insert_percent"].setEnabled(enabled and mode == "smart_inserts")
+        # The image effect intensity only matters while an effect is chosen.
+        effect = str(widgets["image_visual_effect"].currentData() or "none")
+        widgets["image_visual_effect_intensity"].setEnabled(enabled and effect != "none")
 
     def _smart_visual_add_folder(self, prefix: str) -> None:
         widgets = self._smart_visual_widgets[prefix]
@@ -3294,15 +3214,10 @@ class MainWindow(QMainWindow):
         """Resolve ONE profile's widgets into a normalized smart visual profile."""
         from ..smart_visuals import (
             SmartVisualProfile,
-            clamp_generation_percent,
-            clamp_repetition_window,
-            clamp_threshold,
-            normalize_fallback_policy,
-            normalize_generation_strategy,
-            normalize_smart_visual_cadence,
-            normalize_smart_visual_style,
-            normalize_source_priority,
-            normalize_threshold_mode,
+            clamp_smart_image_duration,
+            clamp_smart_insert_percent,
+            clamp_smart_visual_nonce,
+            normalize_smart_visual_mode,
         )
 
         w = self._smart_visual_widgets[prefix]
@@ -3314,18 +3229,11 @@ class MainWindow(QMainWindow):
         return SmartVisualProfile(
             enabled=bool(w["enabled"].isChecked()),
             folders=tuple(self._smart_visual_folders(prefix)),
-            source_priority=normalize_source_priority(data("priority", "balanced")),
-            threshold_mode=normalize_threshold_mode(data("threshold_mode", "medium")),
-            threshold_custom=clamp_threshold(w["threshold_custom"].value()),
-            generation_strategy=normalize_generation_strategy(data("strategy", "only_when_no_match")),
-            generation_percent=clamp_generation_percent(w["strategy_percent"].value()),
-            repetition_window=clamp_repetition_window(w["repetition_window"].value()),
-            style=normalize_smart_visual_style(data("style", "cinematic")),
-            style_custom=str(w["style_custom"].text().strip()),
-            cadence=normalize_smart_visual_cadence(data("cadence", "adaptive")),
-            # Phase 32: generation toggle + explicit fallback policy.
-            allow_generated=bool(w["allow_generated"].isChecked()),
-            fallback_policy=normalize_fallback_policy(data("fallback", "generate_image")),
+            # Phase 33 selection engine settings.
+            mode=normalize_smart_visual_mode(data("mode", "smart_match")),
+            image_duration=clamp_smart_image_duration(w["image_duration"].value()),
+            insert_percent=clamp_smart_insert_percent(w["insert_percent"].value()),
+            randomize_nonce=clamp_smart_visual_nonce(w.get("_randomize_nonce", 0)),
         )
 
     def _smart_visual_image_rendering_from_ui(self, prefix: str) -> dict:
@@ -3386,27 +3294,38 @@ class MainWindow(QMainWindow):
             f"Categories: {', '.join(stats.categories) if stats.categories else '–'}"
         )
 
-    def _smart_visual_preview_plan(self, prefix: str) -> None:
-        """Build the plan exactly like the render and show it (no rendering)."""
-        from ..image_generation import resolve_generation_provider
+    def _smart_visual_randomize_timeline(self, prefix: str) -> None:
+        """Phase 33: Randomize Timeline - bump the nonce and re-analyze.
+
+        The new nonce produces a NEW valid assignment at the next render:
+        uniqueness is preserved by construction, and the mode, the image
+        duration and the fitted timeline itself are never touched.
+        """
+        widgets = self._smart_visual_widgets[prefix]
+        widgets["_randomize_nonce"] = int(widgets.get("_randomize_nonce", 0)) + 1
+        self._smart_visual_analyze_timeline(prefix)
+
+    def _smart_visual_analyze_timeline(self, prefix: str) -> None:
+        """Phase 33: Analyze Timeline - the REAL plan, nothing rendered.
+
+        Builds the selection plan exactly like the render (script context,
+        voiceover duration, media index, mode + uniqueness rules) and lists
+        every visual region: start/end/duration, media type and file name,
+        topic, SMART-or-RANDOM source, match score and the reason. No
+        rendering happens and no generation provider is ever touched.
+        """
         from ..paths import project_root
         from ..project_assets import probe_audio
         from ..smart_visuals import build_smart_visual_plan
 
         widgets = self._smart_visual_widgets[prefix]
-        widgets["plan_list"].clear()
+        widgets["analyze_list"].clear()
         profile = self._smart_visual_profile_from_ui(prefix)
         is_shorts = prefix == "sv_short"
         width, height = (720, 1280) if is_shorts else (1280, 720)
 
-        provider, provider_notes = resolve_generation_provider()
-        provider_line = (
-            f"Local Generation: available ({provider.name})" if provider else "Local Generation: unavailable"
-        )
-        widgets["diagnostics"].setText(provider_line + " - " + "; ".join(provider_notes[:2]))
-
         if not profile.active:
-            widgets["plan_list"].addItem("Smart Visuals disabled or no folders - plan stays empty.")
+            widgets["analyze_list"].addItem("Smart Visuals disabled or no folders - plan stays empty.")
             return
 
         script_text = ""
@@ -3446,7 +3365,10 @@ class MainWindow(QMainWindow):
                 fps=30.0,
                 cache_dir=project_root() / "cache",
                 ffprobe_path=ffprobe if ffprobe is not None else "ffprobe",
-                seed_parts=("gui-preview", prefix, "|".join(profile.folders)),
+                seed_parts=(
+                    "gui-analyze", prefix, "|".join(profile.folders),
+                    f"nonce={int(profile.randomize_nonce)}",
+                ),
                 image_transition_type=image_rendering["image_transition_type"],
                 image_transition_duration=image_rendering["image_transition_duration"],
                 image_visual_effect=image_rendering["image_visual_effect"],
@@ -3454,25 +3376,28 @@ class MainWindow(QMainWindow):
                 log=lambda *_args, **_kwargs: None,
             )
         except Exception as exc:
-            widgets["plan_list"].addItem(f"Plan preview failed: {exc}")
+            widgets["analyze_list"].addItem(f"Timeline analysis failed: {exc}")
             return
         if not plan.slots:
-            widgets["plan_list"].addItem("No slots derived (no script text and no duration).")
+            widgets["analyze_list"].addItem("No visual regions derived (no script text and no duration).")
+        widgets["analyze_list"].addItem(
+            f"Selection Mode: {profile.mode} · Image Duration: "
+            f"{profile.image_duration:.1f}s · Insert Frequency: {profile.insert_percent}% · "
+            f"Randomize nonce: {profile.randomize_nonce}"
+        )
         for record in plan.to_records():
-            # Phase 32 preview: selected media, source type, match score,
-            # fallback mode, duration and the image rendering per slot.
-            widgets["plan_list"].addItem(
-                f"[{record['time']}] {record['topic']} → {record['selected']} "
-                f"({record['kind']}, match {record['match']}, {record['fallback_mode']}, "
-                f"{record['duration']:.1f}s)"
+            # Phase 33 Analyze Timeline: per-region start/end/duration, type
+            # and file name, topic, Smart-or-Random source, score and reason.
+            widgets["analyze_list"].addItem(
+                f"[{record['time']}] {record['kind'].upper()} {record['selected']} · "
+                f"{record['insert_duration']:.1f}s · topic: {record['topic']}"
             )
-            widgets["plan_list"].addItem(
-                f"    Transition: {record['image_transition']} · Effect: {record['image_effect']} "
-                f"({record['image_effect_intensity']}) · Fallback: "
-                f"{'Not Used' if record['fallback_mode'] == 'MATCH' else record['fallback_mode']}"
+            widgets["analyze_list"].addItem(
+                f"    Source: {record['source']} · score {record['match']} · reason: "
+                f"{record['reason'] or '–'}"
             )
         for note in plan.diagnostics[:4]:
-            widgets["plan_list"].addItem(f"· {note}")
+            widgets["analyze_list"].addItem(f"· {note}")
 
     def _load_smart_visual_settings(self) -> None:
         """Phase 31: fill BOTH Smart Visual sections from the saved project.
@@ -3507,28 +3432,23 @@ class MainWindow(QMainWindow):
                 if text:
                     w["folders"].addItem(text)
             w["enabled"].setChecked(bool(value("enabled", False)))
-            set_combo(w["priority"], str(value("source_priority", "balanced")), "balanced")
-            set_combo(w["cadence"], str(value("cadence", "adaptive")), "adaptive")
-            set_combo(w["threshold_mode"], str(value("threshold_mode", "medium")), "medium")
+            # Phase 33 selection engine settings (missing keys -> safe
+            # defaults: Smart Match / 5.0 s / 25 % / nonce 0).
+            set_combo(w["mode"], str(value("mode", "smart_match")), "smart_match")
             try:
-                w["threshold_custom"].setValue(max(0.05, min(0.95, float(value("threshold_custom", 0.5)))))
+                w["image_duration"].setValue(max(0.5, min(15.0, float(value("image_duration", 5.0)))))
             except (TypeError, ValueError):
-                w["threshold_custom"].setValue(0.5)
-            set_combo(w["strategy"], str(value("generation_strategy", "only_when_no_match")), "only_when_no_match")
+                w["image_duration"].setValue(5.0)
             try:
-                w["strategy_percent"].setValue(max(0, min(100, int(value("generation_percent", 25)))))
+                w["insert_percent"].setValue(max(0, min(100, int(value("insert_percent", 25)))))
             except (TypeError, ValueError):
-                w["strategy_percent"].setValue(25)
+                w["insert_percent"].setValue(25)
             try:
-                w["repetition_window"].setValue(max(0, min(10, int(value("repetition_window", 3)))))
+                w["_randomize_nonce"] = max(0, int(value("randomize_nonce", 0)))
             except (TypeError, ValueError):
-                w["repetition_window"].setValue(3)
-            set_combo(w["style"], str(value("style", "cinematic")), "cinematic")
-            w["style_custom"].setText(str(value("style_custom", "") or ""))
-            # Phase 32: generation toggle, fallback policy and the dedicated
-            # image rendering (missing keys fall back to the safe defaults).
-            w["allow_generated"].setChecked(bool(value("allow_generated", True)))
-            set_combo(w["fallback"], str(value("fallback", "generate_image")), "generate_image")
+                w["_randomize_nonce"] = 0
+            # Phase 32: the dedicated image rendering (missing keys fall
+            # back to the safe defaults).
             set_combo(w["image_transition"], str(image_value("transition_type", "project")), "project")
             try:
                 raw_duration = image_value("transition_duration", None)
@@ -3559,31 +3479,46 @@ class MainWindow(QMainWindow):
         if not widgets:
             return {}
 
-        def values(prefix: str) -> dict:
+        # Phase 33: the legacy Phase-31/32 tuning keys (priority/threshold/
+        # generation strategy/style/cadence/allow_generated/fallback) are no
+        # longer edited by the UI - Smart Visuals is a pure selection engine.
+        # Their explicitly saved values are carried forward untouched so an
+        # older project never loses data it once stored.
+        legacy_keys = {
+            "source_priority": "balanced",
+            "threshold_mode": "medium",
+            "threshold_custom": 0.5,
+            "generation_strategy": "only_when_no_match",
+            "generation_percent": 25,
+            "repetition_window": 3,
+            "style": "cinematic",
+            "style_custom": "",
+            "cadence": "adaptive",
+            "allow_generated": True,
+            "fallback": "generate_image",
+        }
+
+        def values(prefix: str, settings_prefix: str) -> dict:
             profile = self._smart_visual_profile_from_ui(prefix)
-            return {
+            result = {
                 "enabled": profile.enabled,
-                "source_priority": profile.source_priority,
-                "threshold_mode": profile.threshold_mode,
-                "threshold_custom": profile.threshold_custom,
-                "generation_strategy": profile.generation_strategy,
-                "generation_percent": profile.generation_percent,
-                "repetition_window": profile.repetition_window,
-                "style": profile.style,
-                "style_custom": profile.style_custom,
-                "cadence": profile.cadence,
-                # Phase 32:
-                "allow_generated": profile.allow_generated,
-                "fallback": profile.fallback_policy,
+                # Phase 33 selection engine fields:
+                "mode": profile.mode,
+                "image_duration": profile.image_duration,
+                "insert_percent": profile.insert_percent,
+                "randomize_nonce": profile.randomize_nonce,
             }
+            for key, default in legacy_keys.items():
+                result[key] = getattr(self.saved, settings_prefix + key, default)
+            return result
 
         kwargs: dict = {
             "long_form_smart_visual_folders": self._smart_visual_folders("sv_long"),
             "shorts_smart_visual_folders": self._smart_visual_folders("sv_short"),
         }
-        for key, value in values("sv_long").items():
+        for key, value in values("sv_long", "smart_visual_").items():
             kwargs[f"smart_visual_{key}"] = value
-        for key, value in values("sv_short").items():
+        for key, value in values("sv_short", "shorts_smart_visual_").items():
             kwargs[f"shorts_smart_visual_{key}"] = value
         # Phase 32: dedicated image rendering per profile (Long-Form keeps
         # the long_form_* fields, Shorts keeps its strictly separate

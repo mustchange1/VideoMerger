@@ -78,6 +78,10 @@ AUTO_MAX_INTERVAL = 0.12
 AUTO_TYPING_CAP_SECONDS = 20.0
 MIN_TYPING_SECONDS = 0.35
 MAX_HOLD_SECONDS = 10.0
+#: Phase 33: the default Hold After Typing for NEW/unset configurations.
+#: Explicitly saved values are always preserved; only a missing or
+#: unparseable value resolves to this default.
+DEFAULT_HOLD_SECONDS = 3.0
 MIN_TOTAL_SECONDS = 0.8
 SFX_SAMPLE_RATE = 48000
 #: Number of keystroke variants per preset (deterministic anti-machinegun).
@@ -148,7 +152,10 @@ def clamp_hold_seconds(value: object) -> float:
     try:
         return max(0.0, min(MAX_HOLD_SECONDS, float(value)))
     except (TypeError, ValueError):
-        return 0.5
+        # Phase 33: an unparseable value is treated as "unset" and resolves
+        # to the new default hold of 3.0 s (explicitly saved values always
+        # reach the numeric branch above).
+        return DEFAULT_HOLD_SECONDS
 
 
 def parse_color(value: object) -> tuple[int, int, int]:
@@ -249,7 +256,9 @@ def profile_from_settings(settings: object, *, short: bool = False) -> Typewrite
         background_darken=max(0, min(80, int(get("background_darken", 0) or 0))),
         background_blur=bool(get("background_blur", False)),
         background_zoom=bool(get("background_zoom", False)),
-        hold_seconds=clamp_hold_seconds(get("hold_seconds", 0.5)),
+        # Phase 33: a missing hold value resolves to the new 3.0 s default;
+        # every explicitly saved value is preserved by clamp_hold_seconds.
+        hold_seconds=clamp_hold_seconds(get("hold_seconds", DEFAULT_HOLD_SECONDS)),
         transition=str(get("transition", "project") or "project"),
         music_mode=normalize_music_mode(get("music_mode", "start_with_video")),
         # Phase 32 completion sound (prefix-aware: typewriter_* /

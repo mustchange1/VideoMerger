@@ -31,12 +31,19 @@ from .image_timeline import (
 )
 from .music_tracks import effective_short_music_tracks, normalize_sequence_mode
 from .smart_visuals import (
+    DEFAULT_SMART_IMAGE_DURATION,
+    DEFAULT_SMART_INSERT_PERCENT,
+    SMART_MODE_SMART_MATCH,
     clamp_generation_percent,
     clamp_repetition_window,
+    clamp_smart_image_duration,
+    clamp_smart_insert_percent,
+    clamp_smart_visual_nonce,
     clamp_threshold,
     normalize_fallback_policy,
     normalize_generation_strategy,
     normalize_smart_visual_cadence,
+    normalize_smart_visual_mode,
     normalize_smart_visual_style,
     normalize_source_priority,
     normalize_threshold_mode,
@@ -948,6 +955,21 @@ def short_settings(
         smart_visual_allow_generated=bool(getattr(settings, "shorts_smart_visual_allow_generated", True)),
         smart_visual_fallback=normalize_fallback_policy(
             getattr(settings, "shorts_smart_visual_fallback", "generate_image")
+        ),
+        # Phase 33: the Shorts selection-engine settings are strictly
+        # separate from the Long-Form ones; missing keys resolve to the
+        # safe defaults (Smart Match / 5.0 s / 25 % / nonce 0).
+        smart_visual_mode=normalize_smart_visual_mode(
+            getattr(settings, "shorts_smart_visual_mode", SMART_MODE_SMART_MATCH)
+        ),
+        smart_visual_image_duration=clamp_smart_image_duration(
+            getattr(settings, "shorts_smart_visual_image_duration", DEFAULT_SMART_IMAGE_DURATION)
+        ),
+        smart_visual_insert_percent=clamp_smart_insert_percent(
+            getattr(settings, "shorts_smart_visual_insert_percent", DEFAULT_SMART_INSERT_PERCENT)
+        ),
+        smart_visual_randomize_nonce=clamp_smart_visual_nonce(
+            getattr(settings, "shorts_smart_visual_randomize_nonce", 0)
         ),
         # Phase 32: Shorts dedicated image transition + image visual effect,
         # resolved onto the canonical per-job fields of THIS Short only.

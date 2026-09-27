@@ -1081,6 +1081,10 @@ class MainProjectEngine:
                         getattr(settings, "video_order_mode", "natural"),
                         video_order_seed if video_order_seed is not None else "auto",
                         "|".join(smart_profile.folders),
+                        # Phase 33: Randomize Timeline - a new nonce produces a
+                        # new valid, uniqueness-preserving assignment without
+                        # touching mode, duration or the fitted timeline.
+                        f"nonce={smart_profile.randomize_nonce}",
                     ),
                     # Phase 32: the profile's dedicated image rendering feeds
                     # the plan preview and the conditional plan identity.
@@ -1117,7 +1121,7 @@ class MainProjectEngine:
                         after_chain = resolve_export(render_media, chain_probe).expected_duration
                         smart_target_extension = max(0.0, after_chain - before_chain)
             except Exception as exc:  # spec section 32: the project stays renderable
-                log(f"Phase 31 Smart Visuals: deaktiviert durch Fallback ({exc}).")
+                log(f"Phase 33 Smart Visuals: deaktiviert durch Fallback ({exc}).")
                 smart_apply = None
                 smart_target_extension = 0.0
 

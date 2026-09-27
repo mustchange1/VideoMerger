@@ -94,8 +94,46 @@ SLOT_MODE_FALLBACK_RANDOM_IMAGE = "FALLBACK_RANDOM_IMAGE"
 SLOT_MODE_FALLBACK_BEST_AVAILABLE = "FALLBACK_BEST_AVAILABLE"
 SLOT_MODE_SKIPPED = "SKIPPED"
 
+#: Phase 33: per-slot selection source (Smart = semantic match, Random =
+#: seeded pool draw). Shown by Analyze Timeline and carried in the records.
+SLOT_SOURCE_SMART = "SMART"
+SLOT_SOURCE_RANDOM = "RANDOM"
+
 MIN_SLOT_SECONDS = 1.0
 MAX_SLOT_SECONDS = 8.0
+
+# ---------------------------------------------------------------------------
+# Phase 33: selection modes & matching policy constants.
+# Smart Visuals is a content-aware SELECTION + placement engine: it picks
+# existing media from the configured pools and never generates anything.
+# Every relevance-threshold/matching-policy value lives HERE (one place),
+# so the UI never exposes score-tuning magic values.
+# ---------------------------------------------------------------------------
+SMART_MODE_SMART_MATCH = "smart_match"        # smart whenever possible
+SMART_MODE_SMART_INSERTS = "smart_inserts"    # mostly random, strong matches only
+SMART_MODE_RANDOM_ONLY = "random_only"        # baseline / debug, no matching
+SMART_VISUAL_MODES = (
+    SMART_MODE_SMART_MATCH,
+    SMART_MODE_SMART_INSERTS,
+    SMART_MODE_RANDOM_ONLY,
+)
+
+#: Relevance gate for Smart Match: the best candidate must reach this score
+#: to count as a semantic match (below it the slot falls back to random).
+SMART_MATCH_THRESHOLD = 0.50
+#: Strong gate for Smart Inserts: only clearly relevant media is placed at
+#: the selected insert opportunities; everything else stays random.
+SMART_INSERT_STRONG_THRESHOLD = 0.60
+#: Smart Match explores alternate good matches inside this top-K window when
+#: the best candidate is already used or when Randomize explores variants.
+SMART_MATCH_TOP_K = 5
+#: Default share of insert opportunities that try a strong semantic match in
+#: Smart Inserts mode (the UI exposes this one value as a percentage).
+DEFAULT_SMART_INSERT_PERCENT = 25
+#: Inserted image duration (seconds). One single configurable value.
+DEFAULT_SMART_IMAGE_DURATION = 5.0
+MIN_SMART_IMAGE_DURATION = 0.5
+MAX_SMART_IMAGE_DURATION = 15.0
 
 
 def normalize_source_priority(value: object) -> str:
@@ -151,9 +189,45 @@ def normalize_smart_visual_cadence(value: object) -> str:
 
 
 def normalize_fallback_policy(value: object) -> str:
-    """Phase 32: canonical fallback policy (historical default preserved)."""
+    """Phase 32: canonical fallback policy (historical default preserved).
+
+    Phase 33: the fallback POLICY is no longer part of the Smart Visual
+    workflow (selection modes replaced it and nothing is ever generated);
+    the normalizer and its vocabulary stay available so projects saved by
+    older versions keep loading safely.
+    """
     text = str(value or "generate_image").strip().casefold()
     return text if text in FALLBACK_CHOICES else "generate_image"
+
+
+def normalize_smart_visual_mode(value: object) -> str:
+    """Phase 33: canonical selection mode (default Smart Match)."""
+    text = str(value or SMART_MODE_SMART_MATCH).strip().casefold()
+    return text if text in SMART_VISUAL_MODES else SMART_MODE_SMART_MATCH
+
+
+def clamp_smart_image_duration(value: object) -> float:
+    """Phase 33: the single inserted-image duration in seconds."""
+    try:
+        return max(MIN_SMART_IMAGE_DURATION, min(MAX_SMART_IMAGE_DURATION, float(value)))
+    except (TypeError, ValueError):
+        return DEFAULT_SMART_IMAGE_DURATION
+
+
+def clamp_smart_insert_percent(value: object) -> int:
+    """Phase 33: share of insert opportunities that try a strong match."""
+    try:
+        return max(0, min(100, int(float(value))))
+    except (TypeError, ValueError):
+        return DEFAULT_SMART_INSERT_PERCENT
+
+
+def clamp_smart_visual_nonce(value: object) -> int:
+    """Phase 33: Randomize counter; tolerant against any stored value."""
+    try:
+        return max(0, int(float(value)))
+    except (TypeError, ValueError):
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +249,25 @@ class SmartVisualProfile:
     # Phase 32: generation toggle + explicit fallback policy. The defaults
     # reproduce the exact Phase-31 behavior (generation allowed; below the
     # threshold try generation, then best existing media, then skip).
+    # Phase 33: these fields are RETAINED for backward compatibility only -
+    # the Smart Visual workflow no longer generates anything and the mode
+    # below fully governs selection. Old projects keep loading unchanged.
     allow_generated: bool = True
     fallback_policy: str = "generate_image"
+    # Phase 33: content-aware selection engine settings.
+    #   smart_match    - best semantic match per region; random only when no
+    #                    candidate reaches SMART_MATCH_THRESHOLD.
+    #   smart_inserts  - mostly random; a strong semantic match is placed at
+    #                    ~insert_percent of the insert opportunities.
+    #   random_only    - seeded random pool draws, no semantic matching.
+    mode: str = SMART_MODE_SMART_MATCH
+    #: Inserted image duration in seconds (one single value, default 5.0).
+    image_duration: float = DEFAULT_SMART_IMAGE_DURATION
+    #: Smart Inserts only: percent of opportunities that try a strong match.
+    insert_percent: int = DEFAULT_SMART_INSERT_PERCENT
+    #: Randomize counter; changes the seeded assignment without touching the
+    #: mode, the duration or the timeline itself.
+    randomize_nonce: int = 0
 
     @property
     def active(self) -> bool:
@@ -223,6 +314,17 @@ def smart_visual_profile_from_settings(settings: object) -> SmartVisualProfile:
         # Phase 32: generation toggle + explicit fallback policy.
         allow_generated=bool(getattr(settings, "smart_visual_allow_generated", True)),
         fallback_policy=normalize_fallback_policy(getattr(settings, "smart_visual_fallback", "generate_image")),
+        # Phase 33: selection mode, image duration, insert frequency and the
+        # Randomize counter. Missing keys (older projects) resolve to the
+        # safe defaults: Smart Match / 5.0 s / 25 % / nonce 0.
+        mode=normalize_smart_visual_mode(getattr(settings, "smart_visual_mode", SMART_MODE_SMART_MATCH)),
+        image_duration=clamp_smart_image_duration(
+            getattr(settings, "smart_visual_image_duration", DEFAULT_SMART_IMAGE_DURATION)
+        ),
+        insert_percent=clamp_smart_insert_percent(
+            getattr(settings, "smart_visual_insert_percent", DEFAULT_SMART_INSERT_PERCENT)
+        ),
+        randomize_nonce=clamp_smart_visual_nonce(getattr(settings, "smart_visual_randomize_nonce", 0)),
     )
 
 
@@ -476,14 +578,73 @@ class MediaIndexEntry:
     keywords: tuple[str, ...]
     title: str
     signature: str
+    # Phase 33: the full tolerant metadata text of this asset (every string
+    # value from its sidecar record - title, description, keywords, topic,
+    # subject, entities, mood, environment, scene, ... - whatever schema the
+    # folder uses). Feeds the semantic vector; nothing here is hardcoded to
+    # one fixed schema.
+    metadata_text: str = ""
 
     def concept_key(self) -> str:
-        return " ".join(self.keywords) + " " + self.category
+        return " ".join(self.keywords) + " " + self.category + " " + self.metadata_text
+
+
+#: Phase 33: sidecar keys whose values are "primary signals" - short,
+#: keyword-like descriptors that also join the hard keyword-overlap bonus
+#: (in addition to the semantic vector). Everything else still joins the
+#: vector through ``metadata_text``; unknown keys are never rejected.
+_SIDECAR_PRIMARY_KEYS = (
+    "keywords", "tags", "title", "topic", "subject", "subjects",
+    "entities", "objects", "scene", "scenes", "mood", "environment",
+    "category",
+)
+#: Keys that only identify the file itself and never describe its content.
+_SIDECAR_IGNORED_KEYS = ("file", "filename", "path")
+
+
+def _sidecar_text_values(value: object) -> list[str]:
+    """Flatten one tolerant sidecar value into plain text fragments."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (int, float)):
+        return [str(value)]
+    if isinstance(value, (list, tuple)):
+        parts: list[str] = []
+        for item in value:
+            parts.extend(_sidecar_text_values(item))
+        return parts
+    if isinstance(value, dict):
+        parts = []
+        for nested in value.values():
+            parts.extend(_sidecar_text_values(nested))
+        return parts
+    return [str(value)]
 
 
 def _file_signature(path: Path) -> str:
     stat = path.stat()
     return f"{stat.st_size}|{stat.st_mtime_ns}"
+
+
+def _sidecar_signature(folder: Path) -> str:
+    """Phase 33: identity of the folder's metadata sidecars.
+
+    Editing ``smart_metadata.json``/``smart_metadata.csv`` changes this
+    signature, which invalidates the folder's index cache so enriched
+    metadata is re-read without waiting for the media files to change.
+    """
+    parts: list[str] = []
+    for name in ("smart_metadata.json", "smart_metadata.csv"):
+        sidecar = folder / name
+        try:
+            if sidecar.is_file():
+                stat = sidecar.stat()
+                parts.append(f"{name}:{stat.st_size}|{stat.st_mtime_ns}")
+        except OSError:
+            continue
+    return ";".join(parts)
 
 
 def load_sidecar_metadata(folder: Path) -> dict[str, dict]:
@@ -541,6 +702,8 @@ def scan_smart_visual_folders(folders: tuple[str, ...] | list[str]) -> list[Medi
                 continue
             seen.add(key)
             meta = sidecar.get(path.name.casefold(), {})
+            if not isinstance(meta, dict):
+                meta = {}
             try:
                 signature = _file_signature(path)
             except OSError:
@@ -549,6 +712,27 @@ def scan_smart_visual_folders(folders: tuple[str, ...] | list[str]) -> list[Medi
             keywords = [str(k).casefold() for k in (meta.get("keywords", []) or []) if str(k).strip()]
             keywords += content_tokens(title)
             keywords += content_tokens(path.stem.replace("_", " ").replace("-", " "))
+
+            # Phase 33: tolerant metadata harvest. We do NOT assume one fixed
+            # schema. Every string-like value in the sidecar record becomes
+            # part of ``metadata_text`` (semantic vector); values under the
+            # well-known primary keys additionally strengthen the hard
+            # keyword-overlap signal. Unknown keys are still harvested into
+            # ``metadata_text`` so richer schemas keep working.
+            metadata_fragments: list[str] = []
+            for raw_key, raw_value in meta.items():
+                key_name = str(raw_key or "").strip().casefold()
+                if not key_name or key_name in _SIDECAR_IGNORED_KEYS:
+                    continue
+                for fragment in _sidecar_text_values(raw_value):
+                    text = fragment.strip()
+                    if not text:
+                        continue
+                    metadata_fragments.append(text)
+                    if key_name in _SIDECAR_PRIMARY_KEYS:
+                        keywords.extend(content_tokens(text))
+            metadata_text = " ".join(metadata_fragments)
+
             entry_category = str(meta.get("category", "") or "").casefold() or category
             ordered: list[str] = []
             for keyword in keywords:
@@ -563,6 +747,7 @@ def scan_smart_visual_folders(folders: tuple[str, ...] | list[str]) -> list[Medi
                     keywords=tuple(ordered),
                     title=title,
                     signature=signature,
+                    metadata_text=metadata_text,
                 )
             )
     return entries
@@ -602,11 +787,13 @@ def build_media_index(
             continue
         cache_path = _index_cache_path(cache_dir, folder_text)
         cached: dict[str, dict] = {}
+        cached_sidecar = ""
         try:
             if cache_path.is_file():
                 raw = json.loads(cache_path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     cached = {str(k): v for k, v in (raw.get("entries") or {}).items() if isinstance(v, dict)}
+                    cached_sidecar = str(raw.get("sidecar_signature") or "")
         except (OSError, json.JSONDecodeError):
             cached = {}
         try:
@@ -614,6 +801,11 @@ def build_media_index(
         except OSError:
             stats.errors += 1
             continue
+        # Phase 33: editing the metadata sidecars changes the enrichment, so
+        # a sidecar change invalidates the cached entries of this folder.
+        sidecar_now = _sidecar_signature(Path(folder_text).expanduser())
+        if cached_sidecar != sidecar_now:
+            cached = {}
         fresh_by_path = {entry.path: entry for entry in fresh}
         stats.removed += max(0, len(cached) - len(fresh_by_path))
         entries_for_cache: dict[str, dict] = {}
@@ -628,6 +820,7 @@ def build_media_index(
                     keywords=tuple(cached_entry.get("keywords", entry.keywords)),
                     title=str(cached_entry.get("title", entry.title)),
                     signature=entry.signature,
+                    metadata_text=str(cached_entry.get("metadata_text", entry.metadata_text) or ""),
                 )
                 all_entries.append(restored)
                 entries_for_cache[path] = cached_entry
@@ -640,11 +833,20 @@ def build_media_index(
                     "category": entry.category,
                     "keywords": list(entry.keywords),
                     "title": entry.title,
+                    "metadata_text": entry.metadata_text,
                 }
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(
-                json.dumps({"folder": folder_text, "entries": entries_for_cache}, ensure_ascii=False, indent=1),
+                json.dumps(
+                    {
+                        "folder": folder_text,
+                        "sidecar_signature": sidecar_now,
+                        "entries": entries_for_cache,
+                    },
+                    ensure_ascii=False,
+                    indent=1,
+                ),
                 encoding="utf-8",
             )
         except OSError:
@@ -755,10 +957,24 @@ class SmartVisualSlot:
     # FALLBACK_GENERATED / FALLBACK_RANDOM_VIDEO / FALLBACK_RANDOM_IMAGE /
     # FALLBACK_BEST_AVAILABLE / SKIPPED). Empty until the slot is decided.
     fallback_mode: str = ""
+    # Phase 33: SMART = placed by semantic matching, RANDOM = seeded pool
+    # draw (fallback or mode-driven). Empty until the slot is decided.
+    source_mode: str = ""
+    # Phase 33: duration of the inserted image element in seconds (the
+    # profile's single configurable image duration). 0.0 = legacy behavior
+    # (derive the duration from the slot's context window).
+    insert_duration: float = 0.0
 
     @property
     def clamped_duration(self) -> float:
         return max(MIN_SLOT_SECONDS, min(MAX_SLOT_SECONDS, float(self.end) - float(self.start)))
+
+    @property
+    def effective_insert_duration(self) -> float:
+        """Phase 33: the real duration of the inserted element."""
+        if self.insert_duration > 0:
+            return max(MIN_SMART_IMAGE_DURATION, min(MAX_SMART_IMAGE_DURATION, float(self.insert_duration)))
+        return self.clamped_duration
 
 
 @dataclass(slots=True)
@@ -797,6 +1013,12 @@ class SmartVisualPlan:
                     "image_transition": self.image_transition_label or "project",
                     "image_effect": self.image_effect_label or "none",
                     "image_effect_intensity": self.image_effect_intensity_label or "low",
+                    # Phase 33 Analyze Timeline extensions: which engine
+                    # picked the media, the real inserted duration and the
+                    # local context the selection was matched against.
+                    "source": slot.source_mode or ("SMART" if slot.selected_kind else "NONE"),
+                    "insert_duration": round(slot.effective_insert_duration, 2),
+                    "context": slot.sentence[:120],
                 }
             )
         return records
@@ -807,6 +1029,7 @@ def smart_plan_identity(
     slots: list[SmartVisualSlot],
     geometry: tuple[int, int, float],
     phase32: dict | None = None,
+    phase33: dict | None = None,
 ) -> str:
     """Deterministic Stage-1 identity of the smart visual plan."""
     slot_records: list[dict] = []
@@ -840,6 +1063,19 @@ def smart_plan_identity(
         "cadence": profile.cadence,
         "geometry": [int(geometry[0]), int(geometry[1]), round(float(geometry[2]), 6)],
         "slots": slot_records,
+        # Phase 33: the selection engine identity. Smart Visuals is now a
+        # pure selection engine (nothing is ever generated), so every active
+        # plan carries the mode, the single image duration, the Smart
+        # Inserts frequency and the Randomize nonce. This intentionally
+        # invalidates pre-Phase-33 smart visual caches exactly once.
+        "phase33": phase33
+        or {
+            "engine": "selection",
+            "mode": profile.mode,
+            "image_duration": round(float(profile.image_duration), 3),
+            "insert_percent": int(profile.insert_percent),
+            "nonce": int(profile.randomize_nonce),
+        },
     }
     # Phase 32: fallback policy/generation toggle and the dedicated image
     # rendering settings extend the identity ONLY when they deviate from
@@ -889,6 +1125,166 @@ def _probe_video_entry(path: str, ffprobe_path: str | Path) -> dict | None:
     }
 
 
+def _shared_signal_tokens(slot_keywords: tuple[str, ...], entry: MediaIndexEntry) -> tuple[str, ...]:
+    """Phase 33: explainable overlap between the local timeline context and
+    one asset's metadata (the "why was this selected" signals)."""
+    entry_tokens = set(content_tokens(" ".join(entry.keywords)))
+    entry_tokens.update(content_tokens(entry.category))
+    entry_tokens.update(content_tokens(entry.metadata_text))
+    shared: list[str] = []
+    for token in slot_keywords:
+        for concept in concept_vector([token]):
+            if concept in entry_tokens and concept not in shared:
+                shared.append(concept)
+    return tuple(shared[:4])
+
+
+def assign_smart_visual_selections(
+    timed: list,
+    entries: list[MediaIndexEntry],
+    *,
+    profile: SmartVisualProfile,
+    rng: Random,
+) -> list[SmartVisualSlot]:
+    """Phase 33: content-aware, uniqueness-aware media assignment.
+
+    Smart Visuals is a SELECTION engine: it only picks existing media from
+    the configured pools and NEVER generates anything. The three modes:
+
+    * ``smart_match``   - best semantic match per region; a seeded random
+      pool draw only when nothing reaches SMART_MATCH_THRESHOLD.
+    * ``smart_inserts`` - mostly random; only at ~insert_percent of the
+      insert opportunities a strong match (SMART_INSERT_STRONG_THRESHOLD)
+      is placed, everything else stays random.
+    * ``random_only``   - seeded random draws, no semantic matching.
+
+    Uniqueness: every asset is used at most once while unused pool assets
+    remain; once the pool is exhausted an asset may repeat, but never
+    back-to-back whenever an alternative exists. Diversity only ever breaks
+    ties AFTER relevance and uniqueness.
+    """
+    slots: list[SmartVisualSlot] = []
+    pool = list(entries)
+    entry_vectors = {entry.path: concept_vector(entry.concept_key()) for entry in pool}
+    used_counts: dict[str, int] = {}
+    last_pick: str = ""
+    image_duration = clamp_smart_image_duration(profile.image_duration)
+    gate_images_first = True
+
+    def _unused(candidate: MediaIndexEntry) -> bool:
+        return used_counts.get(candidate.path, 0) == 0
+
+    def _pick_random(reason: str) -> MediaIndexEntry | None:
+        nonlocal last_pick
+        if not pool:
+            return None
+        images = [entry for entry in pool if entry.kind == "image"]
+        candidates = images if (gate_images_first and images) else pool
+        fresh = [entry for entry in candidates if _unused(entry)]
+        if not fresh:
+            # Pool exhausted: reuse is allowed, but never the asset that was
+            # just placed (avoid immediate back-to-back repeats).
+            fresh = [entry for entry in candidates if entry.path != last_pick]
+        if not fresh:
+            fresh = list(candidates)
+        chosen = rng.choice(sorted(fresh, key=lambda entry: entry.path))
+        return chosen
+
+    for slot in timed:
+        visual = SmartVisualSlot(
+            start=slot.start,
+            end=slot.end,
+            topic=" ".join(slot.draft.keywords[:4]) or "general",
+            sentence=slot.draft.text[:200],
+            keywords=tuple(slot.draft.keywords),
+            insert_duration=image_duration,
+        )
+        slots.append(visual)
+
+        chosen: MediaIndexEntry | None = None
+        if profile.mode == SMART_MODE_RANDOM_ONLY:
+            chosen = _pick_random("random_only_mode")
+            if chosen is not None:
+                visual.source_mode = SLOT_SOURCE_RANDOM
+                visual.reason = "random_only_mode"
+                visual.fallback_mode = SLOT_MODE_FALLBACK_RANDOM_IMAGE
+        else:
+            query_vector = concept_vector(slot.draft.text)
+            scored = sorted(
+                (
+                    (
+                        score_candidate(
+                            query_vector, slot.draft.keywords, entry, entry_vectors[entry.path],
+                        ),
+                        entry,
+                    )
+                    for entry in pool
+                ),
+                key=lambda pair: (-pair[0], pair[1].path),
+            )
+            gate = (
+                SMART_INSERT_STRONG_THRESHOLD
+                if profile.mode == SMART_MODE_SMART_INSERTS
+                else SMART_MATCH_THRESHOLD
+            )
+            attempt_smart = True
+            if profile.mode == SMART_MODE_SMART_INSERTS:
+                attempt_smart = rng.random() * 100.0 < float(profile.insert_percent)
+            if attempt_smart:
+                above = [(score, entry) for score, entry in scored if score >= gate]
+                unused_above = [(score, entry) for score, entry in above if _unused(entry)]
+                if unused_above:
+                    if profile.mode == SMART_MODE_SMART_MATCH and profile.randomize_nonce:
+                        # Randomize explores alternate GOOD matches: draw from
+                        # the top-K still-relevant unused candidates.
+                        top_k = unused_above[: max(1, SMART_MATCH_TOP_K)]
+                        score, chosen = top_k[rng.randrange(len(top_k))]
+                    else:
+                        score, chosen = unused_above[0]
+                    visual.source_mode = SLOT_SOURCE_SMART
+                    visual.reason = "matched"
+                    visual.fallback_mode = SLOT_MODE_MATCH
+                elif above:
+                    # Pool exhausted: every relevant asset was already used
+                    # once - reuse the best match but avoid an immediate
+                    # back-to-back repeat whenever an alternative exists.
+                    alternatives = [(score, entry) for score, entry in above if entry.path != last_pick]
+                    score, chosen = (alternatives or above)[0]
+                    visual.source_mode = SLOT_SOURCE_SMART
+                    visual.reason = "matched_pool_exhausted_reuse"
+                    visual.fallback_mode = SLOT_MODE_MATCH
+                else:
+                    chosen = None
+                if chosen is not None:
+                    visual.score = score
+                    signals = _shared_signal_tokens(visual.keywords, chosen)
+                    if signals:
+                        visual.reason += ":" + "+".join(signals)
+            if chosen is None:
+                reason = (
+                    "smart_insert_random_baseline"
+                    if profile.mode == SMART_MODE_SMART_INSERTS and not attempt_smart
+                    else "smart_fallback_random_no_relevant_match"
+                )
+                chosen = _pick_random(reason)
+                if chosen is not None:
+                    visual.source_mode = SLOT_SOURCE_RANDOM
+                    visual.reason = reason
+                    visual.fallback_mode = SLOT_MODE_FALLBACK_RANDOM_IMAGE
+
+        if chosen is None:
+            visual.reason = "skipped_no_media"
+            visual.fallback_mode = SLOT_MODE_SKIPPED
+            visual.source_mode = ""
+            continue
+        visual.selected_kind = chosen.kind
+        visual.selected_path = chosen.path
+        visual.selected_label = f"{Path(chosen.path).name} [{chosen.kind}, {chosen.category}]"
+        used_counts[chosen.path] = used_counts.get(chosen.path, 0) + 1
+        last_pick = chosen.path
+    return slots
+
+
 def build_smart_visual_plan(
     *,
     profile: SmartVisualProfile,
@@ -909,12 +1305,14 @@ def build_smart_visual_plan(
 ) -> SmartVisualPlan:
     """Build the complete Smart Visual plan BEFORE any rendering happens.
 
-    Phase 32: the ``image_*`` parameters describe the profile's dedicated
-    image rendering (transition type/duration, visual effect + intensity).
-    They feed the plan preview and the plan identity; the defaults keep the
-    exact Phase-31 plan behavior and identity.
+    Phase 33: Smart Visuals is a pure content-aware SELECTION + placement
+    engine. It matches the local timeline context against the metadata of
+    the existing pool media and never generates anything - there is no
+    generation provider, no hidden generation fallback and no generation
+    cache path left in this workflow. The ``image_*`` parameters describe
+    the profile's dedicated image rendering (Phase 32) and feed the plan
+    preview and identity.
     """
-    from .image_generation import resolve_generation_provider
     from .image_timeline import (
         normalize_image_transition_choice,
         normalize_visual_effect,
@@ -954,168 +1352,24 @@ def build_smart_visual_plan(
             f"Medienindex: {len(entries)} Datei(en) ({stats.indexed} neu, {stats.reused} wiederverwendet, "
             f"{stats.errors} Fehler)."
         )
-        entry_vectors = {entry.path: concept_vector(list(entry.keywords) + [entry.category]) for entry in entries}
-
-        # Stage D: provider availability (no model init when disabled).
-        # Phase 32: when generation is toggled OFF, NO provider is resolved
-        # at all - no generation request can ever be made.
-        if profile.allow_generated:
-            provider, provider_notes = resolve_generation_provider(ffmpeg_path)
-            plan.diagnostics.extend(provider_notes)
-        else:
-            provider = None
-            plan.diagnostics.append(
-                "Erzeugung deaktiviert (Allow Generated Images OFF) - die Fallback-Richtlinie entscheidet."
-            )
-
-        generation_dir = Path(cache_dir) / "smart_visual_generated"
-        seed_material = "|".join(str(part) for part in seed_parts) + f"|{width}x{height}@{round(float(fps), 6)}"
+        # Phase 33: Stage D/E is the content-aware SELECTION pass. No
+        # generation provider is ever resolved here: Smart Visuals only
+        # picks existing media from the configured pools. Weak matches fall
+        # back to a seeded random pool draw - never to generation.
+        seed_material = (
+            "|".join(str(part) for part in seed_parts)
+            + f"|{width}x{height}@{round(float(fps), 6)}"
+            + f"|nonce={int(profile.randomize_nonce)}|mode={profile.mode}"
+        )
         rng = Random(int(hashlib.sha256(seed_material.encode("utf-8")).hexdigest()[:12], 16))
-        threshold = profile.threshold
-        recent: list[str] = []
-        window = max(0, int(profile.repetition_window))
-
-        for number, slot in enumerate(timed, start=1):
-            query_vector = concept_vector(slot.draft.text)
-            query_keywords = slot.draft.keywords
-            candidates = []
-            for entry in entries:
-                score = score_candidate(
-                    query_vector, query_keywords, entry, entry_vectors[entry.path],
-                    recent_paths=tuple(recent[-window:]) if window else (),
-                )
-                candidates.append((score, entry))
-            candidates.sort(key=lambda pair: (-pair[0], pair[1].path))
-
-            visual = SmartVisualSlot(
-                start=slot.start,
-                end=slot.end,
-                topic=" ".join(query_keywords[:4]) or "general",
-                sentence=slot.draft.text[:200],
-                keywords=tuple(query_keywords),
-            )
-            plan.slots.append(visual)
-
-            wants_generation = bool(profile.allow_generated) and strategy_wants_generation(
-                profile.generation_strategy, profile.generation_percent, number, rng
-            )
-            prompt = build_generation_prompt(query_keywords, profile.style, profile.style_custom, width, height)
-            visual.prompt = prompt
-
-            def try_generate(reason: str, mode: str) -> bool:
-                if provider is None:
-                    return False
-                # The seed derives from the PROMPT, not the slot number: a
-                # repeated sentence therefore hits the exact same cache key
-                # and its generated visual is reused (spec section 46-E).
-                prompt_seed = int(hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8], 16)
-                result = provider.generate(
-                    prompt, width, height,
-                    style=profile.style, seed=prompt_seed, cache_dir=generation_dir,
-                )
-                plan.diagnostics.extend(result.diagnostics[:1])
-                if result.path is None:
-                    return False
-                visual.selected_kind = "generated"
-                visual.selected_path = str(result.path)
-                visual.selected_label = f"Generated ({provider.name})"
-                visual.reason = reason
-                visual.generation_used = True
-                visual.fallback_mode = mode
-                return True
-
-            matched = [(score, entry) for score, entry in candidates if score >= threshold]
-
-            def pick_existing(pool: list[tuple[float, MediaIndexEntry]], reason: str, mode: str) -> bool:
-                if not pool:
-                    return False
-                preferred: list[tuple[float, MediaIndexEntry]]
-                if profile.source_priority == "video_first":
-                    preferred = [pair for pair in pool if pair[1].kind == "video"] or \
-                                [pair for pair in pool if pair[1].kind == "image"] or pool
-                elif profile.source_priority == "image_first":
-                    preferred = [pair for pair in pool if pair[1].kind == "image"] or \
-                                [pair for pair in pool if pair[1].kind == "video"] or pool
-                elif profile.source_priority == "balanced":
-                    best_score = pool[0][0]
-                    ties = [pair for pair in pool if best_score - pair[0] <= 0.02]
-                    preferred = [pair for pair in ties if pair[1].kind == "image"] or pool
-                else:  # best_match
-                    preferred = pool
-                score, entry = preferred[0]
-                visual.selected_kind = entry.kind
-                visual.selected_path = entry.path
-                visual.selected_label = f"{Path(entry.path).name} [{entry.kind}, {entry.category}]"
-                visual.score = score
-                visual.reason = reason
-                visual.fallback_mode = mode
-                return True
-
-            def pick_random(kind: str, reason: str, mode: str) -> bool:
-                """Phase 32 random fallback: deterministic seeded draw from
-                the configured smart visual pool (no content analysis).
-                Repetition protection is respected whenever alternatives
-                exist; the draw never leaves the profile's own folders."""
-                pool = [entry for entry in entries if entry.kind == kind]
-                if not pool:
-                    return False
-                recent_list = recent[-window:] if window else []
-                recent_set = set(recent_list)
-                fresh = [entry for entry in pool if entry.path not in recent_set]
-                if not fresh and recent_list:
-                    # The window is larger than the pool: still avoid the
-                    # IMMEDIATELY previous pick whenever an alternative exists.
-                    fresh = [entry for entry in pool if entry.path != recent_list[-1]]
-                chosen = rng.choice(fresh if fresh else pool)
-                visual.selected_kind = chosen.kind
-                visual.selected_path = chosen.path
-                visual.selected_label = f"{Path(chosen.path).name} [{chosen.kind}, {chosen.category}]"
-                visual.score = 0.0
-                visual.reason = reason
-                visual.fallback_mode = mode
-                return True
-
-            if wants_generation and try_generate("generation_strategy", SLOT_MODE_GENERATED):
-                pass
-            elif matched and pick_existing(matched, "matched", SLOT_MODE_MATCH):
-                pass
-            else:
-                # Phase 32: the explicit fallback policy decides below the
-                # threshold. "generate_image" keeps the exact historical
-                # Phase-31 flow (generate, then best existing, then skip).
-                policy = profile.fallback_policy
-                if policy == "generate_image":
-                    if try_generate("below_threshold_generated", SLOT_MODE_FALLBACK_GENERATED):
-                        pass
-                    elif pick_existing(candidates, "fallback_best_existing", SLOT_MODE_FALLBACK_BEST_AVAILABLE):
-                        plan.diagnostics.append(
-                            f"Slot {number}: kein Treffer über Schwelle {threshold:.2f} - bestes vorhandenes Medium als Fallback."
-                        )
-                elif policy == "random_video":
-                    if not pick_random("video", "fallback_random_video", SLOT_MODE_FALLBACK_RANDOM_VIDEO):
-                        plan.diagnostics.append(
-                            f"Slot {number}: Random-Video-Fallback ohne verfügbare Videos - Slot übersprungen."
-                        )
-                elif policy == "random_image":
-                    if not pick_random("image", "fallback_random_image", SLOT_MODE_FALLBACK_RANDOM_IMAGE):
-                        plan.diagnostics.append(
-                            f"Slot {number}: Random-Bild-Fallback ohne verfügbare Bilder - Slot übersprungen."
-                        )
-                elif policy == "best_available":
-                    if pick_existing(candidates, "fallback_best_existing", SLOT_MODE_FALLBACK_BEST_AVAILABLE):
-                        plan.diagnostics.append(
-                            f"Slot {number}: kein Treffer über Schwelle {threshold:.2f} - bestes vorhandenes Medium als Fallback."
-                        )
-                # policy == "skip" falls through to the skip branch below.
-            if not visual.selected_kind:
-                visual.reason = "skipped_no_media"
-                visual.fallback_mode = SLOT_MODE_SKIPPED
-                plan.diagnostics.append(f"Slot {number}: keine Medien und keine Erzeugung - Slot übersprungen.")
-                continue
-            recent.append(visual.selected_path)
-            if window and len(recent) > window:
-                recent = recent[-window:]
-
+        plan.slots = assign_smart_visual_selections(timed, entries, profile=profile, rng=rng)
+        skipped = sum(1 for slot in plan.slots if not slot.selected_kind)
+        smart_count = sum(1 for slot in plan.slots if slot.source_mode == SLOT_SOURCE_SMART)
+        random_count = sum(1 for slot in plan.slots if slot.source_mode == SLOT_SOURCE_RANDOM)
+        plan.diagnostics.append(
+            f"Auswahlmodus {profile.mode}: {smart_count} smart, {random_count} zufällig, "
+            f"{skipped} übersprungen (Bilddauer {clamp_smart_image_duration(profile.image_duration):.1f}s)."
+        )
         # Phase 32: conditional plan-identity extension. Fallback/generation
         # settings join only when they deviate from the Phase-31 defaults;
         # the dedicated image rendering joins only when it deviates from the
@@ -1142,14 +1396,15 @@ def build_smart_visual_plan(
                 phase32=phase32_identity or None,
             )
         log(
-            f"Phase 31 Smart Visuals: {plan.selected_count}/{len(plan.slots)} Slot(s) belegt "
-            f"(Schwelle {threshold:.2f}, Strategie {profile.generation_strategy})."
+            f"Phase 33 Smart Visuals: {plan.selected_count}/{len(plan.slots)} Slot(s) belegt "
+            f"(Modus {profile.mode}, Bilddauer {clamp_smart_image_duration(profile.image_duration):.1f}s, "
+            f"Inserts {int(profile.insert_percent)}%)."
         )
     except Exception as exc:  # spec section 32: never break the render
         plan.diagnostics.append(f"Smart-Visual-Planung fehlgeschlagen, Fallback auf normale Auswahl: {exc}")
         plan.slots = []
         plan.identity = ""
-        log(f"Phase 31 Smart Visuals: Planung übersprungen ({exc.__class__.__name__}).")
+        log(f"Phase 33 Smart Visuals: Planung übersprungen ({exc.__class__.__name__}).")
     return plan
 
 
@@ -1243,7 +1498,10 @@ def apply_smart_visual_plan(
     for slot in plan.slots:
         if not slot.selected_kind:
             continue
-        duration = _frame_grid(slot.clamped_duration, ceil=True)
+        # Phase 33: the inserted element uses the profile's single image
+        # duration when the plan provides one; legacy plans (insert_duration
+        # == 0) keep deriving the duration from the slot's context window.
+        duration = _frame_grid(slot.effective_insert_duration, ceil=True)
         midpoint = (float(slot.start) + float(slot.end)) / 2.0
         # Find the item containing the slot midpoint, then place the visual at
         # whichever of the item's two edges is closest to the midpoint. When
@@ -1319,7 +1577,8 @@ def apply_smart_visual_plan(
     result.media = new_media
     result.identity = plan.identity
     log(
-        f"Phase 31 Smart Visuals: {result.count} Visual(s) eingefügt "
-        f"({sum(1 for item in result.inserted if item[3] == 'generated')} erzeugt)."
+        f"Phase 33 Smart Visuals: {result.count} Visual(s) eingefügt "
+        f"({sum(1 for item in result.inserted if item[3] == 'image')} Bild(er), "
+        f"{sum(1 for item in result.inserted if item[3] == 'video')} Video(s) - nichts erzeugt)."
     )
     return result
