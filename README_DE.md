@@ -1,5 +1,20 @@
 # VideoMerger 1.5.0 für Windows
 
+## Neu in Phase 33
+
+### Smart Visuals: inhaltsbasierte Auswahl (ohne Generierung)
+
+Smart Visuals **wählt jetzt vorhandene Bilder und Videos** aus den konfigurierten Pool-Ordnern aus und platziert sie in der Timeline — es werden keine Medien mehr generiert. Die Auswahl ist semantisch und nachvollziehbar: Jede Platzierung dokumentiert, ob es ein Smart-Match oder eine Random-Auswahl war, inkl. Score und Begründung.
+
+* **Drei Modi** — **Smart Match** (bestes Match pro Bereich, darunter zufällige vorhandene Auswahl), **Smart Inserts** (überwiegend zufällig; starke Matches bei ~25 % der Einfügepunkte, konfigurierbar) und **Random Only** (Baseline/Debug).
+* **Einheitliche Bilddauer** — ein einzelner Wert (Standard 5,0 s), gleichmäßig auf jedes eingefügte Visual angewendet.
+* **Einmaligkeit** — jedes Pool-Asset wird höchstens einmal verwendet, solange noch ungenutzte Assets vorhanden sind; Wiederverwendung erst nach Erschöpfung des Pools und nie zweimal direkt hintereinander.
+* **Analyze Timeline** zeigt eine Vorschau des Plans ohne Rendering (Start/Ende/Dauer, Typ, Dateiname, Smart/Random, Score, Begründung). **Randomize Timeline** erzeugt eine neue gültige Belegung, ohne Modus, Dauer oder Timeline zu verändern.
+* **Image Timeline & Visual Effects** (Motion, TV-Effekt pro Bild, globaler TV-Overlay) sind jederzeit anklickbar und bleiben unabhängig von der Bildauswahl.
+* **Typewriter** — *Hold After Typing* ist jetzt standardmäßig **3,0 s** für neue/ungesetzte Konfigurationen; explizit gespeicherte Werte bleiben erhalten.
+
+Ältere Projekte laden mit sicheren Standardwerten und behalten jeden explizit gespeicherten Wert. Details in `PHASE33_DELIVERY.md`.
+
 ## Neu in Phase 27
 
 ### Mehrere Hintergrundmusik-Tracks
