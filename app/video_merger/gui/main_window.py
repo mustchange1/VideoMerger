@@ -2207,7 +2207,9 @@ class MainWindow(QMainWindow):
             w["background_darken"].setValue(int(value("background_darken", 0)))
             w["background_blur"].setChecked(bool(value("background_blur", False)))
             w["background_zoom"].setChecked(bool(value("background_zoom", False)))
-            w["hold_seconds"].setValue(float(value("hold_seconds", 0.5)))
+            # Phase 33: a missing hold value resolves to the new 3.0 s
+            # default; every explicitly saved value is preserved.
+            w["hold_seconds"].setValue(float(value("hold_seconds", 3.0)))
             set_combo("transition", str(value("transition", "project")), "project")
             set_combo("music_mode", str(value("music_mode", "start_with_video")), "start_with_video")
             # Phase 32 completion sound (default ON / Enter-Return / 40 %).
@@ -2360,6 +2362,9 @@ class MainWindow(QMainWindow):
         w["hold_seconds"] = put(QDoubleSpinBox(), row, 3)
         w["hold_seconds"].setRange(0.0, 10.0)
         w["hold_seconds"].setSingleStep(0.1)
+        # Phase 33: new/unset configurations default to 3.0 s; an explicitly
+        # saved value always wins when the project is loaded.
+        w["hold_seconds"].setValue(3.0)
         row += 1
 
         w["background_image_enabled"] = put(QCheckBox("Background Image (OFF = dark neutral)"), row, 0, 1, 2)
@@ -2631,16 +2636,22 @@ class MainWindow(QMainWindow):
         widgets["duration_spin"].setEnabled(active and custom)
         widgets["duration_min"].setEnabled(active and duration_mode == "range")
         widgets["duration_max"].setEnabled(active and duration_mode == "range")
-        widgets["motion"].setEnabled(active)
-        widgets["effect"].setEnabled(active)
-        widgets["effect_intensity"].setEnabled(active and str(widgets["effect"].currentData() or "off") != "off")
-        widgets["flicker"].setEnabled(active and str(widgets["effect"].currentData() or "off") != "off")
+        # Phase 33: the visual-effect selectors are ALWAYS clickable - the
+        # choice of effect is independent from the image insertion mode, so
+        # the section is usable even before insertions are switched on.
+        # Rendering still applies them only when they are actually active
+        # (inserted images / a non-"off" global overlay).
+        widgets["motion"].setEnabled(True)
+        widgets["effect"].setEnabled(True)
+        widgets["effect_intensity"].setEnabled(str(widgets["effect"].currentData() or "off") != "off")
+        widgets["flicker"].setEnabled(str(widgets["effect"].currentData() or "off") != "off")
         # The global overlay is independent from the image insertions; it only
         # needs to be switched on deliberately.
+        widgets["global_effect"].setEnabled(True)
         global_on = str(widgets["global_effect"].currentData() or "off") != "off"
         widgets["global_intensity"].setEnabled(global_on)
         widgets["global_flicker"].setEnabled(global_on)
-        widgets["preview_button"].setEnabled(active)
+        widgets["preview_button"].setEnabled(True)
 
     def _image_timeline_add_folder(self, prefix: str) -> None:
         widgets = self._image_timeline_widgets[prefix]
@@ -2933,12 +2944,15 @@ class MainWindow(QMainWindow):
         return kwargs
 
     # ------------------------------------------------------------------
-    # Phase 31: Smart Visual Hybrid widgets. One section per output profile
-    # (Long-Form / Shorts); each profile owns its folder list, matching
-    # threshold, generation strategy, style and repetition protection. The
-    # feature defaults to DISABLED with empty folders, so the historical
-    # selection paths (Manual/Random/Folder and the Phase-30 image timeline)
-    # stay exactly as they are until it is explicitly switched on.
+    # Phase 33: Smart Visual selection widgets. One section per output
+    # profile (Long-Form / Shorts); each profile owns its media folders,
+    # the selection mode, the single image duration, the Smart Insert
+    # frequency and the Analyze/Randomize tools. Smart Visuals is a pure
+    # content-aware SELECTION engine - it only places existing media and
+    # never generates anything. The feature defaults to DISABLED with empty
+    # folders, so the historical selection paths (Manual/Random/Folder and
+    # the Phase-30 image timeline) stay exactly as they are until it is
+    # explicitly switched on.
     # ------------------------------------------------------------------
     # Phase 33: Smart Visuals selection modes. Generation is no longer part
     # of the workflow; weak matches fall back to a random EXISTING asset.
@@ -2994,8 +3008,10 @@ class MainWindow(QMainWindow):
         w["folders"].setToolTip(
             "Images (PNG/JPG/JPEG/WEBP/BMP) and videos (MP4/MOV/MKV/WEBM/M4V/AVI) are "
             "indexed from these folders. The folder name becomes the category; an optional "
-            "smart_metadata.json or smart_metadata.csv adds titles/keywords. The index is "
-            "cached and only new/changed files are rescanned."
+            "smart_metadata.json or smart_metadata.csv enriches matching - every metadata "
+            "field is read tolerantly (title, description, keywords, topic, subject, "
+            "entities, mood, environment, scene, ...; no fixed schema required). The index "
+            "is cached and only new/changed files are rescanned."
         )
         w["add_folder"] = put(QPushButton("Add Media Folder …"), row, 3)
         w["remove_folder"] = put(QPushButton("Remove"), row + 1, 3)

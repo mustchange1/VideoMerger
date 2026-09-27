@@ -118,7 +118,9 @@ def test_volume_and_hold_clamps():
     assert clamp_sound_volume("abc") == 30
     assert clamp_hold_seconds(25) == 10.0
     assert clamp_hold_seconds(-1) == 0.0
-    assert clamp_hold_seconds("abc") == 0.5
+    # Phase 33: an unparseable hold value counts as "unset" and resolves to
+    # the new 3.0 s default (explicitly saved values are always preserved).
+    assert clamp_hold_seconds("abc") == 3.0
 
 
 # --------------------------------------------------------------------------- #
@@ -318,7 +320,8 @@ def test_missing_fields_fall_back_to_spec_defaults():
     assert not profile.background_image_enabled
     assert profile.background_darken == 0
     assert not (profile.background_blur or profile.background_zoom)
-    assert profile.hold_seconds == 0.5
+    # Phase 33: missing/unset hold resolves to the new 3.0 s default.
+    assert profile.hold_seconds == 3.0
     assert profile.transition == "project"
     assert profile.music_mode == "start_with_video"
 
@@ -602,12 +605,13 @@ def test_model_defaults_match_specification():
     assert settings.typewriter_h_align == "Center"
     assert settings.typewriter_bold is True
     assert settings.typewriter_color == "#FFFFFF"
-    assert settings.typewriter_hold_seconds == 0.5
+    # Phase 33: the model default for NEW/unset configurations is 3.0 s.
+    assert settings.typewriter_hold_seconds == 3.0
     assert settings.typewriter_transition == "project"
     assert settings.typewriter_music_mode == "start_with_video"
     assert settings.short_typewriter_intro_enabled is False
     assert settings.short_typewriter_hook_text == ""
-    assert settings.short_typewriter_hold_seconds == 0.5
+    assert settings.short_typewriter_hold_seconds == 3.0
 
 
 def test_example_settings_contain_all_phase29_keys_with_defaults():

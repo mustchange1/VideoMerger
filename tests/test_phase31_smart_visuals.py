@@ -385,7 +385,10 @@ def test_build_plan_matches_existing_image_without_generation(tmp_path, ffmpeg_p
     assert plan.selected_count >= 1
     matched = [slot for slot in plan.slots if slot.selected_kind == "image"]
     assert matched, plan.to_records()
-    assert all(slot.reason == "matched" for slot in matched)
+    # Phase 33: matched slots carry the explainable "matched:<signals>"
+    # reason and the SMART source tag.
+    assert all(slot.reason.startswith("matched") for slot in matched)
+    assert all(slot.source_mode == "SMART" for slot in matched)
     assert not any(slot.generation_used for slot in plan.slots)
     assert plan.identity
     # The generation cache must stay empty: nothing was generated.
@@ -393,7 +396,11 @@ def test_build_plan_matches_existing_image_without_generation(tmp_path, ffmpeg_p
     assert not generated.exists() or not list(generated.glob("*.png"))
 
 
-def test_build_plan_generates_when_no_match(tmp_path, ffmpeg_paths):
+def test_build_plan_falls_back_to_random_existing_when_no_match(tmp_path, ffmpeg_paths):
+    # Phase 33 contract change: Smart Visuals NEVER generates. When no pool
+    # asset reaches the relevance threshold, the slot falls back to a seeded
+    # random EXISTING asset instead of generating a new image. This replaces
+    # the former ``test_build_plan_generates_when_no_match`` generation test.
     ffmpeg, ffprobe = ffmpeg_paths
     folder = tmp_path / "city"
     _write_image(folder / "city street.png")
@@ -409,11 +416,15 @@ def test_build_plan_generates_when_no_match(tmp_path, ffmpeg_paths):
         seed_parts=("t2",),
         log=lambda *_a, **_k: None,
     )
-    generated = [slot for slot in plan.slots if slot.generation_used]
-    assert generated, plan.to_records()
-    assert all(Path(slot.selected_path).is_file() for slot in generated)
-    assert any("below_threshold_generated" == slot.reason for slot in generated)
-    assert list((tmp_path / "cache" / "smart_visual_generated").glob("*.png"))
+    assert not any(slot.generation_used for slot in plan.slots), plan.to_records()
+    filled = [slot for slot in plan.slots if slot.selected_kind]
+    assert filled, plan.to_records()
+    # Below the threshold every slot is a RANDOM draw from the existing pool.
+    assert all(slot.source_mode == "RANDOM" for slot in filled)
+    assert all(Path(slot.selected_path).is_file() for slot in filled)
+    # Nothing was generated on disk.
+    generated = tmp_path / "cache" / "smart_visual_generated"
+    assert not generated.exists() or not list(generated.glob("*.png"))
 
 
 def test_build_plan_without_media_or_provider_skips_slots(tmp_path, ffmpeg_paths, monkeypatch):
@@ -444,11 +455,16 @@ def test_build_plan_without_media_or_provider_skips_slots(tmp_path, ffmpeg_paths
     assert plan.identity == ""
 
 
-def test_repeated_sentence_reuses_generated_cache(tmp_path, ffmpeg_paths):
+def test_repeated_sentence_is_deterministic_and_reuses_only_when_exhausted(tmp_path, ffmpeg_paths):
+    # Phase 33 contract change: the former generation-cache-reuse test now
+    # verifies the selection engine's determinism and exhaustion rule. With a
+    # single pool asset and two identical sentences, the first slot uses the
+    # asset and the second slot may reuse it ONLY because the pool is
+    # exhausted - and nothing is ever generated.
     ffmpeg, ffprobe = ffmpeg_paths
     folder = tmp_path / "city"
     _write_image(folder / "city street.png")
-    profile = _plan_settings(tmp_path, folder, generation_strategy="always")
+    profile = _plan_settings(tmp_path, folder)
     plan = build_smart_visual_plan(
         profile=profile,
         script_text="The night sky is dark. The night sky is dark.",
@@ -460,10 +476,24 @@ def test_repeated_sentence_reuses_generated_cache(tmp_path, ffmpeg_paths):
         seed_parts=("t4",),
         log=lambda *_a, **_k: None,
     )
-    generated = [slot for slot in plan.slots if slot.generation_used]
-    assert len(generated) == 2
-    assert generated[0].selected_path == generated[1].selected_path
-    assert len(list((tmp_path / "cache" / "smart_visual_generated").glob("*.png"))) == 1
+    filled = [slot for slot in plan.slots if slot.selected_kind]
+    assert filled, plan.to_records()
+    assert not any(slot.generation_used for slot in filled)
+    generated = tmp_path / "cache" / "smart_visual_generated"
+    assert not generated.exists() or not list(generated.glob("*.png"))
+    # Determinism: the same seed produces the exact same assignment.
+    plan2 = build_smart_visual_plan(
+        profile=profile,
+        script_text="The night sky is dark. The night sky is dark.",
+        program_duration=6.0,
+        width=320, height=180, fps=30.0,
+        cache_dir=tmp_path / "cache",
+        ffprobe_path=ffprobe,
+        ffmpeg_path=ffmpeg,
+        seed_parts=("t4",),
+        log=lambda *_a, **_k: None,
+    )
+    assert [slot.selected_path for slot in plan.slots] == [slot.selected_path for slot in plan2.slots]
 
 
 def test_disabled_profile_builds_empty_plan(tmp_path, ffmpeg_paths):

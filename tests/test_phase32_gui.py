@@ -1,9 +1,11 @@
 """Phase 32 GUI tests: fallback policy, image rendering + completion sound.
 
-Verifies the new Smart Visual controls (Allow Generated Images, fallback
-policy, image transition + duration, image visual effect + intensity) and
-the new Typewriter completion-sound controls: presence, defaults, gating,
-per-output separation, settings round trip and enriched plan previews.
+PHASE 33 CONTRACT CHANGE (documented): the Smart Visual generation controls
+(Allow Generated Images, fallback policy, strategy, style, threshold) were
+removed from the UI - Smart Visuals is a pure selection engine now. The
+image rendering controls (image transition + duration, image visual effect
++ intensity) and the Typewriter completion-sound controls stay unchanged;
+the tests below verify them together with the new Phase-33 controls.
 """
 from __future__ import annotations
 
@@ -35,8 +37,9 @@ def window(app):
     win.close()
 
 
+# Phase 33: the image RENDERING controls survive (they never generated
+# anything); the generation toggle/policy widgets were removed from the UI.
 SMART_PHASE32_KEYS = (
-    "allow_generated", "fallback",
     "image_transition", "image_transition_duration",
     "image_visual_effect", "image_visual_effect_intensity",
 )
@@ -53,18 +56,20 @@ def test_smart_visual_sections_have_phase32_controls(window):
         widgets = window._smart_visual_widgets[prefix]
         for key in SMART_PHASE32_KEYS:
             assert key in widgets, key
+        # Phase 33: the generation controls are gone from the UI.
+        for gone in ("allow_generated", "fallback", "strategy", "style"):
+            assert gone not in widgets, gone
 
 
-def test_fresh_window_defaults_preserve_phase31_behavior(window):
+def test_fresh_window_defaults_preserve_image_rendering_defaults(window):
     for prefix in ("sv_long", "sv_short"):
         widgets = window._smart_visual_widgets[prefix]
-        assert widgets["allow_generated"].isChecked() is True
-        assert widgets["fallback"].currentData() == "generate_image"
         assert widgets["image_transition"].currentData() == "project"
         assert widgets["image_transition_duration"].value() == pytest.approx(0.0)
         assert widgets["image_visual_effect"].currentData() == "none"
         assert widgets["image_visual_effect_intensity"].currentData() == "low"
     settings = window._settings()
+    # Legacy generation fields keep their stored (default) values untouched.
     assert settings.smart_visual_allow_generated is True
     assert settings.smart_visual_fallback == "generate_image"
     assert settings.long_form_image_transition_type == "project"
@@ -85,17 +90,17 @@ def test_typewriter_sections_have_completion_controls_with_defaults(window):
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------
-def test_allow_generated_off_locks_generation_only_controls(window):
+def test_insert_frequency_gating_follows_the_selection_mode(window):
+    # Phase 33 replacement for the removed allow_generated gating test: the
+    # Smart Insert Frequency control only applies to the Mostly Random mode.
     widgets = window._smart_visual_widgets["sv_long"]
     widgets["enabled"].setChecked(True)
-    assert widgets["strategy"].isEnabled() is True
-    assert widgets["style"].isEnabled() is True
-    widgets["allow_generated"].setChecked(False)
-    assert widgets["strategy"].isEnabled() is False
-    assert widgets["style"].isEnabled() is False
-    assert widgets["fallback"].isEnabled() is True
-    widgets["allow_generated"].setChecked(True)
-    assert widgets["strategy"].isEnabled() is True
+    widgets["mode"].setCurrentIndex(widgets["mode"].findData("smart_match"))
+    assert widgets["insert_percent"].isEnabled() is False
+    widgets["mode"].setCurrentIndex(widgets["mode"].findData("smart_inserts"))
+    assert widgets["insert_percent"].isEnabled() is True
+    widgets["mode"].setCurrentIndex(widgets["mode"].findData("random_only"))
+    assert widgets["insert_percent"].isEnabled() is False
 
 
 def test_effect_none_locks_the_intensity_control(window):
@@ -112,12 +117,17 @@ def test_effect_none_locks_the_intensity_control(window):
     assert widgets["image_visual_effect_intensity"].isEnabled() is False
 
 
-def test_disabled_smart_visuals_lock_phase32_controls(window):
+def test_disabled_smart_visuals_lock_profile_controls(window):
     widgets = window._smart_visual_widgets["sv_short"]
     widgets["enabled"].setChecked(False)
-    assert widgets["fallback"].isEnabled() is False
+    assert widgets["mode"].isEnabled() is False
+    assert widgets["image_duration"].isEnabled() is False
     assert widgets["image_transition"].isEnabled() is False
     assert widgets["image_visual_effect"].isEnabled() is False
+    widgets["enabled"].setChecked(True)
+    assert widgets["mode"].isEnabled() is True
+    assert widgets["image_transition"].isEnabled() is True
+    assert widgets["image_visual_effect"].isEnabled() is True
 
 
 # ---------------------------------------------------------------------------
@@ -143,14 +153,12 @@ def test_saved_phase32_settings_load_into_both_profiles(window):
     window._load_smart_visual_settings()
     long_w = window._smart_visual_widgets["sv_long"]
     short_w = window._smart_visual_widgets["sv_short"]
-    assert long_w["allow_generated"].isChecked() is False
-    assert long_w["fallback"].currentData() == "random_video"
+    # Phase 33: only the image RENDERING controls load into widgets; the
+    # legacy generation toggle/policy stay stored but have no widgets.
     assert long_w["image_transition"].currentData() == "film_dissolve"
     assert long_w["image_transition_duration"].value() == pytest.approx(0.6)
     assert long_w["image_visual_effect"].currentData() == "soft_shimmer"
     assert long_w["image_visual_effect_intensity"].currentData() == "medium"
-    assert short_w["allow_generated"].isChecked() is True
-    assert short_w["fallback"].currentData() == "skip"
     assert short_w["image_transition"].currentData() == "smooth_blur"
     assert short_w["image_transition_duration"].value() == pytest.approx(0.3)
     assert short_w["image_visual_effect"].currentData() == "crt_broadcast"
@@ -160,8 +168,9 @@ def test_saved_phase32_settings_load_into_both_profiles(window):
 def test_ui_writes_phase32_settings_per_profile(window):
     long_w = window._smart_visual_widgets["sv_long"]
     long_w["enabled"].setChecked(True)
-    long_w["allow_generated"].setChecked(False)
-    long_w["fallback"].setCurrentIndex(long_w["fallback"].findData("random_image"))
+    long_w["mode"].setCurrentIndex(long_w["mode"].findData("smart_inserts"))
+    long_w["image_duration"].setValue(6.0)
+    long_w["insert_percent"].setValue(35)
     long_w["image_transition"].setCurrentIndex(
         long_w["image_transition"].findData("additive_dissolve")
     )
@@ -174,30 +183,52 @@ def test_ui_writes_phase32_settings_per_profile(window):
     )
     short_w = window._smart_visual_widgets["sv_short"]
     short_w["enabled"].setChecked(True)
-    short_w["fallback"].setCurrentIndex(short_w["fallback"].findData("best_available"))
+    short_w["mode"].setCurrentIndex(short_w["mode"].findData("random_only"))
 
     settings = window._settings()
-    assert settings.smart_visual_allow_generated is False
-    assert settings.smart_visual_fallback == "random_image"
+    # Phase 33 selection engine settings per profile.
+    assert settings.smart_visual_mode == "smart_inserts"
+    assert settings.smart_visual_image_duration == pytest.approx(6.0)
+    assert settings.smart_visual_insert_percent == 35
+    assert settings.shorts_smart_visual_mode == "random_only"
+    # Image rendering settings per profile.
     assert settings.long_form_image_transition_type == "additive_dissolve"
     assert settings.long_form_image_transition_duration == pytest.approx(0.8)
     assert settings.long_form_image_visual_effect == "gentle_flicker"
     assert settings.long_form_image_visual_effect_intensity == "high"
-    assert settings.shorts_smart_visual_fallback == "best_available"
+    # Legacy generation fields keep their stored defaults (no UI edits them).
+    assert settings.smart_visual_allow_generated is True
+    assert settings.smart_visual_fallback == "generate_image"
     # Shorts image rendering untouched by the Long-Form edits above.
     assert settings.shorts_image_transition_type == "project"
     assert settings.shorts_image_visual_effect == "none"
 
 
-def test_ui_round_trip_keeps_phase32_values(window):
+def test_ui_round_trip_keeps_saved_values(window):
+    # Phase 33 replacement: the fallback-policy widget no longer exists, so
+    # the round trip now proves (a) the selection-engine fields survive a
+    # save/load cycle and (b) legacy generation fields stored in the project
+    # are carried forward untouched by the UI.
     long_w = window._smart_visual_widgets["sv_long"]
     long_w["enabled"].setChecked(True)
-    long_w["fallback"].setCurrentIndex(long_w["fallback"].findData("random_video"))
+    long_w["mode"].setCurrentIndex(long_w["mode"].findData("smart_inserts"))
+    long_w["image_duration"].setValue(7.5)
+    window.saved = ExportSettings(
+        smart_visual_allow_generated=False,
+        smart_visual_fallback="skip",
+    )
     settings = window._settings()
+    # The UI never edits the legacy generation fields: stored values survive.
+    assert settings.smart_visual_allow_generated is False
+    assert settings.smart_visual_fallback == "skip"
+    assert settings.smart_visual_mode == "smart_inserts"
+    assert settings.smart_visual_image_duration == pytest.approx(7.5)
     window.saved = settings
-    long_w["fallback"].setCurrentIndex(long_w["fallback"].findData("skip"))
+    long_w["mode"].setCurrentIndex(long_w["mode"].findData("random_only"))
+    long_w["image_duration"].setValue(1.0)
     window._load_smart_visual_settings()
-    assert long_w["fallback"].currentData() == "random_video"
+    assert long_w["mode"].currentData() == "smart_inserts"
+    assert long_w["image_duration"].value() == pytest.approx(7.5)
 
 
 # ---------------------------------------------------------------------------
@@ -263,27 +294,21 @@ def test_typewriter_profile_from_ui_carries_completion_settings(window):
 
 
 # ---------------------------------------------------------------------------
-# Enriched Smart Visual plan preview (Feature E)
+# Enriched Smart Visual Analyze Timeline (Phase 33)
 # ---------------------------------------------------------------------------
-def test_plan_preview_records_expose_phase32_fields(window, tmp_path, monkeypatch):
+def test_analyze_timeline_records_expose_rendering_fields(window, tmp_path, monkeypatch):
     import app.video_merger.paths as paths_module
-    import app.video_merger.smart_visuals as sv
 
     monkeypatch.setattr(paths_module, "project_root", lambda: tmp_path)
     folder = tmp_path / "pool"
     folder.mkdir()
     (folder / "glacier_mountain_ice.jpg").write_bytes(b"ximg")
-
-    import app.video_merger.image_generation as ig
-
-    monkeypatch.setattr(ig, "resolve_generation_provider", lambda ffmpeg_path=None: (None, ["test"]))
+    (folder / "river_valley_water.jpg").write_bytes(b"yimg")
 
     widgets = window._smart_visual_widgets["sv_long"]
     widgets["enabled"].setChecked(True)
     widgets["folders"].addItem(str(folder))
-    widgets["threshold_mode"].setCurrentIndex(widgets["threshold_mode"].findData("custom"))
-    widgets["threshold_custom"].setValue(0.99)  # force fallbacks
-    widgets["fallback"].setCurrentIndex(widgets["fallback"].findData("random_image"))
+    widgets["image_duration"].setValue(4.5)
     widgets["image_transition"].setCurrentIndex(
         widgets["image_transition"].findData("film_dissolve")
     )
@@ -295,9 +320,10 @@ def test_plan_preview_records_expose_phase32_fields(window, tmp_path, monkeypatc
         widgets["image_visual_effect_intensity"].findData("medium")
     )
 
-    # The GUI preview must build without errors and fill the list widget.
-    window._smart_visual_preview_plan("sv_long")
-    assert widgets["plan_list"].count() > 0
+    # The GUI analysis must build without errors and fill the list widget
+    # WITHOUT rendering anything.
+    window._smart_visual_analyze_timeline("sv_long")
+    assert widgets["analyze_list"].count() > 0
 
     # Build the exact same plan the GUI builds and check the record schema.
     from app.video_merger.smart_visuals import build_smart_visual_plan
@@ -325,11 +351,13 @@ def test_plan_preview_records_expose_phase32_fields(window, tmp_path, monkeypatc
         **rendering,
     )
     records = plan.to_records()
-    assert records, "the preview must contain at least one slot"
+    assert records, "the analysis must contain at least one slot"
     for record in records:
         assert record["fallback_mode"]
         assert record["duration"] > 0
         assert "match" in record and "reason" in record
+        assert record["source"] in {"SMART", "RANDOM", "NONE"}
+        assert record["insert_duration"] == pytest.approx(4.5)
     chosen = [record for record in records if record["selected"] != "–"]
     assert chosen
     for record in chosen:
@@ -338,10 +366,11 @@ def test_plan_preview_records_expose_phase32_fields(window, tmp_path, monkeypatc
         assert record["image_effect_intensity"] == "medium"
 
 
-def test_fallback_combo_offers_all_documented_policies(window):
+def test_mode_combo_offers_all_documented_selection_modes(window):
+    # Phase 33 replacement for the removed fallback-policy combo test.
     widgets = window._smart_visual_widgets["sv_long"]
-    data = {widgets["fallback"].itemData(i) for i in range(widgets["fallback"].count())}
-    assert data == {"generate_image", "random_video", "random_image", "skip", "best_available"}
+    data = {widgets["mode"].itemData(i) for i in range(widgets["mode"].count())}
+    assert data == {"smart_match", "smart_inserts", "random_only"}
 
 
 def test_image_transition_and_effect_combos_offer_documented_choices(window):

@@ -1370,16 +1370,13 @@ def build_smart_visual_plan(
             f"Auswahlmodus {profile.mode}: {smart_count} smart, {random_count} zufällig, "
             f"{skipped} übersprungen (Bilddauer {clamp_smart_image_duration(profile.image_duration):.1f}s)."
         )
-        # Phase 32: conditional plan-identity extension. Fallback/generation
-        # settings join only when they deviate from the Phase-31 defaults;
-        # the dedicated image rendering joins only when it deviates from the
-        # project defaults AND at least one image-type visual was selected
-        # (pure-video plans are unaffected by image settings). Unchanged
-        # projects therefore keep their exact Phase-31 plan identity.
+        # Phase 33: the legacy Phase-32 generation toggle / fallback policy
+        # are INERT settings now (nothing is ever generated), so they must
+        # not churn the plan identity. The dedicated image rendering still
+        # joins only when it deviates from the project defaults AND at least
+        # one image-type visual was selected (pure-video plans are
+        # unaffected by image settings).
         phase32_identity: dict = {}
-        if profile.phase32_active:
-            phase32_identity["allow_generated"] = bool(profile.allow_generated)
-            phase32_identity["fallback_policy"] = profile.fallback_policy
         has_image_visuals = any(
             slot.selected_kind in ("image", "generated") for slot in plan.slots
         )
