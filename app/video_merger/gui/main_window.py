@@ -2615,6 +2615,11 @@ class MainWindow(QMainWindow):
         w["mode"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_image_timeline_controls(p))
         w["duration_mode"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_image_timeline_controls(p))
         w["duration"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_image_timeline_controls(p))
+        # Phase 33: the effect dropdowns drive their intensity/flicker
+        # sub-controls. These connections were missing before, which left the
+        # Visual Effects block looking dead (sub-controls never unlocked).
+        w["effect"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_image_timeline_controls(p))
+        w["global_effect"].currentIndexChanged.connect(lambda _i, p=prefix: self._sync_image_timeline_controls(p))
         self._sync_image_timeline_controls(prefix, widgets_override=w)
         self._image_timeline_widgets = getattr(self, "_image_timeline_widgets", {})
         self._image_timeline_widgets[prefix] = w

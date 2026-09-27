@@ -350,8 +350,10 @@ diese dieser dieses kein keine nicht nur noch schon sehr zum über unter
 SYNONYM_CONCEPTS: dict[str, tuple[str, ...]] = {
     "city": ("city", "cities", "town", "street", "urban", "downtown", "skyline", "stadt", "strasse", "gasse"),
     "nature": ("nature", "forest", "tree", "trees", "leaf", "plant", "wald", "baum", "natur", "wiese"),
-    "mountain": ("mountain", "mountains", "peak", "alps", "hill", "berg", "gipfel", "alp"),
-    "water": ("water", "river", "lake", "sea", "ocean", "wave", "fluss", "see", "meer", "wasser", "welle"),
+    "mountain": ("mountain", "mountains", "peak", "alps", "hill", "berg", "gipfel", "alp",
+                 "alpine", "summit", "ridge", "hike", "hiking", "trail"),
+    "water": ("water", "river", "lake", "sea", "ocean", "wave", "fluss", "see", "meer", "wasser", "welle",
+              "beach", "coast", "shore"),
     "sky": ("sky", "cloud", "clouds", "sunset", "sunrise", "star", "stars", "himmel", "wolke", "sonnenuntergang"),
     "weather": ("weather", "rain", "snow", "storm", "wind", "regen", "schnee", "sturm", "wetter"),
     "people": ("people", "person", "man", "woman", "child", "children", "family", "crowd", "mensch", "familie", "kind"),
@@ -1233,6 +1235,7 @@ def assign_smart_visual_selections(
             if attempt_smart:
                 above = [(score, entry) for score, entry in scored if score >= gate]
                 unused_above = [(score, entry) for score, entry in above if _unused(entry)]
+                pool_exhausted = all(not _unused(entry) for entry in pool) if pool else True
                 if unused_above:
                     if profile.mode == SMART_MODE_SMART_MATCH and profile.randomize_nonce:
                         # Randomize explores alternate GOOD matches: draw from
@@ -1244,10 +1247,10 @@ def assign_smart_visual_selections(
                     visual.source_mode = SLOT_SOURCE_SMART
                     visual.reason = "matched"
                     visual.fallback_mode = SLOT_MODE_MATCH
-                elif above:
-                    # Pool exhausted: every relevant asset was already used
-                    # once - reuse the best match but avoid an immediate
-                    # back-to-back repeat whenever an alternative exists.
+                elif above and pool_exhausted:
+                    # EVERY pool asset was already used once - only now is a
+                    # relevant asset reused, and never back-to-back whenever
+                    # an alternative exists.
                     alternatives = [(score, entry) for score, entry in above if entry.path != last_pick]
                     score, chosen = (alternatives or above)[0]
                     visual.source_mode = SLOT_SOURCE_SMART
