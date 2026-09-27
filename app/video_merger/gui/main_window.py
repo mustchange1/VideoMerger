@@ -3414,9 +3414,12 @@ class MainWindow(QMainWindow):
                 f"{record['insert_duration']:.1f}s · topic: {record['topic']}"
             )
             widgets["analyze_list"].addItem(
-                f"    Source: {record['source']} · score {record['match']} · reason: "
-                f"{record['reason'] or '–'}"
+                f"    Source: {record.get('source_label') or record['source']} · score "
+                f"{record['match']} · reason: {record['reason'] or '–'}"
             )
+            # Phase 34: metadata-driven evidence (few strongest terms only).
+            if record.get("matched_terms"):
+                widgets["analyze_list"].addItem(f"    Matched: {record['matched_terms']}")
         for note in plan.diagnostics[:4]:
             widgets["analyze_list"].addItem(f"· {note}")
 

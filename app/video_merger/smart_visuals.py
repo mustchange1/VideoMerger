@@ -483,10 +483,18 @@ def split_script_sentences(text: str) -> list[str]:
 class SlotDraft:
     sentences: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
+    # Phase 34: indices of the script sentences this region covers. The FIRST
+    # index is the visual anchor - the selected asset begins at the start of
+    # that sentence (spec section 7).
+    sentence_indices: list[int] = field(default_factory=list)
 
     @property
     def text(self) -> str:
         return " ".join(self.sentences)
+
+    @property
+    def anchor_sentence(self) -> int:
+        return self.sentence_indices[0] if self.sentence_indices else -1
 
 
 def build_semantic_slots(sentences: list[str], cadence: str = "adaptive") -> list[SlotDraft]:
@@ -503,13 +511,17 @@ def build_semantic_slots(sentences: list[str], cadence: str = "adaptive") -> lis
         drafts: list[SlotDraft] = []
         for start in range(0, len(sentences), size):
             chunk = sentences[start:start + size]
-            drafts.append(SlotDraft(sentences=list(chunk), keywords=extract_keywords(" ".join(chunk))))
+            drafts.append(SlotDraft(
+                sentences=list(chunk),
+                keywords=extract_keywords(" ".join(chunk)),
+                sentence_indices=list(range(start, start + len(chunk))),
+            ))
         return drafts
 
     drafts = []
     current = SlotDraft()
     current_keywords: set[str] = set()
-    for sentence in sentences:
+    for index, sentence in enumerate(sentences):
         tokens = set(content_tokens(sentence))
         shares_topic = bool(tokens & current_keywords)
         too_long = (
@@ -521,6 +533,7 @@ def build_semantic_slots(sentences: list[str], cadence: str = "adaptive") -> lis
             current = SlotDraft()
             current_keywords = set()
         current.sentences.append(sentence)
+        current.sentence_indices.append(index)
         current_keywords |= tokens
     if current.sentences:
         drafts.append(current)
@@ -586,9 +599,23 @@ class MediaIndexEntry:
     # folder uses). Feeds the semantic vector; nothing here is hardcoded to
     # one fixed schema.
     metadata_text: str = ""
+    # Phase 34: the pre-generated analyzer JSON of this asset (raw payload,
+    # parsed tolerantly into smart_metadata.AssetMetadata at scoring time).
+    # Empty when the asset has no analyzer sidecar - the Phase-33 tolerant
+    # matching path keeps working unchanged for such pools. ``analysis_path``
+    # + ``analysis_signature`` are discovered during the scan WITHOUT reading
+    # the JSON body; the body is parsed once (or restored from the index
+    # cache) so hundreds of sidecars are never re-parsed per Analyze click.
+    analysis: dict = field(default_factory=dict)
+    analysis_path: str = ""
+    analysis_signature: str = ""
 
     def concept_key(self) -> str:
         return " ".join(self.keywords) + " " + self.category + " " + self.metadata_text
+
+    @property
+    def has_analysis(self) -> bool:
+        return bool(self.analysis)
 
 
 #: Phase 33: sidecar keys whose values are "primary signals" - short,
@@ -636,6 +663,9 @@ def _sidecar_signature(folder: Path) -> str:
     Editing ``smart_metadata.json``/``smart_metadata.csv`` changes this
     signature, which invalidates the folder's index cache so enriched
     metadata is re-read without waiting for the media files to change.
+    Phase-34 analyzer sidecars (``*.analysis.json``) are tracked PER ASSET
+    via ``MediaIndexEntry.analysis_signature`` instead, so changing one
+    asset's metadata never rebuilds the whole folder index (spec section 28).
     """
     parts: list[str] = []
     for name in ("smart_metadata.json", "smart_metadata.csv"):
@@ -741,6 +771,23 @@ def scan_smart_visual_folders(folders: tuple[str, ...] | list[str]) -> list[Medi
                 keyword = keyword.strip()
                 if keyword and keyword not in ordered:
                     ordered.append(keyword)
+            # Phase 34: discover an analyzer sidecar for this asset. Only the
+            # path + stat signature are recorded here; the JSON body is parsed
+            # once in build_media_index (or restored from the cache), so a
+            # pool of hundreds of assets never re-reads its sidecars on every
+            # Analyze Timeline click (spec sections 27-28).
+            analysis_path = ""
+            analysis_signature = ""
+            try:
+                from . import smart_metadata as _smart_metadata
+
+                analysis_sidecar = _smart_metadata.find_analysis_sidecar(path, root)
+                if analysis_sidecar is not None:
+                    analysis_path = str(analysis_sidecar)
+                    analysis_signature = _smart_metadata.analysis_signature(analysis_sidecar)
+            except Exception:
+                analysis_path = ""
+                analysis_signature = ""
             entries.append(
                 MediaIndexEntry(
                     path=key,
@@ -750,6 +797,8 @@ def scan_smart_visual_folders(folders: tuple[str, ...] | list[str]) -> list[Medi
                     title=title,
                     signature=signature,
                     metadata_text=metadata_text,
+                    analysis_path=analysis_path,
+                    analysis_signature=analysis_signature,
                 )
             )
     return entries
@@ -811,10 +860,31 @@ def build_media_index(
         fresh_by_path = {entry.path: entry for entry in fresh}
         stats.removed += max(0, len(cached) - len(fresh_by_path))
         entries_for_cache: dict[str, dict] = {}
+
+        def _hydrate_analysis(entry: MediaIndexEntry) -> dict:
+            """Parse ONE asset's analyzer sidecar (tolerant, never fatal)."""
+            if not entry.analysis_path:
+                return {}
+            try:
+                payload = json.loads(
+                    Path(entry.analysis_path).read_text(encoding="utf-8", errors="replace")
+                )
+            except (OSError, json.JSONDecodeError):
+                return {}
+            return payload if isinstance(payload, dict) else {}
+
         for path, entry in fresh_by_path.items():
             cached_entry = cached.get(path)
             if cached_entry and cached_entry.get("signature") == entry.signature:
                 stats.reused += 1
+                cached_analysis = cached_entry.get("analysis") or {}
+                cached_analysis_signature = str(cached_entry.get("analysis_signature") or "")
+                analysis = cached_analysis if isinstance(cached_analysis, dict) else {}
+                # Phase 34: the asset file is unchanged, but when its analyzer
+                # sidecar changed (or appeared/disappeared) ONLY this one
+                # asset's metadata is re-parsed - never the whole index.
+                if entry.analysis_signature != cached_analysis_signature:
+                    analysis = _hydrate_analysis(entry)
                 restored = MediaIndexEntry(
                     path=entry.path,
                     kind=str(cached_entry.get("kind", entry.kind)),
@@ -823,11 +893,20 @@ def build_media_index(
                     title=str(cached_entry.get("title", entry.title)),
                     signature=entry.signature,
                     metadata_text=str(cached_entry.get("metadata_text", entry.metadata_text) or ""),
+                    analysis=analysis,
+                    analysis_path=entry.analysis_path,
+                    analysis_signature=entry.analysis_signature,
                 )
                 all_entries.append(restored)
-                entries_for_cache[path] = cached_entry
+                entries_for_cache[path] = {
+                    **cached_entry,
+                    "analysis": analysis,
+                    "analysis_path": entry.analysis_path,
+                    "analysis_signature": entry.analysis_signature,
+                }
             else:
                 stats.indexed += 1
+                entry.analysis = _hydrate_analysis(entry)
                 all_entries.append(entry)
                 entries_for_cache[path] = {
                     "signature": entry.signature,
@@ -836,6 +915,9 @@ def build_media_index(
                     "keywords": list(entry.keywords),
                     "title": entry.title,
                     "metadata_text": entry.metadata_text,
+                    "analysis": entry.analysis,
+                    "analysis_path": entry.analysis_path,
+                    "analysis_signature": entry.analysis_signature,
                 }
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -966,6 +1048,11 @@ class SmartVisualSlot:
     # profile's single configurable image duration). 0.0 = legacy behavior
     # (derive the duration from the slot's context window).
     insert_duration: float = 0.0
+    # Phase 34: sentence-anchored, metadata-driven selection transparency.
+    sentence_index: int = -1            # script sentence that triggered this
+    matched_terms: tuple[str, ...] = ()  # few strongest evidence terms
+    evidence: tuple[str, ...] = ()       # explainable evidence lines
+    scoring_engine: str = ""             # "analyzer" | "legacy" | ""
 
     @property
     def clamped_duration(self) -> float:
@@ -999,6 +1086,21 @@ class SmartVisualPlan:
         """Plain preview records (time/topic/selected/match/fallback)."""
         records: list[dict] = []
         for slot in self.slots:
+            # Phase 34: a human-readable source label for Analyze Timeline
+            # (spec section 22). SMART + MATCH = a real metadata match; a
+            # RANDOM draw after a failed match is a "Random fallback".
+            if slot.source_mode == SLOT_SOURCE_SMART:
+                source_label = "Smart Match"
+            elif slot.source_mode == SLOT_SOURCE_RANDOM:
+                source_label = (
+                    "Random Fallback"
+                    if slot.fallback_mode in (
+                        SLOT_MODE_FALLBACK_RANDOM_IMAGE, SLOT_MODE_FALLBACK_RANDOM_VIDEO
+                    ) and "no_relevant_match" in slot.reason
+                    else "Random"
+                )
+            else:
+                source_label = "Skipped" if slot.fallback_mode == SLOT_MODE_SKIPPED else "–"
             records.append(
                 {
                     "time": f"{slot.start:.2f}-{slot.end:.2f}s",
@@ -1019,8 +1121,16 @@ class SmartVisualPlan:
                     # picked the media, the real inserted duration and the
                     # local context the selection was matched against.
                     "source": slot.source_mode or ("SMART" if slot.selected_kind else "NONE"),
+                    "source_label": source_label,
                     "insert_duration": round(slot.effective_insert_duration, 2),
                     "context": slot.sentence[:120],
+                    # Phase 34: metadata-driven transparency. The triggering
+                    # sentence, the strongest evidence terms and explainable
+                    # evidence lines let the user see WHY an asset won.
+                    "sentence_index": slot.sentence_index,
+                    "matched_terms": ", ".join(slot.matched_terms) if slot.matched_terms else "",
+                    "evidence": slot.evidence,
+                    "scoring_engine": slot.scoring_engine,
                 }
             )
         return records
@@ -1148,7 +1258,7 @@ def assign_smart_visual_selections(
     profile: SmartVisualProfile,
     rng: Random,
 ) -> list[SmartVisualSlot]:
-    """Phase 33: content-aware, uniqueness-aware media assignment.
+    """Content-aware, uniqueness-aware media assignment.
 
     Smart Visuals is a SELECTION engine: it only picks existing media from
     the configured pools and NEVER generates anything. The three modes:
@@ -1158,20 +1268,33 @@ def assign_smart_visual_selections(
     * ``smart_inserts`` - mostly random; only at ~insert_percent of the
       insert opportunities a strong match (SMART_INSERT_STRONG_THRESHOLD)
       is placed, everything else stays random.
-    * ``random_only``   - seeded random draws, no semantic matching.
+    * ``random_only``   - seeded random draws, no semantic matching at all
+      (spec section 18: never score semantically in this mode).
 
     Uniqueness: every asset is used at most once while unused pool assets
     remain; once the pool is exhausted an asset may repeat, but never
     back-to-back whenever an alternative exists. Diversity only ever breaks
     ties AFTER relevance and uniqueness.
+
+    Phase 34: when at least one pool asset carries pre-generated analyzer
+    metadata (``*.analysis.json``), matching becomes METADATA-DRIVEN and
+    SENTENCE-ANCHORED: weighted keyword scoring (the analyzer's numeric
+    ``relevance_score`` values are first-class signals), direct > strong
+    association > contextual > metaphorical evidence hierarchy, negative
+    matches, sentence context queries, reservation-aware global assignment
+    (rare high-value assets are protected) and safe duration shortening at
+    topic-changing sentence boundaries. Pools without analyzer metadata
+    keep the exact Phase-33 tolerant matching.
     """
+    from . import smart_metadata
+
     slots: list[SmartVisualSlot] = []
     pool = list(entries)
-    entry_vectors = {entry.path: concept_vector(entry.concept_key()) for entry in pool}
     used_counts: dict[str, int] = {}
     last_pick: str = ""
     image_duration = clamp_smart_image_duration(profile.image_duration)
     gate_images_first = True
+    any_analyzed = any(entry.has_analysis for entry in pool)
 
     def _unused(candidate: MediaIndexEntry) -> bool:
         return used_counts.get(candidate.path, 0) == 0
@@ -1192,7 +1315,56 @@ def assign_smart_visual_selections(
         chosen = rng.choice(sorted(fresh, key=lambda entry: entry.path))
         return chosen
 
-    for slot in timed:
+    # ------------------------------------------------------------------
+    # Phase 34: sentence queries + prepared analyzer assets (normalized
+    # ONCE per plan, spec section 27). The sentence is the query - never
+    # the whole script at once.
+    # ------------------------------------------------------------------
+    prepared: dict[str, object] = {}
+    metadata_by_path: dict[str, object] = {}
+    if any_analyzed:
+        for entry in pool:
+            if not entry.has_analysis:
+                continue
+            metadata = smart_metadata.asset_metadata_from_dict(
+                entry.path, entry.kind, entry.analysis, entry.analysis_path
+            )
+            metadata_by_path[entry.path] = metadata
+            prepared[entry.path] = smart_metadata.prepare_asset(metadata)
+
+    entry_vectors: dict[str, Counter] = {}
+    if not any_analyzed or profile.mode == SMART_MODE_RANDOM_ONLY:
+        entry_vectors = {entry.path: concept_vector(entry.concept_key()) for entry in pool}
+
+    queries: list[object] = []
+    if any_analyzed and profile.mode != SMART_MODE_RANDOM_ONLY:
+        previous_tokens: tuple[str, ...] = ()
+        for slot in timed:
+            text = slot.draft.text
+            tokens = tuple(content_tokens(text))
+            queries.append(
+                smart_metadata.SentenceQuery(
+                    sentence_index=slot.draft.anchor_sentence,
+                    text=text,
+                    tokens=tokens,
+                    context_tokens=previous_tokens,
+                )
+            )
+            previous_tokens = tokens
+
+    def _score_entry(slot_index: int, entry: MediaIndexEntry):
+        """(0..1 score, MatchResult|None, engine) for one candidate."""
+        if entry.path in prepared:
+            result = smart_metadata.score_asset(queries[slot_index], prepared[entry.path])
+            return result.score / smart_metadata.SCORE_SCALE, result, "analyzer"
+        draft = timed[slot_index].draft
+        if entry.path not in entry_vectors:
+            entry_vectors[entry.path] = concept_vector(entry.concept_key())
+        query_vector = concept_vector(draft.text)
+        score = score_candidate(query_vector, draft.keywords, entry, entry_vectors[entry.path])
+        return score, None, "legacy"
+
+    def _build_slot(slot) -> SmartVisualSlot:
         visual = SmartVisualSlot(
             start=slot.start,
             end=slot.end,
@@ -1200,21 +1372,53 @@ def assign_smart_visual_selections(
             sentence=slot.draft.text[:200],
             keywords=tuple(slot.draft.keywords),
             insert_duration=image_duration,
+            sentence_index=slot.draft.anchor_sentence,
         )
         slots.append(visual)
+        return visual
 
-        chosen: MediaIndexEntry | None = None
-        if profile.mode == SMART_MODE_RANDOM_ONLY:
+    def _finalize_random(visual: SmartVisualSlot, chosen: MediaIndexEntry, reason: str) -> None:
+        visual.source_mode = SLOT_SOURCE_RANDOM
+        visual.reason = reason
+        visual.fallback_mode = (
+            SLOT_MODE_FALLBACK_RANDOM_VIDEO
+            if chosen.kind == "video"
+            else SLOT_MODE_FALLBACK_RANDOM_IMAGE
+        )
+
+    # ==================================================================
+    # PATH A - Random Only: seeded draws, NO semantic scoring (section 18)
+    # ==================================================================
+    if profile.mode == SMART_MODE_RANDOM_ONLY:
+        for slot in timed:
+            visual = _build_slot(slot)
             chosen = _pick_random("random_only_mode")
-            if chosen is not None:
-                visual.source_mode = SLOT_SOURCE_RANDOM
-                visual.reason = "random_only_mode"
-                visual.fallback_mode = (
-                    SLOT_MODE_FALLBACK_RANDOM_VIDEO
-                    if chosen.kind == "video"
-                    else SLOT_MODE_FALLBACK_RANDOM_IMAGE
-                )
-        else:
+            if chosen is None:
+                visual.reason = "skipped_no_media"
+                visual.fallback_mode = SLOT_MODE_SKIPPED
+                visual.source_mode = ""
+                continue
+            visual.source_mode = SLOT_SOURCE_RANDOM
+            visual.reason = "random_only_mode"
+            visual.fallback_mode = (
+                SLOT_MODE_FALLBACK_RANDOM_VIDEO
+                if chosen.kind == "video"
+                else SLOT_MODE_FALLBACK_RANDOM_IMAGE
+            )
+            visual.selected_kind = chosen.kind
+            visual.selected_path = chosen.path
+            visual.selected_label = f"{Path(chosen.path).name} [{chosen.kind}, {chosen.category}]"
+            used_counts[chosen.path] = used_counts.get(chosen.path, 0) + 1
+            last_pick = chosen.path
+        return slots
+
+    # ==================================================================
+    # PATH B - Legacy tolerant matching (Phase 33 contract, unchanged)
+    # ==================================================================
+    if not any_analyzed:
+        for slot in timed:
+            visual = _build_slot(slot)
+            chosen: MediaIndexEntry | None = None
             query_vector = concept_vector(slot.draft.text)
             scored = sorted(
                 (
@@ -1264,6 +1468,7 @@ def assign_smart_visual_selections(
                     chosen = None
                 if chosen is not None:
                     visual.score = score
+                    visual.scoring_engine = "legacy"
                     signals = _shared_signal_tokens(visual.keywords, chosen)
                     if signals:
                         visual.reason += ":" + "+".join(signals)
@@ -1275,14 +1480,147 @@ def assign_smart_visual_selections(
                 )
                 chosen = _pick_random(reason)
                 if chosen is not None:
-                    visual.source_mode = SLOT_SOURCE_RANDOM
-                    visual.reason = reason
-                    visual.fallback_mode = (
-                        SLOT_MODE_FALLBACK_RANDOM_VIDEO
-                        if chosen.kind == "video"
-                        else SLOT_MODE_FALLBACK_RANDOM_IMAGE
-                    )
+                    _finalize_random(visual, chosen, reason)
+            if chosen is None:
+                visual.reason = "skipped_no_media"
+                visual.fallback_mode = SLOT_MODE_SKIPPED
+                visual.source_mode = ""
+                continue
+            visual.selected_kind = chosen.kind
+            visual.selected_path = chosen.path
+            visual.selected_label = f"{Path(chosen.path).name} [{chosen.kind}, {chosen.category}]"
+            used_counts[chosen.path] = used_counts.get(chosen.path, 0) + 1
+            last_pick = chosen.path
+        return slots
 
+    # ==================================================================
+    # PATH C - Phase 34: metadata-driven, sentence-anchored matching
+    # ==================================================================
+    gate = (
+        SMART_INSERT_STRONG_THRESHOLD
+        if profile.mode == SMART_MODE_SMART_INSERTS
+        else SMART_MATCH_THRESHOLD
+    )
+
+    # Top-K candidate lists per slot - every asset is scored ONCE per slot
+    # and every list is reused by reservation, assignment and reuse paths
+    # (spec section 27: no repeated O(sentences x assets x expensive) work).
+    candidate_lists: list[list[tuple]] = []
+    for index in range(len(timed)):
+        scored = []
+        for entry in pool:
+            entry_score, match_result, engine = _score_entry(index, entry)
+            scored.append((entry_score, entry, match_result, engine))
+        scored.sort(key=lambda record: (-record[0], record[1].path))
+        candidate_lists.append(scored)
+
+    # ------------------------------------------------------------------
+    # Global assignment with reservation (spec sections 20-21): an asset
+    # that is uniquely excellent for one sentence is protected from being
+    # consumed by an earlier sentence that has a nearly-equivalent
+    # alternative. Deterministic greedy-with-reservation, no Hungarian
+    # machinery required.
+    # ------------------------------------------------------------------
+    top1_path: list[str] = []
+    top1_score: list[float] = []
+    second_score: list[float] = []
+    for scored in candidate_lists:
+        above = [(score, entry) for score, entry, _mr, _eng in scored if score >= gate]
+        if above:
+            top1_path.append(above[0][1].path)
+            top1_score.append(above[0][0])
+            second_score.append(above[1][0] if len(above) > 1 else float("-inf"))
+        else:
+            top1_path.append("")
+            top1_score.append(0.0)
+            second_score.append(float("-inf"))
+    need = [
+        (top1_score[i] - second_score[i]) if top1_path[i] else float("-inf")
+        for i in range(len(timed))
+    ]
+    reserved_for: dict[str, int] = {}
+    claims: dict[str, list[int]] = {}
+    for index, path in enumerate(top1_path):
+        if path:
+            claims.setdefault(path, []).append(index)
+    for path, claimants in claims.items():
+        if len(claimants) < 2:
+            continue
+        # Reserve the contested asset for the slot that depends on it most
+        # (largest gap to its second-best candidate); later slots win ties.
+        holder = max(claimants, key=lambda i: (need[i], i))
+        reserved_for[path] = holder
+
+    def _available_above(slot_index: int) -> list[tuple]:
+        result = []
+        for record in candidate_lists[slot_index]:
+            score, entry = record[0], record[1]
+            if score < gate:
+                break
+            if not _unused(entry):
+                continue
+            holder = reserved_for.get(entry.path)
+            if holder is not None and holder != slot_index:
+                continue
+            result.append(record)
+        return result
+
+    for index, slot in enumerate(timed):
+        visual = _build_slot(slot)
+        attempt_smart = True
+        if profile.mode == SMART_MODE_SMART_INSERTS:
+            attempt_smart = rng.random() * 100.0 < float(profile.insert_percent)
+
+        chosen: MediaIndexEntry | None = None
+        match_result: object = None
+        if attempt_smart:
+            available = _available_above(index)
+            pool_exhausted = all(not _unused(entry) for entry in pool) if pool else True
+            if available:
+                if profile.mode == SMART_MODE_SMART_MATCH and profile.randomize_nonce:
+                    # Randomize in Smart Match explores ALTERNATE strong
+                    # candidates - never arbitrary random files (section 24).
+                    top_k = available[: max(1, SMART_MATCH_TOP_K)]
+                    record = top_k[rng.randrange(len(top_k))]
+                else:
+                    record = available[0]
+                score, chosen, match_result, _engine = record
+                visual.source_mode = SLOT_SOURCE_SMART
+                visual.reason = "matched"
+                visual.fallback_mode = SLOT_MODE_MATCH
+                visual.score = score
+            elif pool_exhausted:
+                above = [rec for rec in candidate_lists[index] if rec[0] >= gate]
+                alternatives = [rec for rec in above if rec[1].path != last_pick]
+                if above:
+                    score, chosen, match_result, _engine = (alternatives or above)[0]
+                    visual.source_mode = SLOT_SOURCE_SMART
+                    visual.reason = "matched_pool_exhausted_reuse"
+                    visual.fallback_mode = SLOT_MODE_MATCH
+                    visual.score = score
+        if chosen is not None:
+            visual.scoring_engine = "analyzer" if chosen.path in prepared else "legacy"
+            if match_result is not None:
+                terms = smart_metadata.format_matched_terms(match_result)
+                if terms:
+                    visual.reason = "matched:" + terms
+                visual.matched_terms = tuple(
+                    f"{term} ({value:.0f})" for term, value in match_result.strongest_terms()
+                )
+                visual.evidence = tuple(match_result.explanation().split(" | "))
+            else:
+                signals = _shared_signal_tokens(visual.keywords, chosen)
+                if signals:
+                    visual.reason += ":" + "+".join(signals)
+        if chosen is None:
+            reason = (
+                "smart_insert_random_baseline"
+                if profile.mode == SMART_MODE_SMART_INSERTS and not attempt_smart
+                else "smart_fallback_random_no_relevant_match"
+            )
+            chosen = _pick_random(reason)
+            if chosen is not None:
+                _finalize_random(visual, chosen, reason)
         if chosen is None:
             visual.reason = "skipped_no_media"
             visual.fallback_mode = SLOT_MODE_SKIPPED
@@ -1293,6 +1631,41 @@ def assign_smart_visual_selections(
         visual.selected_label = f"{Path(chosen.path).name} [{chosen.kind}, {chosen.category}]"
         used_counts[chosen.path] = used_counts.get(chosen.path, 0) + 1
         last_pick = chosen.path
+
+    # ------------------------------------------------------------------
+    # Sentence-anchored duration (spec sections 8, 43): the configured
+    # image duration is a TARGET. When the next sentence begins a clearly
+    # different, strongly matched topic before the target elapses, the
+    # current visual shortens to the sentence boundary. Nothing else is
+    # ever moved - voiceover, subtitles and transitions stay untouched.
+    # Applies only to analyzer-scored SMART selections; compatible-context
+    # and random placements keep the full target (no visual churn).
+    # ------------------------------------------------------------------
+    score_lookup = {
+        index: {record[1].path: record[0] for record in candidate_lists[index]}
+        for index in range(len(timed))
+    }
+    for index in range(len(slots) - 1):
+        current = slots[index]
+        following = slots[index + 1]
+        if current.source_mode != SLOT_SOURCE_SMART or following.source_mode != SLOT_SOURCE_SMART:
+            continue
+        if current.scoring_engine != "analyzer" or following.scoring_engine != "analyzer":
+            continue
+        if current.selected_path == following.selected_path:
+            continue
+        if following.score < gate:
+            continue
+        # Topic continuity check: when the NEXT sentence still fits the
+        # current visual (it scores above the gate for it), the relevant
+        # image may stay on screen - no unnecessary visual churn (section 43).
+        fit_next = score_lookup[index + 1].get(current.selected_path, 0.0)
+        if fit_next >= gate:
+            continue
+        gap = float(following.start) - float(current.start)
+        if gap <= 0 or gap >= float(current.insert_duration):
+            continue
+        current.insert_duration = max(MIN_SMART_IMAGE_DURATION, gap)
     return slots
 
 
