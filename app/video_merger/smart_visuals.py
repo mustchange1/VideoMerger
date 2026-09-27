@@ -1053,6 +1053,11 @@ class SmartVisualSlot:
     matched_terms: tuple[str, ...] = ()  # few strongest evidence terms
     evidence: tuple[str, ...] = ()       # explainable evidence lines
     scoring_engine: str = ""             # "analyzer" | "legacy" | ""
+    # True when the selection was driven by sentence-anchored metadata
+    # matching: the insertion snaps to the boundary nearest the SENTENCE
+    # START (the visual begins with the spoken topic) instead of the slot
+    # midpoint (spec section 7).
+    sentence_anchored: bool = False
 
     @property
     def clamped_duration(self) -> float:
@@ -1600,6 +1605,10 @@ def assign_smart_visual_selections(
                     visual.score = score
         if chosen is not None:
             visual.scoring_engine = "analyzer" if chosen.path in prepared else "legacy"
+            # Phase 34 (spec section 7): metadata-driven selections are
+            # sentence-anchored - the visual begins at the sentence/topic
+            # boundary instead of a fixed timer position.
+            visual.sentence_anchored = visual.scoring_engine == "analyzer"
             if match_result is not None:
                 terms = smart_metadata.format_matched_terms(match_result)
                 if terms:
@@ -1905,23 +1914,44 @@ def apply_smart_visual_plan(
         # duration when the plan provides one; legacy plans (insert_duration
         # == 0) keep deriving the duration from the slot's context window.
         duration = _frame_grid(slot.effective_insert_duration, ceil=True)
-        midpoint = (float(slot.start) + float(slot.end)) / 2.0
-        # Find the item containing the slot midpoint, then place the visual at
-        # whichever of the item's two edges is closest to the midpoint. When
-        # that edge is already taken by another slot, the other edge is tried;
-        # only when both are occupied is the slot skipped (spec section 38).
-        containing = len(items) - 1
-        for index, edge in enumerate(cumulative):
-            if edge >= midpoint:
-                containing = index
-                break
-        left_time = cumulative[containing - 1] if containing > 0 else 0.0
-        right_time = cumulative[containing]
-        candidates: list[tuple[float, int]] = []
-        for boundary, when in ((containing, left_time), (containing + 1, right_time)):
-            clamped = max(1, min(len(items) - 1, boundary))
-            candidates.append((abs(when - midpoint), clamped))
-        candidates.sort(key=lambda pair: (pair[0], pair[1]))
+        # Phase 34 (spec section 7): sentence-anchored metadata selections
+        # snap to the boundary nearest the SENTENCE START so the relevant
+        # visual begins with the topic; legacy Phase-33 slots keep the
+        # midpoint placement.
+        if getattr(slot, "sentence_anchored", False):
+            anchor = float(slot.start)
+        else:
+            anchor = (float(slot.start) + float(slot.end)) / 2.0
+        if getattr(slot, "sentence_anchored", False):
+            # Phase 34 (spec sections 7, 38): the visual begins at the
+            # sentence/topic boundary, so every free boundary is a candidate;
+            # the one nearest the sentence start wins. This stays robust when
+            # a sentence start sits right on (or inside) a clip edge, where
+            # the two edges of the containing item collapse to one boundary.
+            boundary_time = [0.0] + list(cumulative)
+            candidates: list[tuple[float, int]] = [
+                (abs(boundary_time[boundary] - anchor), boundary)
+                for boundary in range(1, len(items))
+            ]
+            candidates.sort(key=lambda pair: (pair[0], pair[1]))
+        else:
+            # Phase 33 placement: find the item containing the midpoint, then
+            # place the visual at whichever of the item's two edges is closest
+            # to it. When that edge is already taken by another slot, the
+            # other edge is tried; only when both are occupied is the slot
+            # skipped (spec section 38).
+            containing = len(items) - 1
+            for index, edge in enumerate(cumulative):
+                if edge >= anchor:
+                    containing = index
+                    break
+            left_time = cumulative[containing - 1] if containing > 0 else 0.0
+            right_time = cumulative[containing]
+            candidates: list[tuple[float, int]] = []
+            for boundary, when in ((containing, left_time), (containing + 1, right_time)):
+                clamped = max(1, min(len(items) - 1, boundary))
+                candidates.append((abs(when - anchor), clamped))
+            candidates.sort(key=lambda pair: (pair[0], pair[1]))
         boundary: int | None = None
         for _distance, candidate in candidates:
             if candidate not in used_boundaries:
