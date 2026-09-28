@@ -729,7 +729,12 @@ class MainProjectEngine:
             targets.append(output_video_clean)
         for target in targets:
             program_duration = float(self.engine.analyzer.analyze(target).duration)
-            merged_path = temp_dir / f"{target.stem}.typewriter_merge.mp4"
+            # Keep replacement media beside its destination. os.replace is
+            # atomic only within one filesystem; the Windows application can
+            # render project temp files and user output onto different drives.
+            merged_path = target.parent / (
+                f".{target.stem}.typewriter_merge_{uuid.uuid4().hex[:8]}.mp4"
+            )
             command, effective_td = typewriter_merge_command(
                 str(self.engine.ffmpeg_path),
                 intro_video,
@@ -813,7 +818,12 @@ class MainProjectEngine:
         if output_video_clean is not None and output_video_clean.is_file():
             targets.append(output_video_clean)
         for target in targets:
-            filtered_path = temp_dir / f"{target.stem}.global_tv_{uuid.uuid4().hex[:8]}.mp4"
+            # Stage beside the destination so the final atomic replacement is
+            # valid even when project temp and output are on different Windows
+            # drive letters.
+            filtered_path = target.parent / (
+                f".{target.stem}.global_tv_{uuid.uuid4().hex[:8]}.mp4"
+            )
             command = [
                 str(self.engine.ffmpeg_path), "-hide_banner", "-y",
                 "-i", str(target),

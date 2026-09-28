@@ -375,11 +375,19 @@ def test_E_image_transition_duration_applies_at_image_boundaries(ffmpeg_paths, t
 
     base_duration = _probe_duration(ffprobe, baseline.video)
     override_duration = _probe_duration(ffprobe, override.video)
-    # xfade overlaps consume time: a LONGER transition at every image
-    # boundary makes the final video correspondingly SHORTER. 0.3 s stays
-    # below the 45 % clamp of the 0.7 s clips, so the shift is exact:
-    # -2 boundaries per image x (0.3 - 0.15) s.
-    expected = -2 * image_slots * (0.3 - 0.15)
+    # Phase 35 can defer dense semantic slots to preserve its four-second
+    # automatic minimum. Use the resolved pre-render trace, not the larger
+    # legacy semantic candidate count, for final xfade geometry.
+    trace = json.loads(
+        (tmp_path / "td_project" / "PHASE_35_DEBUG_TRACE.json").read_text(encoding="utf-8")
+    )
+    rendered_image_slots = sum(
+        1 for item in trace["placements"] if item["status"] == "inserted"
+    )
+    assert rendered_image_slots >= 1
+    # xfade overlaps consume time: a longer transition at both boundaries of
+    # each retained image makes the final video correspondingly shorter.
+    expected = -2 * rendered_image_slots * (0.3 - 0.15)
     assert override_duration - base_duration == pytest.approx(expected, abs=0.2)
 
     # The override render still shows the pool image inside a slot.
