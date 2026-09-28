@@ -43,7 +43,8 @@ jobs:
           foreach ($Case in $Suite.testcase) {
             $Problem = if ($Case.failure) { $Case.failure } elseif ($Case.error) { $Case.error } else { $null }
             if ($Problem) {
-              $Text = [string]$Problem.InnerText
+              $Text = [string]$Problem.message
+              if (-not $Text) { $Text = [string]$Problem.InnerText }
               if ($Text.Length -gt 4000) { $Text = $Text.Substring(0, 4000) }
               $Text = $Text.Replace("`r", ' ').Replace("`n", ' ')
               Write-Output "::error title=$($Case.classname).$($Case.name)::$Text"

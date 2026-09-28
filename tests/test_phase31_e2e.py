@@ -228,7 +228,11 @@ def test_B_matching_image_chosen_without_generation(ffmpeg_paths, tmp_path):
 
     width, height = _probe_size(ffprobe, result.video)
     windows = _find_windows(ffmpeg, result.video, width, height, final_duration, _yellow_predicate)
-    assert len(windows) == 2, f"two matched image sections expected, got {windows}"
+    # The mandatory Phase-35 four-second minimum retains the first semantic
+    # boundary and defers the second dense boundary instead of rendering two
+    # sub-four-second sections.
+    assert len(windows) == 1, f"one retained four-second image section expected, got {windows}"
+    assert windows[0][1] - windows[0][0] >= 3.5
     generated = _generated_dir(tmp_path)
     assert not generated.exists() or not list(generated.glob("*.png")), \
         "matching existing media must not trigger generation"

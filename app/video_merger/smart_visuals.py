@@ -2109,9 +2109,11 @@ def apply_smart_visual_plan(
                     probe_cache[slot.selected_path] = _probe_video_entry(slot.selected_path, ffprobe_path)
                     probed = probe_cache[slot.selected_path]
                 if probed:
-                    duration = _frame_grid(
-                        min(duration, float(probed.get("duration") or duration)), ceil=False
-                    )
+                    # Automatic Phase-35 visibility remains 4–10 seconds even
+                    # when a matched source video is shorter. MediaInfo retains
+                    # the real source_duration and the existing renderer safely
+                    # holds its final frame to the resolved visual duration.
+                    # Truncating here silently violated the automatic minimum.
                     if duration >= max(0.12, 3.0 / max(1.0, fps)):
                         media_item = _make_smart_video_media(
                             slot.selected_path, duration, probed, transition_type
