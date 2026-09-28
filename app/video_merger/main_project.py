@@ -564,7 +564,13 @@ class MainProjectEngine:
             return None
         mode = normalize_subtitle_output_mode(subtitle_output_mode)
         record_mode = normalize_subtitle_output_mode(record.get("subtitle_output_mode"))
-        if bool(record.get("subtitle_requested")) != bool(subtitle_requested) or record_mode != mode:
+        subtitle_presence_differs = (
+            bool(record.get("subtitle_requested")) != bool(subtitle_requested)
+        )
+        # Output mode only changes bytes/artifacts when subtitles are active.
+        # Dataclass copies can legitimately lose the legacy-default provenance
+        # flag, but with no subtitle request both modes render the same Stage 1.
+        if subtitle_presence_differs or (subtitle_requested and record_mode != mode):
             log("Stage 1 cache MISS: subtitle output mode differs from the cached render.")
             return None
         sidecars_requested = subtitle_requested and subtitle_sidecars_requested(mode)
@@ -1111,6 +1117,26 @@ class MainProjectEngine:
         else:
             target = 0.0
             program_duration = 0.0
+            # Direct Stage-1 projects without voiceover historically relied on
+            # engine.export() to apply Duration Before Merge as a safety net.
+            # Resolve it here as per-occurrence timing as well, so cache
+            # fingerprint/validation geometry describes the exact bytes the
+            # renderer produces. The export safety net then correctly sees the
+            # prepared playback rates and remains inert; rendered output is
+            # unchanged while unchanged one-click renders become reusable.
+            if abs(duration_before_merge - 1.0) > 1e-6:
+                render_media = [
+                    item if item.is_image_insertion else replace(
+                        item,
+                        source_duration=item.source_duration or item.duration,
+                        duration=max(
+                            0.12,
+                            (item.source_duration or item.duration) / duration_before_merge,
+                        ),
+                        playback_rate=duration_before_merge,
+                    )
+                    for item in render_media
+                ]
 
         # Phase 31: Smart Visual Hybrid. Strictly opt-in (disabled default).
         # Semantic slots are derived from the canonical script text + the

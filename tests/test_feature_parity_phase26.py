@@ -16,6 +16,7 @@ Both profiles keep their exact historical defaults.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -368,18 +369,16 @@ def test_legacy_settings_file_migrates_without_losing_music(tmp_path):
     legacy_long = _track(tmp_path, "long_legacy.mp3", 5.0)
     legacy_short = _track(tmp_path, "short_legacy.mp3", 3.0)
     path = tmp_path / "settings.json"
-    path.write_text(
-        """{
-  "music_path": "%s",
-  "short_music_path": "%s",
-  "music_volume": 37,
-  "transition_type": "film_dissolve",
-  "transition_duration": 1.4,
-  "version": 1
-}"""
-        % (legacy_long["path"], legacy_short["path"]),
-        encoding="utf-8",
-    )
+    # json.dumps is required on native Windows where backslashes in tmp paths
+    # must be escaped; interpolating them into a JSON literal corrupts \U/\t.
+    path.write_text(json.dumps({
+        "music_path": legacy_long["path"],
+        "short_music_path": legacy_short["path"],
+        "music_volume": 37,
+        "transition_type": "film_dissolve",
+        "transition_duration": 1.4,
+        "version": 1,
+    }), encoding="utf-8")
 
     loaded = SettingsStore(path).load()
     # Legacy single tracks become one-track sequences without trimming.

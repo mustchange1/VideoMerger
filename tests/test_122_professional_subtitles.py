@@ -318,11 +318,12 @@ def test_actual_libass_layout_scales_at_1080p_4k_and_vertical_without_unsafe_wra
     assert all(event.count(r"\N") <= 1 for event in text.splitlines() if event.startswith("Dialogue: 0,"))
 
     image = tmp_path / f"layout_{width}x{height}.png"
-    font_dir = bundled_fonts_dir().as_posix()
+    font_dir = filter_file_value(bundled_fonts_dir(), None)
+    ass_path = filter_file_value(ass, None)
     _run([
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
         f"color=c=0x08152f:s={width}x{height}:r=30:d=0.5",
-        "-vf", f"subtitles=filename='{ass.as_posix()}':fontsdir='{font_dir}'",
+        "-vf", f"subtitles=filename={ass_path}:fontsdir={font_dir}",
         "-ss", "0.15", "-frames:v", "1", "-update", "1", image,
     ], timeout=300)
     assert image.is_file() and image.stat().st_size > 1000

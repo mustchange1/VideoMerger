@@ -2,7 +2,7 @@
   "schema": "videomerger-phase35-e2e-v1",
   "ffmpeg": "ffmpeg version 6.0-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2023 the FFmpeg developers",
   "ffprobe": "ffprobe version 6.0-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2007-2023 the FFmpeg developers",
-  "output": "/tmp/pytest-of-user/pytest-28/test_phase35_real_rendered_bou0/output/MainVideo_16x9.mp4",
+  "output": "/tmp/pytest-of-user/pytest-36/test_phase35_real_rendered_bou0/output/MainVideo_16x9.mp4",
   "fps": 30.0,
   "requested_visuals": 3,
   "planned_visuals": 3,

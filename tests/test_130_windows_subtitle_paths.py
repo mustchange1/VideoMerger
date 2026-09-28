@@ -43,6 +43,7 @@ from app.video_merger.filter_escape import (
 )
 from app.video_merger.models import ExportSettings, ResolvedExport
 from app.video_merger.target import resolve_export
+from tests.conftest import make_clip
 from app.video_merger.youtube_outputs import EXPORT_MODE_SHORTS
 from app.video_merger.paths import project_root
 from tests.conftest import fake_media
@@ -122,7 +123,9 @@ def test_filter_file_value_prefers_relative_and_falls_back_to_absolute(tmp_path)
     outside = tmp_path / "not under anchor.ass"
     assert filter_file_value(inside, anchor) == "temp/x_burn.ass"
     fallback = filter_file_value(outside, anchor)
-    assert fallback.startswith("/")  # absolute escaped form used on this host
+    # Absolute fallback is platform-specific: POSIX begins with '/', while a
+    # native Windows drive colon is escaped for both FFmpeg parser passes.
+    assert fallback == escape_absolute_filter_path(outside)
     assert filter_file_value(outside, None) == fallback
 
 
@@ -355,9 +358,11 @@ def test_short_longer_voiceover_than_selected_video_keeps_full_burned_timeline(f
     short = output.shorts[0]
     assert short.report.ok, short.report.details
     video_duration, audio_duration = _stream_durations(ffprobe, short.video)
-    # Voiceover 2.5 s + explicit 0.5 s end padding is the Short's target.
-    assert video_duration == pytest.approx(3.0, abs=0.12)
-    assert audio_duration == pytest.approx(3.0, abs=0.12)
+    # Shorts use their independent authoritative sections: default 0.7 s
+    # visual intro + 2.5 s voiceover + default 0.7 s visual outro = 3.9 s.
+    # The legacy final_pause field does not override those Shorts controls.
+    assert video_duration == pytest.approx(3.9, abs=0.12)
+    assert audio_duration == pytest.approx(3.9, abs=0.12)
     assert abs(video_duration - audio_duration) <= 0.20
     assert any("Burned-in subtitle filter executed" in detail for detail in short.report.details)
 

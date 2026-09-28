@@ -110,6 +110,7 @@ def test_09_manual_persistent_order_controls_the_actual_timeline(ffmpeg_paths, t
     settings = ExportSettings(
         aspect="16:9", resolution="160x90", transition_duration=0.1,
         background_blur=5, encoding="CPU", crf=28, preset="fast", normalize_audio=False,
+        video_order_mode="manual", duration_before_merge=1.0,
     )
     resolved = engine.make_plan(media, settings)
     output = tmp_path / "first_in_timeline.mp4"

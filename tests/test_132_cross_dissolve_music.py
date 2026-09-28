@@ -149,8 +149,9 @@ def test_real_default_cross_dissolve_and_music_mix_are_safe(ffmpeg_paths, tmp_pa
         preset="ultrafast", normalize_audio=False,
         voiceover_path=str(voice), music_path=str(music),
         original_audio_mode="mute", final_pause=0.2,
-        # Use the new defaults deliberately: no transition or music override.
-        ducking_enabled=True,
+        # Use the new transition/music defaults deliberately. Playback speed
+        # is independent of this test, so keep the fixture's raw-clock window.
+        duration_before_merge=1.0, ducking_enabled=True,
     )
     project = MainProjectEngine(engine, render_cache=Stage1RenderCache(tmp_path / "stage1-cache"))
     result = project.create_main(media, settings, tmp_path / "output")

@@ -148,6 +148,7 @@ def test_complete_two_stage_workflow_with_exact_order_subtitles_music_watermark_
         subtitle_position="Bottom", subtitle_model="tiny",
         watermark_enabled=True, watermark_path=str(mark), watermark_position="top_right",
         watermark_scope="both", watermark_size=12, watermark_opacity=80,
+        video_order_mode="manual",
     )
     result = MainProjectEngine(engine).create_main(
         media, settings, tmp_path / "output", aligner=aligner
