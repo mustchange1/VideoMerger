@@ -971,6 +971,15 @@ def short_settings(
         smart_visual_randomize_nonce=clamp_smart_visual_nonce(
             getattr(settings, "shorts_smart_visual_randomize_nonce", 0)
         ),
+        smart_visual_timeline_mode=str(
+            getattr(settings, "shorts_smart_visual_timeline_mode", "auto") or "auto"
+        ),
+        smart_visual_manual_overrides=dict(
+            getattr(settings, "shorts_smart_visual_manual_overrides", {}) or {}
+        ),
+        smart_visual_timeline_confirmed=bool(
+            getattr(settings, "shorts_smart_visual_timeline_confirmed", False)
+        ),
         # Phase 32: Shorts dedicated image transition + image visual effect,
         # resolved onto the canonical per-job fields of THIS Short only.
         timeline_image_transition_type=normalize_image_transition_choice(

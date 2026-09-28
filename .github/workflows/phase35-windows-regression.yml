@@ -1,0 +1,23 @@
+name: Phase 35 Windows regression
+
+on:
+  push:
+    branches:
+      - arena/01a0e7fb-videomerger
+  workflow_dispatch:
+
+jobs:
+  windows-regression:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Windows application dependencies
+        shell: pwsh
+        run: ./setup_windows.ps1 -NoShortcut -SkipSelfTest
+      - name: Run complete Windows regression suite
+        shell: pwsh
+        run: ./test_windows.ps1

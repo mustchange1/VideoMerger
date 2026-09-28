@@ -1,0 +1,9 @@
+PHASE 35 REAL FFMPEG E2E RESULTS
+output: /tmp/pytest-of-user/pytest-16/test_phase35_real_rendered_bou0/output/MainVideo_16x9.mp4
+fps: 30.0
+maximum_frame_drift: 1
+maximum_timing_drift_seconds: 0.033333
+
+forest requested=0.500000s planned=0.500000-4.500000s rendered=0.533333-4.500000s start_drift=+0.033333s frames=+1 no_mid_word=True
+ocean requested=4.500000s planned=4.520000-9.520000s rendered=4.533333-9.500000s start_drift=+0.013333s frames=+0 no_mid_word=True
+city requested=9.500000s planned=9.540000-13.540000s rendered=9.566667-13.533333s start_drift=+0.026667s frames=+1 no_mid_word=True

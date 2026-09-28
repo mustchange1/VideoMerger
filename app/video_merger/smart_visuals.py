@@ -134,6 +134,11 @@ DEFAULT_SMART_INSERT_PERCENT = 25
 DEFAULT_SMART_IMAGE_DURATION = 5.0
 MIN_SMART_IMAGE_DURATION = 0.5
 MAX_SMART_IMAGE_DURATION = 15.0
+# Phase 35 automatic speech-aware visibility contract. These bounds apply to
+# automatic audio-anchored Smart Visual placements only; legacy Phase-31..34
+# plans and explicit manual corrections retain their documented ranges.
+PHASE35_AUTO_MIN_DURATION = 4.0
+PHASE35_AUTO_MAX_DURATION = 10.0
 
 
 def normalize_source_priority(value: object) -> str:
@@ -268,6 +273,11 @@ class SmartVisualProfile:
     #: Randomize counter; changes the seeded assignment without touching the
     #: mode, the duration or the timeline itself.
     randomize_nonce: int = 0
+    # Phase 35 editor state is scoped to Smart Visuals and never touches the
+    # ordinary project timeline.
+    timeline_mode: str = "auto"
+    manual_overrides: dict = field(default_factory=dict)
+    timeline_confirmed: bool = False
 
     @property
     def active(self) -> bool:
@@ -325,6 +335,13 @@ def smart_visual_profile_from_settings(settings: object) -> SmartVisualProfile:
             getattr(settings, "smart_visual_insert_percent", DEFAULT_SMART_INSERT_PERCENT)
         ),
         randomize_nonce=clamp_smart_visual_nonce(getattr(settings, "smart_visual_randomize_nonce", 0)),
+        timeline_mode=(
+            str(getattr(settings, "smart_visual_timeline_mode", "auto") or "auto").casefold()
+            if str(getattr(settings, "smart_visual_timeline_mode", "auto") or "auto").casefold()
+            in {"auto", "hybrid", "manual"} else "auto"
+        ),
+        manual_overrides=dict(getattr(settings, "smart_visual_manual_overrides", {}) or {}),
+        timeline_confirmed=bool(getattr(settings, "smart_visual_timeline_confirmed", False)),
     )
 
 
@@ -1058,6 +1075,16 @@ class SmartVisualSlot:
     # START (the visual begins with the spoken topic) instead of the slot
     # midpoint (spec section 7).
     sentence_anchored: bool = False
+    # Phase 35: populated only when canonical voiceover alignment was supplied
+    # to the opt-in Smart Visual planner. Legacy/disabled workflows retain
+    # their Phase-34 proportional timing and never enter the new timeline.
+    audio_anchored: bool = False
+    requested_audio_boundary: float | None = None
+    selected_speech_boundary: float | None = None
+    speech_unit_index: int = -1
+    speech_boundary_reason: str = ""
+    resolved_insert_duration: float = 0.0
+    manual_override: dict = field(default_factory=dict)
 
     @property
     def clamped_duration(self) -> float:
@@ -1066,6 +1093,11 @@ class SmartVisualSlot:
     @property
     def effective_insert_duration(self) -> float:
         """Phase 33: the real duration of the inserted element."""
+        if self.resolved_insert_duration > 0:
+            # Speech-dense Phase-35 plans may legitimately need less than the
+            # historical 0.5 s target, but never less than the independently
+            # validated three-frame renderable minimum.
+            return min(MAX_SMART_IMAGE_DURATION, float(self.resolved_insert_duration))
         if self.insert_duration > 0:
             return max(MIN_SMART_IMAGE_DURATION, min(MAX_SMART_IMAGE_DURATION, float(self.insert_duration)))
         return self.clamped_duration
@@ -1082,6 +1114,8 @@ class SmartVisualPlan:
     image_transition_label: str = ""
     image_effect_label: str = ""
     image_effect_intensity_label: str = ""
+    # Phase 35 canonical speech units. Empty means the exact Phase-34 path.
+    speech_units: list = field(default_factory=list)
 
     @property
     def selected_count(self) -> int:
@@ -1136,6 +1170,10 @@ class SmartVisualPlan:
                     "matched_terms": ", ".join(slot.matched_terms) if slot.matched_terms else "",
                     "evidence": slot.evidence,
                     "scoring_engine": slot.scoring_engine,
+                    "audio_anchored": slot.audio_anchored,
+                    "requested_audio_boundary": slot.requested_audio_boundary,
+                    "selected_speech_boundary": slot.selected_speech_boundary,
+                    "speech_unit_index": slot.speech_unit_index,
                 }
             )
         return records
@@ -1162,6 +1200,13 @@ def smart_plan_identity(
             "reason": slot.reason,
             "prompt": slot.prompt,
         }
+        if slot.audio_anchored:
+            record["phase35"] = {
+                "requested_audio_boundary": round(float(slot.requested_audio_boundary or 0.0), 6),
+                "selected_speech_boundary": round(float(slot.selected_speech_boundary or 0.0), 6),
+                "speech_unit_index": int(slot.speech_unit_index),
+                "duration": round(float(slot.effective_insert_duration), 6),
+            }
         # Phase 32: the diagnostics tag joins the identity ONLY when the
         # fallback/generation settings deviate from the Phase-31 defaults,
         # so unchanged projects keep their exact plan identity.
@@ -1716,6 +1761,7 @@ def build_smart_visual_plan(
     image_transition_duration: float | None = None,
     image_visual_effect: str = "none",
     image_visual_effect_intensity: str = "low",
+    speech_units: list | None = None,
     log=print,
 ) -> SmartVisualPlan:
     """Build the complete Smart Visual plan BEFORE any rendering happens.
@@ -1756,6 +1802,28 @@ def build_smart_visual_plan(
             program_duration, profile.cadence
         )
         timed = assign_slot_times(drafts, program_duration)
+        # Phase 35 is an explicit opt-in extension of Smart Visuals only. When
+        # canonical alignment units are supplied, replace proportional slot
+        # clocks with acoustic sentence clocks. All ordinary and pre-Phase-35
+        # callers omit this argument and retain byte-compatible timing.
+        if speech_units:
+            unit_by_index = {int(unit.index): unit for unit in speech_units}
+            aligned: list[TimedSlot] = []
+            for item in timed:
+                covered = [
+                    unit_by_index[index] for index in item.draft.sentence_indices
+                    if index in unit_by_index
+                ]
+                if not covered:
+                    aligned.append(item)
+                    continue
+                aligned.append(TimedSlot(
+                    start=float(covered[0].start),
+                    end=float(covered[-1].end),
+                    draft=item.draft,
+                ))
+            timed = aligned
+            plan.speech_units = list(speech_units)
         if not timed:
             plan.diagnostics.append("Keine Slots ableitbar (kein Skript, keine Programmdauer).")
             return plan
@@ -1778,6 +1846,91 @@ def build_smart_visual_plan(
         )
         rng = Random(int(hashlib.sha256(seed_material.encode("utf-8")).hexdigest()[:12], 16))
         plan.slots = assign_smart_visual_selections(timed, entries, profile=profile, rng=rng)
+        if speech_units:
+            unit_by_index = {int(unit.index): unit for unit in speech_units}
+            candidates = [
+                slot for slot in plan.slots
+                if slot.selected_kind and slot.sentence_index in unit_by_index
+            ]
+            # First attach every semantic candidate to its true acoustic
+            # sentence boundary. Then enforce the automatic 4–10 second
+            # visibility contract by retaining topic boundaries at least four
+            # seconds apart. Dense intermediate sentences stay represented in
+            # diagnostics but do not create an impossible mid-visual change.
+            for slot in candidates:
+                unit = unit_by_index[slot.sentence_index]
+                slot.audio_anchored = True
+                slot.requested_audio_boundary = float(unit.start)
+                slot.selected_speech_boundary = float(unit.start)
+                slot.speech_unit_index = int(unit.index)
+                slot.speech_boundary_reason = str(unit.boundary_reason)
+            retained: list[SmartVisualSlot] = []
+            for slot in candidates:
+                boundary = float(slot.requested_audio_boundary or 0.0)
+                if retained and boundary - float(
+                    retained[-1].requested_audio_boundary or 0.0
+                ) < PHASE35_AUTO_MIN_DURATION - 1e-9:
+                    slot.selected_kind = ""
+                    slot.selected_path = ""
+                    slot.source_mode = ""
+                    slot.fallback_mode = SLOT_MODE_SKIPPED
+                    slot.reason = (
+                        slot.reason + "+automatic_dense_boundary_deferred_4s_minimum"
+                    ).strip("+")
+                    continue
+                retained.append(slot)
+            speech_end = max(float(unit.end) for unit in speech_units)
+            for index, slot in enumerate(retained):
+                start = float(slot.requested_audio_boundary or 0.0)
+                natural_end = (
+                    float(retained[index + 1].requested_audio_boundary or start)
+                    if index + 1 < len(retained)
+                    else speech_end
+                )
+                # Topic/sentence boundaries determine the natural duration.
+                # A long topic is capped at ten seconds; a short/final edge is
+                # held for four seconds rather than introducing an arbitrary
+                # early cut or an unrenderable fragment.
+                slot.resolved_insert_duration = max(
+                    PHASE35_AUTO_MIN_DURATION,
+                    min(PHASE35_AUTO_MAX_DURATION, natural_end - start),
+                )
+            # Persisted edits are separate Smart-Visual state and are applied
+            # to the resolved pre-render plan, never to the source timeline.
+            for slot in plan.slots:
+                override = profile.manual_overrides.get(str(slot.sentence_index))
+                if not isinstance(override, dict):
+                    continue
+                slot.manual_override = dict(override)
+                if bool(override.get("removed", False)):
+                    slot.selected_kind = ""
+                    slot.selected_path = ""
+                    slot.reason = "manual_removed"
+                    continue
+                try:
+                    if "start" in override:
+                        manual_start = max(0.0, float(override["start"]))
+                        slot.requested_audio_boundary = manual_start
+                    if "duration" in override:
+                        slot.resolved_insert_duration = max(
+                            max(0.12, 3.0 / max(1.0, float(fps))),
+                            min(MAX_SMART_IMAGE_DURATION, float(override["duration"])),
+                        )
+                except (TypeError, ValueError):
+                    plan.diagnostics.append(
+                        f"Manual override for sentence {slot.sentence_index} contains invalid timing."
+                    )
+                replacement_path = str(override.get("path", "") or "").strip()
+                if replacement_path:
+                    suffix = Path(replacement_path).suffix.casefold()
+                    if suffix in SMART_IMAGE_EXTENSIONS | SMART_VIDEO_EXTENSIONS:
+                        slot.selected_path = replacement_path
+                        slot.selected_kind = "image" if suffix in SMART_IMAGE_EXTENSIONS else "video"
+                        slot.selected_label = f"{Path(replacement_path).name} [manual]"
+                    else:
+                        plan.diagnostics.append(
+                            f"Manual replacement for sentence {slot.sentence_index} has unsupported media type."
+                        )
         skipped = sum(1 for slot in plan.slots if not slot.selected_kind)
         smart_count = sum(1 for slot in plan.slots if slot.source_mode == SLOT_SOURCE_SMART)
         random_count = sum(1 for slot in plan.slots if slot.source_mode == SLOT_SOURCE_RANDOM)
@@ -1828,6 +1981,8 @@ class SmartVisualApplyResult:
     media: list = field(default_factory=list)
     inserted: list = field(default_factory=list)  # (position, path, duration, kind)
     identity: str = ""
+    # Populated only by the Phase-35 audio-anchored Smart Visual path.
+    smart_timeline: object | None = None
 
     @property
     def count(self) -> int:
@@ -1871,6 +2026,7 @@ def apply_smart_visual_plan(
     transition_type: str,
     image_profile: ImageTimelineProfile,
     ffprobe_path: str | Path,
+    render_settings=None,
     log=print,
 ) -> SmartVisualApplyResult:
     """Insert the planned visuals into the fitted timeline.
@@ -1906,6 +2062,144 @@ def apply_smart_visual_plan(
         transition chain would end short of the planned program)."""
         frames = int(math.ceil(seconds / frame)) if ceil else int(math.floor(seconds / frame))
         return round(max(1, frames) * frame, 6)
+
+    # Phase 35: dedicated, opt-in, sequential Smart Visual timeline. This
+    # branch is unreachable unless canonical speech units marked at least one
+    # selected slot as audio-anchored. The legacy batching code below remains
+    # untouched for every ordinary/disabled and Phase-31..34 caller.
+    audio_slots = [
+        slot for slot in plan.slots
+        if slot.selected_kind and getattr(slot, "audio_anchored", False)
+    ]
+    if audio_slots:
+        from dataclasses import replace
+
+        from .models import ExportSettings
+        from .smart_timeline import (
+            SmartVisualTimeline,
+            insert_at_render_time,
+            render_chain,
+            validate_timeline,
+        )
+
+        chain_settings = render_settings or ExportSettings(
+            transition_type=transition_type,
+            transition_duration=0.7,
+            resolution=f"{width}x{height}",
+            fps_choice=str(fps),
+        )
+        timeline = SmartVisualTimeline(
+            enabled=True,
+            source_items=render_chain(items, chain_settings),
+            speech_units=list(plan.speech_units),
+        )
+        probe_cache: dict[str, dict | None] = {}
+        working = list(items)
+        for ordinal, slot in enumerate(sorted(
+            audio_slots,
+            key=lambda value: (
+                float(value.requested_audio_boundary or 0.0), value.sentence_index
+            ),
+        ), start=1):
+            duration = _frame_grid(slot.effective_insert_duration, ceil=True)
+            media_item = None
+            if slot.selected_kind == "video":
+                probed = probe_cache.get(slot.selected_path)
+                if probed is None and slot.selected_path not in probe_cache:
+                    probe_cache[slot.selected_path] = _probe_video_entry(slot.selected_path, ffprobe_path)
+                    probed = probe_cache[slot.selected_path]
+                if probed:
+                    duration = _frame_grid(
+                        min(duration, float(probed.get("duration") or duration)), ceil=False
+                    )
+                    if duration >= max(0.12, 3.0 / max(1.0, fps)):
+                        media_item = _make_smart_video_media(
+                            slot.selected_path, duration, probed, transition_type
+                        )
+            else:
+                path = Path(slot.selected_path)
+                if path.is_file():
+                    media_item = make_image_media(
+                        path=path,
+                        duration=duration,
+                        width=width,
+                        height=height,
+                        fps=fps,
+                        size=probe_image_size(path, ffprobe_path),
+                        transition_type=transition_type,
+                        profile=image_profile,
+                    )
+                    media_item = replace(media_item, smart_visual_insertion=True)
+            if media_item is not None:
+                # Dedicated marker for the speech-anchored render path. It is
+                # intentionally absent from all legacy/manual Smart Visuals.
+                media_item = replace(media_item, smart_visual_audio_anchored=True)
+            if media_item is None:
+                from .smart_timeline import SmartVisualPlacement
+
+                placement = SmartVisualPlacement(
+                    placement_id=f"sv-{ordinal:03d}",
+                    visual_path=slot.selected_path,
+                    visual_kind=slot.selected_kind,
+                    slot_type="speech_boundary",
+                    requested_audio_boundary=float(slot.requested_audio_boundary or 0.0),
+                    selected_speech_boundary=float(slot.selected_speech_boundary or 0.0),
+                    speech_unit_index=slot.speech_unit_index,
+                    speech_text=slot.sentence,
+                    semantic_reason=slot.reason,
+                    semantic_evidence=slot.evidence,
+                    visual_duration=duration,
+                    item_count_before=len(working),
+                    item_count_after=len(working),
+                    previous_insertions_present=bool(timeline.placements),
+                    status="skipped",
+                    reason=("video_unreadable_or_too_short" if slot.selected_kind == "video" else "missing_visual_asset"),
+                )
+            else:
+                working, placement = insert_at_render_time(
+                    working,
+                    media_item,
+                    float(slot.requested_audio_boundary or 0.0),
+                    chain_settings,
+                    fps,
+                )
+                placement.placement_id = f"sv-{ordinal:03d}"
+                placement.selected_speech_boundary = float(slot.selected_speech_boundary or 0.0)
+                placement.speech_unit_index = slot.speech_unit_index
+                placement.speech_text = slot.sentence
+                placement.semantic_reason = slot.reason
+                placement.semantic_evidence = slot.evidence
+            if slot.manual_override:
+                placement.automatic = False
+                placement.manual_override = dict(slot.manual_override)
+            timeline.placements.append(placement)
+            if placement.status == "inserted":
+                visual_index = next(
+                    (index for index, candidate in enumerate(working)
+                     if candidate is media_item), -1
+                )
+                result.inserted.append((visual_index, Path(slot.selected_path), duration, slot.selected_kind))
+                log(
+                    f"Phase 35 Smart Visual {placement.placement_id}: requested "
+                    f"{placement.requested_audio_boundary:.3f}s, expected "
+                    f"{placement.final_expected_start:.3f}s, drift "
+                    f"{placement.placement_drift:+.3f}s, items "
+                    f"{placement.item_count_before}->{placement.item_count_after}."
+                )
+            else:
+                slot.reason = (slot.reason + "+" + placement.reason).strip("+")
+                log(f"Phase 35 Smart Visual {placement.placement_id}: skipped ({placement.reason}).")
+        # Mark every resolved chain item, including split source fragments.
+        # This permits the renderer to frame-pad only this optional timeline;
+        # ordinary projects retain the historical filter graph exactly.
+        working = [replace(item, smart_visual_audio_anchored=True) for item in working]
+        timeline.resolved_items = render_chain(working, chain_settings)
+        validate_timeline(timeline, fps)
+        timeline.finalize_identity()
+        result.media = working
+        result.identity = timeline.identity
+        result.smart_timeline = timeline
+        return result
 
     for slot in plan.slots:
         if not slot.selected_kind:

@@ -255,9 +255,9 @@ def test_phase34_render_visuals_follow_sentences(tmp_path, ffmpeg_paths):
     # --- voiceover untouched --------------------------------------------------
     base_duration = _probe_duration(ffprobe, baseline.video)
     final_duration = _probe_duration(ffprobe, result.video)
-    # The three inserted stills (two shortened by sentence boundaries, one at
-    # target duration) extend the visual program; the voiceover itself is the
-    # same 2.4 s track in both renders.
+    # Phase 35's mandatory four-second automatic minimum retains the first
+    # topic and defers the two sub-four-second dense boundaries. The voiceover
+    # itself remains the same 2.4 s track in both renders.
     assert final_duration > base_duration + 3.0
 
     width, height = _probe_size(ffprobe, result.video)
@@ -266,27 +266,22 @@ def test_phase34_render_visuals_follow_sentences(tmp_path, ffmpeg_paths):
     cyan = _find_windows(ffmpeg, result.video, width, height, final_duration, _is_cyan)
     orange = _find_windows(ffmpeg, result.video, width, height, final_duration, _is_orange)
 
-    assert yellow and magenta and cyan, f"windows y={yellow} m={magenta} c={cyan}"
+    assert len(yellow) == 1, f"retained topic visual missing: {yellow}"
+    assert not magenta and not cyan, (
+        f"dense boundaries must be deferred rather than creating <4 s visuals: "
+        f"m={magenta} c={cyan}"
+    )
     # A cross-dissolve blend frame (e.g. red clip -> yellow still) can match
     # the orange predicate for a single scan sample; real asset windows are
     # longer than the 0.15 s transition.
     assert all(end - start <= 0.15 for start, end in orange), \
         f"the unrelated asset must never appear: {orange}"
-    assert len(yellow) == len(magenta) == len(cyan) == 1, "no duplicated topic visuals"
+    assert yellow[0][1] - yellow[0][0] >= 3.5  # four seconds minus edge fades
 
-    # Topic order matches the sentence order.
-    assert yellow[0][0] < magenta[0][0] < cyan[0][0]
-
-    # Sentence 1 begins with the meditation visual: it is the first smart
-    # visual to appear in the program.
-    first_smart_start = min(yellow[0][0], magenta[0][0], cyan[0][0])
-    assert yellow[0][0] == first_smart_start
-
-    # Safe duration rule (spec section 8): topic changes cut the previous
-    # visual short of the 5.0 s target; the final topic visual keeps it.
-    assert yellow[0][1] - yellow[0][0] < 2.5
-    assert magenta[0][1] - magenta[0][0] < 2.5
-    assert cyan[0][1] - cyan[0][0] >= 2.0
+    trace = json.loads((tmp_path / "smart" / "PHASE_35_DEBUG_TRACE.json").read_text(encoding="utf-8"))
+    inserted = [item for item in trace["placements"] if item["status"] == "inserted"]
+    assert len(inserted) == 1
+    assert inserted[0]["visual_duration"] == pytest.approx(4.0)
 
     # --- nothing was generated anywhere ---------------------------------------
     generated = tmp_path / "cache" / "smart_visual_generated"

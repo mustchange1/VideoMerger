@@ -228,6 +228,12 @@ def _media_payload(item: MediaInfo) -> dict[str, Any]:
         "image_zoom": int(getattr(item, "image_zoom", 100)),
         "image_filter": str(getattr(item, "image_filter", "natural")),
     }
+    # Phase-35 source offsets exist only on opt-in Smart Visual split
+    # fragments. Keeping zero absent preserves normal-workflow fingerprints.
+    if float(getattr(item, "source_start", 0.0) or 0.0) > 1e-9:
+        payload["source_start"] = float(item.source_start)
+    if bool(getattr(item, "smart_visual_audio_anchored", False)):
+        payload["smart_visual_audio_anchored"] = True
     if is_image:
         payload["image_transition_type"] = str(
             getattr(item, "image_transition_type", "") or ""

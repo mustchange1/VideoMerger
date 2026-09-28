@@ -364,14 +364,37 @@ class FFmpegCommandBuilder:
                 # real frames before its timeline duration ends.
                 rate = max(0.25, min(4.0, float(getattr(item, "playback_rate", 1.0) or 1.0)))
                 needed_source = max(2.0 / resolved.fps, duration * rate)
-                extra_pad = max(2.0 / resolved.fps, needed_source - original_duration + 2.0 / resolved.fps)
+                # Non-zero only for opt-in Phase-35 Smart Visual source
+                # fragments. Ordinary items retain the exact historical
+                # ``trim=duration=...`` expression below.
+                source_start = max(0.0, float(getattr(item, "source_start", 0.0) or 0.0))
+                extra_pad = max(
+                    2.0 / resolved.fps,
+                    source_start + needed_source - original_duration + 2.0 / resolved.fps,
+                )
                 rate_video = "" if abs(rate - 1.0) < 1e-6 else f"setpts=PTS/{_number(rate)},"
+                # A source-clock trim ending between decoded frames can leave
+                # a speech-split fragment one frame shorter than its resolved
+                # timeline duration. Pad/trim after rate conversion only on a
+                # marked Phase-35 chain so every xfade input reaches its exact
+                # calculated boundary; normal projects remain byte-identical.
+                phase35_tail = (
+                    f"tpad=stop_mode=clone:stop_duration={_number(2.0 / resolved.fps)},"
+                    f"trim=duration={_number(duration)},"
+                    if getattr(item, "smart_visual_audio_anchored", False)
+                    else ""
+                )
                 source = f"[{real_input[index]}:v:0]"
                 pre = f"pre{index}"
+                trim_video = (
+                    f"trim=start={_number(source_start)}:duration={_number(needed_source)}"
+                    if source_start > 1e-9
+                    else f"trim=duration={_number(needed_source)}"
+                )
                 lines.append(
                     f"{source}fps={resolved.fps_expr}:round=near,"
                     f"tpad=stop_mode=clone:stop_duration={_number(extra_pad)},"
-                    f"trim=duration={_number(needed_source)},{rate_video}settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
+                    f"{trim_video},{rate_video}{phase35_tail}settb=AVTB,setpts=PTS-STARTPTS[{pre}]"
                 )
 
                 target_ratio = width / height
@@ -509,10 +532,17 @@ class FFmpegCommandBuilder:
                 rate = max(0.25, min(4.0, float(getattr(item, "playback_rate", 1.0) or 1.0)))
                 if abs(rate - 1.0) > 1e-6:
                     rate_audio = _atempo_chain(rate) + ","
+                source_start = max(0.0, float(getattr(item, "source_start", 0.0) or 0.0))
+                source_audio_duration = duration * rate
+                trim_audio = (
+                    f"atrim=start={_number(source_start)}:duration={_number(source_audio_duration)},"
+                    if source_start > 1e-9
+                    else ""
+                )
                 lines.append(
                     f"[{real_input[index]}:a:0]aresample=48000:async=1:first_pts=0,"
                     f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
-                    f"{rate_audio}volume={_number(clip_gain)},"
+                    f"{trim_audio}{rate_audio}volume={_number(clip_gain)},"
                     f"apad=pad_dur={_number(duration + 0.25)},atrim=duration={_number(duration)},"
                     f"asetpts=PTS-STARTPTS[{audio_label}]"
                 )
@@ -525,6 +555,9 @@ class FFmpegCommandBuilder:
 
         video_chain = video_labels[0]
         chain_duration = resolved.effective_durations[0]
+        phase35_speech_chain = any(
+            bool(getattr(item, "smart_visual_audio_anchored", False)) for item in media
+        )
         for index in range(1, len(video_labels)):
             transition = resolved.transitions[index - 1]
             offset = max(0.0, chain_duration - transition)
@@ -537,12 +570,29 @@ class FFmpegCommandBuilder:
                     f"fps={resolved.fps_expr}:round=near,settb=AVTB[{output}]"
                 )
             else:
-                lines.append(
-                    f"[{video_chain}][{video_labels[index]}]xfade=transition=custom:"
-                    f"duration={_number(transition)}:offset={_number(offset)}:"
-                    f"expr='{dissolve_expression}',"
-                    f"fps={resolved.fps_expr}:round=near,settb=AVTB[{output}]"
-                )
+                # Phase 35 speech insertions can create very short source
+                # fragments around an early sentence boundary. FFmpeg 6's
+                # custom xfade expression is not gated reliably when several
+                # such fragments are chained: a later input can leak over the
+                # whole output. Its native fade has the same A→B cross-
+                # dissolve but performs the required pre/post-offset gating.
+                # Scope this to a render chain containing a marked Phase-35
+                # speech insertion: every later custom xfade in that chain can
+                # otherwise leak its B input before its offset. Ordinary,
+                # disabled and other transition styles stay exact.
+                if phase35_speech_chain and boundary_type == "cross_dissolve":
+                    lines.append(
+                        f"[{video_chain}][{video_labels[index]}]xfade=transition=fade:"
+                        f"duration={_number(transition)}:offset={_number(offset)},"
+                        f"fps={resolved.fps_expr}:round=near,settb=AVTB[{output}]"
+                    )
+                else:
+                    lines.append(
+                        f"[{video_chain}][{video_labels[index]}]xfade=transition=custom:"
+                        f"duration={_number(transition)}:offset={_number(offset)}:"
+                        f"expr='{dissolve_expression}',"
+                        f"fps={resolved.fps_expr}:round=near,settb=AVTB[{output}]"
+                    )
             video_chain = output
             chain_duration += resolved.effective_durations[index] - transition
 

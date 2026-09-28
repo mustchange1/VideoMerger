@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton,
+    QInputDialog,
     QListWidget, QListWidgetItem, QScrollArea, QSlider, QSpinBox, QDoubleSpinBox,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -3157,6 +3158,31 @@ class MainWindow(QMainWindow):
         analyze_row.addWidget(w["randomize_button"])
         layout.addLayout(analyze_row, row, 0, 1, 4)
         row += 1
+        # Phase 35 pre-render review/editor. Edits are persisted as Smart-
+        # Visual-only overrides and are applied to the resolved model before
+        # FFmpeg starts; no normal source timeline is ever modified.
+        put(QLabel("Timeline Mode"), row, 0)
+        w["timeline_mode"] = put(QComboBox(), row, 1)
+        for key, label in (("auto", "Auto"), ("hybrid", "Hybrid (Auto + edits)"), ("manual", "Manual")):
+            w["timeline_mode"].addItem(label, key)
+        w["timeline_confirmed"] = put(QCheckBox("Confirm Smart Visual Timeline for render"), row, 2, 1, 2)
+        row += 1
+        edit_row = QHBoxLayout()
+        w["edit_start"] = QPushButton("Move Start …")
+        w["edit_duration"] = QPushButton("Change Duration …")
+        w["replace_visual"] = QPushButton("Replace Visual …")
+        w["remove_visual"] = QPushButton("Remove Visual")
+        w["restore_visual"] = QPushButton("Restore Automatic")
+        for button in (w["edit_start"], w["edit_duration"], w["replace_visual"], w["remove_visual"], w["restore_visual"]):
+            edit_row.addWidget(button)
+        layout.addLayout(edit_row, row, 0, 1, 4)
+        row += 1
+        w["_manual_overrides"] = {}
+        w["edit_start"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "start"))
+        w["edit_duration"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "duration"))
+        w["replace_visual"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "replace"))
+        w["remove_visual"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "remove"))
+        w["restore_visual"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "restore"))
         w["analyze_list"] = put(QListWidget(), row, 0, 1, 4)
         w["analyze_list"].setMaximumHeight(150)
         row += 1
@@ -3182,7 +3208,9 @@ class MainWindow(QMainWindow):
         for key in ("mode", "image_duration", "index_button",
                     "analyze_button", "randomize_button", "analyze_list",
                     "image_transition", "image_transition_duration",
-                    "image_visual_effect"):
+                    "image_visual_effect", "timeline_mode", "timeline_confirmed",
+                    "edit_start", "edit_duration", "replace_visual",
+                    "remove_visual", "restore_visual"):
             widgets[key].setEnabled(enabled)
         # Smart Insert Frequency only means something in Mostly Random mode.
         mode = str(widgets["mode"].currentData() or "smart_match")
@@ -3255,6 +3283,9 @@ class MainWindow(QMainWindow):
             image_duration=clamp_smart_image_duration(w["image_duration"].value()),
             insert_percent=clamp_smart_insert_percent(w["insert_percent"].value()),
             randomize_nonce=clamp_smart_visual_nonce(w.get("_randomize_nonce", 0)),
+            timeline_mode=data("timeline_mode", "auto"),
+            manual_overrides=dict(w.get("_manual_overrides", {}) or {}),
+            timeline_confirmed=bool(w["timeline_confirmed"].isChecked()),
         )
 
     def _smart_visual_image_rendering_from_ui(self, prefix: str) -> dict:
@@ -3314,6 +3345,57 @@ class MainWindow(QMainWindow):
             f"{stats.indexed} new, {stats.reused} reused from cache, {stats.errors} error(s). "
             f"Categories: {', '.join(stats.categories) if stats.categories else '–'}"
         )
+
+    def _smart_visual_edit_selected(self, prefix: str, action: str) -> None:
+        """Edit one pre-render placement; never mutate the source timeline."""
+        widgets = self._smart_visual_widgets[prefix]
+        item = widgets["analyze_list"].currentItem()
+        sentence_index = item.data(Qt.UserRole) if item is not None else None
+        if sentence_index is None or int(sentence_index) < 0:
+            QMessageBox.information(self, "Smart Visual Timeline", "Select a visual placement row first.")
+            return
+        key = str(int(sentence_index))
+        overrides = dict(widgets.get("_manual_overrides", {}) or {})
+        current = dict(overrides.get(key, {}) or {})
+        if action == "start":
+            value, ok = QInputDialog.getDouble(
+                self, "Move Smart Visual Start", "Final audio timeline start (seconds):",
+                float(current.get("start", 0.0) or 0.0), 0.0, 86400.0, 3,
+            )
+            if not ok:
+                return
+            current["start"] = value
+        elif action == "duration":
+            value, ok = QInputDialog.getDouble(
+                self, "Smart Visual Duration", "Duration (seconds):",
+                float(current.get("duration", 5.0) or 5.0), 0.12, 15.0, 3,
+            )
+            if not ok:
+                return
+            current["duration"] = value
+        elif action == "replace":
+            path, _selected = QFileDialog.getOpenFileName(
+                self, "Replace Smart Visual", "",
+                "Visual Media (*.png *.jpg *.jpeg *.webp *.bmp *.mp4 *.mov *.mkv *.webm *.m4v *.avi)",
+            )
+            if not path:
+                return
+            current["path"] = str(Path(path).expanduser().resolve())
+        elif action == "remove":
+            current["removed"] = True
+        elif action == "restore":
+            overrides.pop(key, None)
+            widgets["_manual_overrides"] = overrides
+            mode = "auto" if not overrides else "hybrid"
+            widgets["timeline_mode"].setCurrentIndex(widgets["timeline_mode"].findData(mode))
+            widgets["timeline_confirmed"].setChecked(False)
+            self._smart_visual_analyze_timeline(prefix)
+            return
+        overrides[key] = current
+        widgets["_manual_overrides"] = overrides
+        widgets["timeline_mode"].setCurrentIndex(widgets["timeline_mode"].findData("hybrid"))
+        widgets["timeline_confirmed"].setChecked(False)
+        self._smart_visual_analyze_timeline(prefix)
 
     def _smart_visual_randomize_timeline(self, prefix: str) -> None:
         """Phase 33: Randomize Timeline - bump the nonce and re-analyze.
@@ -3409,10 +3491,12 @@ class MainWindow(QMainWindow):
         for record in plan.to_records():
             # Phase 33 Analyze Timeline: per-region start/end/duration, type
             # and file name, topic, Smart-or-Random source, score and reason.
-            widgets["analyze_list"].addItem(
+            visual_item = QListWidgetItem(
                 f"[{record['time']}] {record['kind'].upper()} {record['selected']} · "
                 f"{record['insert_duration']:.1f}s · topic: {record['topic']}"
             )
+            visual_item.setData(Qt.UserRole, int(record.get("sentence_index", -1)))
+            widgets["analyze_list"].addItem(visual_item)
             widgets["analyze_list"].addItem(
                 f"    Source: {record.get('source_label') or record['source']} · score "
                 f"{record['match']} · reason: {record['reason'] or '–'}"
@@ -3471,6 +3555,10 @@ class MainWindow(QMainWindow):
                 w["_randomize_nonce"] = max(0, int(value("randomize_nonce", 0)))
             except (TypeError, ValueError):
                 w["_randomize_nonce"] = 0
+            set_combo(w["timeline_mode"], str(value("timeline_mode", "auto")), "auto")
+            raw_overrides = value("manual_overrides", {})
+            w["_manual_overrides"] = dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
+            w["timeline_confirmed"].setChecked(bool(value("timeline_confirmed", False)))
             # Phase 32: the dedicated image rendering (missing keys fall
             # back to the safe defaults).
             set_combo(w["image_transition"], str(image_value("transition_type", "project")), "project")
@@ -3531,6 +3619,9 @@ class MainWindow(QMainWindow):
                 "image_duration": profile.image_duration,
                 "insert_percent": profile.insert_percent,
                 "randomize_nonce": profile.randomize_nonce,
+                "timeline_mode": profile.timeline_mode,
+                "manual_overrides": dict(profile.manual_overrides),
+                "timeline_confirmed": profile.timeline_confirmed,
             }
             for key, default in legacy_keys.items():
                 result[key] = getattr(self.saved, settings_prefix + key, default)

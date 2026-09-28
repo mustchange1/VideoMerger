@@ -356,6 +356,72 @@ def _concatenate_alignment(
     )
 
 
+def _prepare_smart_visual_alignment(
+    *, aligner, script_mode: str, global_script: Path | None,
+    unit_scripts: list[Path | None], voice_assets: list, language: str,
+    pause: float, log: LogCallback,
+) -> tuple[str, AlignmentResult]:
+    """Compute canonical alignment once for opt-in Phase-35 timing."""
+    if script_mode == "matched":
+        parts: list[tuple[AlignmentResult, float, int]] = []
+        segments: list[str] = []
+        char_cursor = 0
+        time_cursor = 0.0
+        languages: list[str] = []
+        for unit_index, (asset, script_path_unit) in enumerate(zip(voice_assets, unit_scripts)):
+            segment = ""
+            unit_alignment = AlignmentResult(
+                words=[], language="auto", method="no script coverage",
+                compatibility=1.0, average_confidence=0.0,
+                warnings=[f"No script coverage for voiceover: {asset.path.name}"],
+            )
+            if script_path_unit is not None and script_path_unit.is_file():
+                segment = read_script(require_asset(
+                    script_path_unit, "Textskript", {".txt", ".text", ".md"}
+                )).strip()
+                if segment:
+                    kwargs = ({"fallback_end": asset.duration}
+                              if isinstance(aligner, LocalWordAligner) else {})
+                    unit_alignment = aligner.align(segment, asset.path, language, **kwargs)
+            segments.append(segment)
+            languages.append(unit_alignment.language)
+            parts.append((unit_alignment, time_cursor, char_cursor))
+            char_cursor += len(segment) + (2 if unit_index < len(voice_assets) - 1 else 0)
+            time_cursor += asset.duration + (pause if unit_index < len(voice_assets) - 1 else 0.0)
+        script = "\n\n".join(segments)
+        return script, _concatenate_alignment(parts, script, languages)
+    script = read_script(require_asset(
+        global_script, "Textskript", {".txt", ".text", ".md"}
+    ))
+    if hasattr(aligner, "align_global"):
+        return script, aligner.align_global(
+            script, [(asset.path, asset.duration) for asset in voice_assets], language, pause
+        )
+    recognized_all: list[WordTiming] = []
+    detected_languages: list[str] = []
+    pause_boundaries: list[float] = []
+    time_cursor = 0.0
+    for unit_index, asset in enumerate(voice_assets):
+        recognized, detected = aligner.recognize(asset.path, language)
+        recognized_all.extend(_offset_words([
+            WordTiming(text=word.text, start=word.start, end=word.end,
+                       confidence=word.confidence)
+            for word in recognized
+        ], time_cursor, 0))
+        detected_languages.append(detected)
+        time_cursor += asset.duration
+        if unit_index < len(voice_assets) - 1:
+            time_cursor += pause
+            if pause > 1e-9:
+                pause_boundaries.append(time_cursor)
+    alignment = aligner.align_from_recognized(
+        script, recognized_all,
+        detected_languages[0] if detected_languages else language,
+    )
+    alignment.hard_breaks = sorted(set(alignment.hard_breaks + pause_boundaries))
+    return script, alignment
+
+
 def _aspect_token(aspect: str) -> str:
     return "9x16" if aspect == "9:16" else "16x9"
 
@@ -1059,13 +1125,62 @@ class MainProjectEngine:
         smart_profile = smart_visual_profile_from_settings(settings)
         smart_apply = None
         smart_target_extension = 0.0
+        phase35_script = ""
+        phase35_alignment: AlignmentResult | None = None
+        phase35_speech_units: list = []
+        if (
+            smart_profile.active
+            and smart_profile.timeline_mode in {"hybrid", "manual"}
+            and smart_profile.manual_overrides
+            and not smart_profile.timeline_confirmed
+        ):
+            raise VideoMergerError(
+                "Smart Visual timeline has unconfirmed manual edits. Review the "
+                "timeline and enable 'Confirm Smart Visual Timeline for render'."
+            )
+        # Canonical speech timing is paid for ONLY by active Smart Visuals.
+        # The ordinary path never imports/runs the Phase-35 model. If captions
+        # are also requested, the subtitle block below reuses this exact
+        # result and cannot invoke ASR a second time.
+        if smart_profile.active and render_media and voice_assets and (global_script or matched_script_paths):
+            try:
+                aligner = aligner or LocalWordAligner(settings.subtitle_model)
+                phase35_script, phase35_alignment = _prepare_smart_visual_alignment(
+                    aligner=aligner,
+                    script_mode=script_mode,
+                    global_script=global_script,
+                    unit_scripts=unit_scripts,
+                    voice_assets=voice_assets,
+                    language=settings.subtitle_language,
+                    pause=inter_voiceover_pause,
+                    log=log,
+                )
+                from .smart_timeline import build_speech_units
+
+                phase35_speech_units = build_speech_units(
+                    phase35_script, phase35_alignment.words
+                )
+                log(
+                    f"Phase 35 speech structure: {len(phase35_speech_units)} "
+                    "audio-anchored unit(s), canonical alignment reused."
+                )
+            except Exception as exc:
+                # Smart Visuals remains an optional layer. Preserve the stable
+                # render and report why speech-aware placement was unavailable.
+                log(f"Phase 35 speech timing unavailable; Smart Visuals uses legacy planning ({exc}).")
+                phase35_script = ""
+                phase35_alignment = None
+                phase35_speech_units = []
+        smart_base_media = list(render_media)
         if smart_profile.active and render_media:
             try:
                 smart_canvas = resolve_export(render_media, settings)
-                smart_script_text = "\n".join(
-                    path.read_text(encoding="utf-8", errors="replace")
-                    for path in script_files
-                ) if script_files else ""
+                smart_script_text = phase35_script or (
+                    "\n".join(
+                        path.read_text(encoding="utf-8", errors="replace")
+                        for path in script_files
+                    ) if script_files else ""
+                )
                 smart_plan = build_smart_visual_plan(
                     profile=smart_profile,
                     script_text=smart_script_text,
@@ -1100,6 +1215,7 @@ class MainProjectEngine:
                     image_visual_effect_intensity=str(
                         getattr(settings, "timeline_image_visual_effect_intensity", "low") or "low"
                     ),
+                    speech_units=phase35_speech_units or None,
                     log=log,
                 )
                 if smart_plan.selected_count:
@@ -1112,6 +1228,7 @@ class MainProjectEngine:
                         transition_type=settings.transition_type,
                         image_profile=image_timeline_profile_from_settings(settings),
                         ffprobe_path=self.engine.ffprobe_path,
+                        render_settings=settings,
                         log=log,
                     )
                     if smart_apply.count:
@@ -1120,8 +1237,23 @@ class MainProjectEngine:
                         render_media = smart_apply.media
                         after_chain = resolve_export(render_media, chain_probe).expected_duration
                         smart_target_extension = max(0.0, after_chain - before_chain)
+                        if smart_apply.smart_timeline is not None:
+                            output_dir.mkdir(parents=True, exist_ok=True)
+                            smart_apply.smart_timeline.write_reports(
+                                output_dir / "PHASE_35_DEBUG_TRACE.json",
+                                output_dir / "PHASE_35_DEBUG_TRACE.txt",
+                            )
+                            if not smart_apply.smart_timeline.valid:
+                                raise VideoMergerError(
+                                    "Smart Visual timeline validation failed: "
+                                    + "; ".join(smart_apply.smart_timeline.validation_errors)
+                                )
             except Exception as exc:  # spec section 32: the project stays renderable
                 log(f"Phase 33 Smart Visuals: deaktiviert durch Fallback ({exc}).")
+                # Application may already have produced a candidate list before
+                # validation/reporting failed. Restore the exact fitted baseline
+                # so optional Smart Visuals can never leak a partial timeline.
+                render_media = smart_base_media
                 smart_apply = None
                 smart_target_extension = 0.0
 
@@ -1413,7 +1545,14 @@ class MainProjectEngine:
                 combined_alignment: AlignmentResult | None = None
                 try:
                     from .alignment import script_word_spans
-                    if script_mode == "matched":
+                    if phase35_alignment is not None:
+                        combined_script = phase35_script
+                        combined_alignment = phase35_alignment
+                        log(
+                            "Phase 35 alignment reuse: canonical speech timing "
+                            "reused for subtitles; ASR was not repeated."
+                        )
+                    elif script_mode == "matched":
                         # Align every voiceover/script pair separately (each pair
                         # is independently cacheable), then concatenate the
                         # canonical word timelines with cumulative offsets.

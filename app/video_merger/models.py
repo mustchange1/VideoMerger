@@ -207,6 +207,10 @@ class MediaInfo:
     # clip down (stretch), > 1.0 speeds it up. The render graph applies this
     # via setpts on the video chain and atempo on the clip's own audio.
     playback_rate: float = 1.0
+    # Phase 35 Smart Visual source splitting. This is a SOURCE-clock offset
+    # used only by opt-in Smart Visual timeline fragments. The zero default is
+    # intentionally inert, preserving every normal render graph byte-for-byte.
+    source_start: float = 0.0
     # Add Image is a real, silent Stage-2 image input with its own flag and
     # settings payload, so image composition changes are always explicit.
     is_image_insertion: bool = False
@@ -230,6 +234,10 @@ class MediaInfo:
     # except that its original audio is silenced; the flag lets the Phase-30
     # image timeline planner keep counting only genuine source videos.
     smart_visual_insertion: bool = False
+    # Phase 35 audio-anchored insertions use FFmpeg's native gated fade at
+    # adjacent cross-dissolve boundaries. The explicit marker keeps every
+    # legacy/disabled render graph byte-identical.
+    smart_visual_audio_anchored: bool = False
     # Phase 32: dedicated subtle visual effect applied to this image element
     # ONLY (never to normal videos, subtitles or audio). Empty strings are
     # the historical state: the command builder reads these fields only for
@@ -791,6 +799,14 @@ class ExportSettings:
     shorts_smart_visual_image_duration: float = 5.0
     shorts_smart_visual_insert_percent: int = 25
     shorts_smart_visual_randomize_nonce: int = 0
+    # Phase 35 remains wholly inside Smart Visuals. AUTO needs no overrides;
+    # HYBRID/MANUAL store edits separately from the production source timeline.
+    smart_visual_timeline_mode: str = "auto"       # auto | hybrid | manual
+    smart_visual_manual_overrides: dict = field(default_factory=dict)
+    smart_visual_timeline_confirmed: bool = False
+    shorts_smart_visual_timeline_mode: str = "auto"
+    shorts_smart_visual_manual_overrides: dict = field(default_factory=dict)
+    shorts_smart_visual_timeline_confirmed: bool = False
     # Dedicated image transitions, independent from the normal video
     # transitions. "project" = follow the profile's video transition (the
     # historical behavior); any explicit type is used at every boundary

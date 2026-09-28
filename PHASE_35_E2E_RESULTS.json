@@ -1,0 +1,67 @@
+{
+  "schema": "videomerger-phase35-e2e-v1",
+  "ffmpeg": "ffmpeg version 6.0-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2023 the FFmpeg developers",
+  "ffprobe": "ffprobe version 6.0-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2007-2023 the FFmpeg developers",
+  "output": "/tmp/pytest-of-user/pytest-16/test_phase35_real_rendered_bou0/output/MainVideo_16x9.mp4",
+  "fps": 30.0,
+  "requested_visuals": 3,
+  "planned_visuals": 3,
+  "rendered_visuals": 3,
+  "maximum_frame_drift": 1,
+  "maximum_timing_drift_seconds": 0.033333333333333326,
+  "sentence_boundaries": [
+    0.5,
+    4.5,
+    9.5
+  ],
+  "visuals": [
+    {
+      "visual": "forest",
+      "requested_boundary": 0.5,
+      "planned_start": 0.5,
+      "planned_end": 4.5,
+      "rendered_start": 0.5333333333333333,
+      "rendered_end": 4.5,
+      "start_drift_seconds": 0.033333333333333326,
+      "end_drift_seconds": 0.0,
+      "start_frame_drift": 1,
+      "end_frame_drift": 0,
+      "no_mid_word": true,
+      "transition_overlap": 0.3,
+      "duration": 4.0
+    },
+    {
+      "visual": "ocean",
+      "requested_boundary": 4.5,
+      "planned_start": 4.5200000000000005,
+      "planned_end": 9.52,
+      "rendered_start": 4.533333333333333,
+      "rendered_end": 9.5,
+      "start_drift_seconds": 0.013333333333332753,
+      "end_drift_seconds": -0.019999999999999574,
+      "start_frame_drift": 0,
+      "end_frame_drift": -1,
+      "no_mid_word": true,
+      "transition_overlap": 0.09,
+      "duration": 5.0
+    },
+    {
+      "visual": "city",
+      "requested_boundary": 9.5,
+      "planned_start": 9.54,
+      "planned_end": 13.54,
+      "rendered_start": 9.566666666666666,
+      "rendered_end": 13.533333333333333,
+      "start_drift_seconds": 0.026666666666667282,
+      "end_drift_seconds": -0.0066666666666659324,
+      "start_frame_drift": 1,
+      "end_frame_drift": 0,
+      "no_mid_word": true,
+      "transition_overlap": 0.09,
+      "duration": 4.0
+    }
+  ],
+  "subtitle_alignment_reused": true,
+  "all_changes_at_word_boundaries": true,
+  "transition_chain_verified": true
+}
