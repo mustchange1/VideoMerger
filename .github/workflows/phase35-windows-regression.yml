@@ -24,6 +24,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTEST_ADDOPTS = '--junitxml=windows-results.xml'
+          $env:QT_QPA_PLATFORM = 'offscreen'
           ./test_windows.ps1
           exit $LASTEXITCODE
       - name: Publish Windows regression summary
