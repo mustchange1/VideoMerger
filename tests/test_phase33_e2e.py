@@ -234,9 +234,9 @@ def test_exhausted_pool_reuses_without_back_to_back_repeats(ffmpeg_paths, tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# 4 - the single Image Duration drives the inserted time
+# 4 - Phase-35 automatic speech duration supersedes the legacy fixed setting
 # ---------------------------------------------------------------------------
-def test_image_duration_setting_controls_inserted_time(ffmpeg_paths, tmp_path):
+def test_automatic_speech_duration_ignores_legacy_fixed_image_duration(ffmpeg_paths, tmp_path):
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _smart_project_factory(
         tmp_path, ffmpeg, ffprobe, CITY_SCRIPT
@@ -274,9 +274,11 @@ def test_image_duration_setting_controls_inserted_time(ffmpeg_paths, tmp_path):
     short = render("dur_short", 1.0)
     long = render("dur_long", 5.0)
     assert short > base_duration, "inserted images extend the program"
-    expected = image_slots * (5.0 - 1.0)
-    assert long - short == pytest.approx(expected, abs=0.6), \
-        "the single image duration scales the inserted time"
+    # Canonical speech-anchored automatic placements use the mandatory
+    # boundary-derived 4–10 second policy. The historical fixed image-duration
+    # preference remains persisted for legacy/manual paths but cannot shorten
+    # or lengthen this automatic timeline.
+    assert long - short == pytest.approx(0.0, abs=0.12)
 
 
 def test_default_image_duration_is_5_seconds(ffmpeg_paths, tmp_path):

@@ -246,7 +246,9 @@ def test_C_matching_video_chosen_with_video_first_priority(ffmpeg_paths, tmp_pat
     engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, CITY_SCRIPT)
     city = tmp_path / "city"
     city.mkdir(parents=True, exist_ok=True)
-    make_clip(ffmpeg, city / "city traffic.mp4", size="160x90", duration=1.6, color="white", audio_rate=None)
+    # Give image and video identical semantic filename evidence so the tested
+    # video_first policy is the deciding tie-breaker, not a relevance mismatch.
+    make_clip(ffmpeg, city / "city street.mp4", size="160x90", duration=1.6, color="white", audio_rate=None)
     _make_image(ffmpeg, city / "city street.png", "yellow")
 
     baseline = MainProjectEngine(engine).create_main(

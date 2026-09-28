@@ -150,7 +150,8 @@ def test_transition_has_real_time_varying_blur_not_only_xfade(ffmpeg_paths, tmp_
     engine = VideoMergerEngine(ffmpeg, ffprobe)
     media = engine.analyze(discover_videos(folder))
     settings = ExportSettings(
-        aspect="16:9", resolution="160x90", transition_duration=0.4,
+        aspect="16:9", resolution="160x90", transition_type="smooth_blur",
+        transition_duration=0.4, duration_before_merge=1.0,
         encoding="CPU", crf=24, preset="fast", normalize_audio=False,
     )
     resolved = engine.make_plan(media, settings)

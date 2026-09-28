@@ -21,6 +21,7 @@ inertness); A/D/E/E2/F/H keep their original meaning and pass unchanged.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -428,8 +429,16 @@ def test_E2_image_transition_none_hard_cut(ffmpeg_paths, tmp_path):
         tmp_path / "cut_none", aligner=aligner,
     )
     assert hard_cut.video.is_file() and hard_cut.report.ok
-    # Every image boundary loses its 0.15 s overlap => a hard cut is longer.
-    expected = 2 * image_slots * 0.15
+    trace = json.loads(
+        (tmp_path / "cut_base" / "PHASE_35_DEBUG_TRACE.json").read_text(encoding="utf-8")
+    )
+    rendered_image_slots = sum(
+        1 for item in trace["placements"] if item["status"] == "inserted"
+    )
+    assert rendered_image_slots >= 1
+    # Every retained image boundary loses its 0.15 s overlap, so a hard cut is
+    # longer. Dense semantic candidates deferred by Phase 35 do not count.
+    expected = 2 * rendered_image_slots * 0.15
     delta = _probe_duration(ffprobe, hard_cut.video) - _probe_duration(ffprobe, baseline.video)
     assert delta == pytest.approx(expected, abs=0.2)
 

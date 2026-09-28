@@ -8,6 +8,7 @@ libraries into false passes; the existing E2E suites retain their real guards.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -77,8 +78,12 @@ def test_order_modes_include_all_requested_deterministic_choices():
 
 def test_modification_date_oldest_and_newest_are_stable(tmp_path):
     paths = _paths(tmp_path, 3)
+    # Use realistic, whole-second-separated mtimes. Windows filesystems clamp
+    # tiny near-epoch nanosecond values and can collapse all three to one time.
+    base = time.time_ns() - 10_000_000_000
     for index, path in enumerate(paths):
-        os.utime(path, ns=(1_000 + index * 10, 2_000 + index * 10))
+        stamp = base + index * 1_000_000_000
+        os.utime(path, ns=(stamp, stamp))
     assert [p.name for p in order_voiceover_paths(paths, "mtime_oldest")] == [
         "voice_1.wav", "voice_2.wav", "voice_3.wav"
     ]
