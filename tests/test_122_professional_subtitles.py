@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.video_merger.alignment import script_word_spans
+from app.video_merger.filter_escape import filter_file_value
 from app.video_merger.font_manager import bundled_fonts_dir, resolve_font
 from app.video_merger.models import AlignmentResult, ExportSettings, WordTiming
 from app.video_merger.platform_utils import hidden_process_flags, safe_subprocess_env
@@ -42,12 +43,15 @@ def _alignment(script: str, starts: list[float] | None = None, step: float = .45
 
 
 def _render_ass(ffmpeg: Path, ass: Path, output: Path, width: int, height: int, duration: float = 2.7) -> None:
-    font_dir = bundled_fonts_dir().as_posix().replace("'", r"\'")
-    ass_path = ass.as_posix().replace("'", r"\'")
+    # Exercise the same Windows-safe, unquoted two-pass escaping used by the
+    # production filter graph. Quoted drive-letter paths are invalid because
+    # the option parser treats the drive colon as a separator.
+    font_dir = filter_file_value(bundled_fonts_dir(), None)
+    ass_path = filter_file_value(ass, None)
     _run([
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
         "-f", "lavfi", "-i", f"color=c=0x08152f:s={width}x{height}:r=30:d={duration}",
-        "-vf", f"subtitles=filename='{ass_path}':fontsdir='{font_dir}'",
+        "-vf", f"subtitles=filename={ass_path}:fontsdir={font_dir}",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p",
         "-an", output,
     ])
@@ -63,12 +67,12 @@ def _raw_frame(ffmpeg: Path, video: Path, seconds: float, width: int, height: in
 
 
 def _render_ass_image(ffmpeg: Path, ass: Path, output: Path, width: int, height: int, at: float = .20) -> bytes:
-    font_dir = bundled_fonts_dir().as_posix().replace("'", r"\'")
-    ass_path = ass.as_posix().replace("'", r"\'")
+    font_dir = filter_file_value(bundled_fonts_dir(), None)
+    ass_path = filter_file_value(ass, None)
     _run([
         ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
         "-f", "lavfi", "-i", f"color=c=0x08152f:s={width}x{height}:r=30:d=1.5",
-        "-vf", f"subtitles=filename='{ass_path}':fontsdir='{font_dir}'",
+        "-vf", f"subtitles=filename={ass_path}:fontsdir={font_dir}",
         "-ss", f"{at:.3f}", "-frames:v", "1", "-update", "1", output,
     ])
     raw = _run([

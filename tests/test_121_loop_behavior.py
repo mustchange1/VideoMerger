@@ -80,6 +80,10 @@ def test_real_loop_and_hold_outputs_follow_manual_order_and_exact_target(ffmpeg_
         resolution="160x90", encoding="CPU", preset="fast", crf=28,
         normalize_audio=False, voiceover_path=str(voice), final_pause=.5,
         transition_type="cross_dissolve", transition_duration=.2,
+        # This test isolates manual-order loop/hold behavior. Opt out of the
+        # independent default 0.70 pre-merge speed and request manual order
+        # explicitly instead of relying on historical defaults.
+        duration_before_merge=1.0, video_order_mode="manual",
     )
     loop_result = MainProjectEngine(engine).create_main(
         media, ExportSettings(**base, short_video_mode="loop"), tmp_path / "loop"

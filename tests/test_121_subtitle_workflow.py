@@ -41,7 +41,10 @@ def _bright_caption_pixels(ffmpeg, image, width, height):
         "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
     ])
     count = 0
-    for y in range(int(height * .62), height):
+    # Caption position defaults to Center. Search the full safe canvas rather
+    # than the historical bottom-only region; positioning has independent
+    # geometry coverage elsewhere.
+    for y in range(int(height * .08), int(height * .92)):
         for x in range(int(width * .08), int(width * .92)):
             offset = (y * width + x) * 3
             if min(raw[offset:offset + 3]) > 175:
@@ -121,7 +124,9 @@ def test_subtitle_failure_is_explicit_and_leaves_no_captionless_video(ffmpeg_pat
     aligner = LocalWordAligner("test", lambda _p, _l: ([], "en"))
     media = VideoMergerEngine(ffmpeg, ffprobe).analyze([clip])
     output = tmp_path / "output"
-    with pytest.raises(Exception, match=r"^SUBTITLE GENERATION FAILED \[local ASR / word alignment\]"):
+    # Empty recognized speech reaches the authoritative script-language
+    # coverage guard and is reported as an alignment mismatch.
+    with pytest.raises(Exception, match=r"^SUBTITLE GENERATION FAILED \[language / script alignment\]"):
         MainProjectEngine(VideoMergerEngine(ffmpeg, ffprobe)).create_main(
             media,
             ExportSettings(
