@@ -19,5 +19,43 @@ jobs:
         shell: pwsh
         run: ./setup_windows.ps1 -NoShortcut -SkipSelfTest
       - name: Run complete Windows regression suite
+        id: regression
+        continue-on-error: true
         shell: pwsh
-        run: ./test_windows.ps1
+        run: |
+          $env:PYTEST_ADDOPTS = '--junitxml=windows-results.xml'
+          ./test_windows.ps1
+          exit $LASTEXITCODE
+      - name: Publish Windows regression summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path windows-results.xml)) {
+            Write-Output '::error title=Windows regression::JUnit result file was not produced.'
+            exit 1
+          }
+          [xml]$Results = Get-Content windows-results.xml
+          $Suite = $Results.testsuites.testsuite
+          $Summary = "tests=$($Suite.tests) failures=$($Suite.failures) errors=$($Suite.errors) skipped=$($Suite.skipped) time=$($Suite.time)s"
+          Write-Output $Summary
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Native Windows regression`n`n$Summary"
+          foreach ($Case in $Suite.testcase) {
+            $Problem = if ($Case.failure) { $Case.failure } elseif ($Case.error) { $Case.error } else { $null }
+            if ($Problem) {
+              $Text = [string]$Problem.InnerText
+              if ($Text.Length -gt 4000) { $Text = $Text.Substring(0, 4000) }
+              $Text = $Text.Replace("`r", ' ').Replace("`n", ' ')
+              Write-Output "::error title=$($Case.classname).$($Case.name)::$Text"
+            }
+          }
+          if ('${{ steps.regression.outcome }}' -ne 'success') { exit 1 }
+      - name: Upload Windows regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase35-windows-regression-${{ github.sha }}
+          path: |
+            windows-results.xml
+            PHASE_35_E2E_RESULTS.json
+            PHASE_35_E2E_RESULTS.txt
+          if-no-files-found: warn
