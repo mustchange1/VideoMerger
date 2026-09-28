@@ -125,7 +125,8 @@ def test_smart_match_places_matched_images_and_keeps_timing(ffmpeg_paths, tmp_pa
         "Smart Visuals must never touch subtitle timing"
     base_duration = _probe_duration(ffprobe, baseline.video)
     final_duration = _probe_duration(ffprobe, result.video)
-    assert final_duration > base_duration + 1.0, "matched images extend the program"
+    assert final_duration == pytest.approx(7.2, abs=0.08), "Smart timeline is audio-locked"
+    assert final_duration <= base_duration + 0.08
     width, height = _probe_size(ffprobe, result.video)
     windows = _find_windows(ffmpeg, result.video, width, height, final_duration, _yellow_predicate)
     assert windows, "the matched image sections must be visible"
@@ -273,11 +274,11 @@ def test_automatic_speech_duration_ignores_legacy_fixed_image_duration(ffmpeg_pa
     base_duration = _probe_duration(ffprobe, baseline.video)
     short = render("dur_short", 1.0)
     long = render("dur_long", 5.0)
-    assert short > base_duration, "inserted images extend the program"
-    # Canonical speech-anchored automatic placements use the mandatory
-    # boundary-derived 4–10 second policy. The historical fixed image-duration
-    # preference remains persisted for legacy/manual paths but cannot shorten
-    # or lengthen this automatic timeline.
+    assert short == pytest.approx(7.2, abs=0.08)
+    assert long == pytest.approx(7.2, abs=0.08)
+    assert short <= base_duration + 0.08
+    # Canonical semantic-section durations are acoustic. The historical fixed
+    # image-duration preference cannot lengthen or shorten the audio lock.
     assert long - short == pytest.approx(0.0, abs=0.12)
 
 

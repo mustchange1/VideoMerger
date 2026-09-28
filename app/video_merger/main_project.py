@@ -1265,6 +1265,10 @@ class MainProjectEngine:
                         image_profile=image_timeline_profile_from_settings(settings),
                         ffprobe_path=self.engine.ffprobe_path,
                         render_settings=settings,
+                        # Phase 36 Golden Rule: the optional Smart Visual
+                        # chain is locked to the actual concatenated voiceover
+                        # audio, never to its own inserted-media duration.
+                        timeline_target_duration=voice_total,
                         log=log,
                     )
                     if smart_apply.count:
@@ -1306,7 +1310,7 @@ class MainProjectEngine:
         image_profile = image_timeline_profile_from_settings(settings)
         image_result = None
         image_target_extension = 0.0
-        if image_profile.active and render_media:
+        if image_profile.active and render_media and not smart_profile.active:
             image_canvas = resolve_export(render_media, settings)
             image_result = image_timeline_apply(
                 render_media,
@@ -1330,9 +1334,18 @@ class MainProjectEngine:
                 render_media = image_result.media
                 after_chain = resolve_export(render_media, chain_probe).expected_duration
                 image_target_extension = max(0.0, after_chain - before_chain)
-        effective_target = (
-            target + image_target_extension + smart_target_extension if voice_assets else target
-        )
+        if voice_assets and smart_profile.active:
+            # Phase 36: Smart Visuals replace fitted source time. They never
+            # extend the program, and no source/image occurrence may survive
+            # beyond the final voiceover sample. This lock also applies when
+            # the unified pool has no usable match: the fitted source remains,
+            # but it is still cut at the same audio endpoint.
+            effective_target = voice_total
+            program_duration = voice_total
+        else:
+            effective_target = (
+                target + image_target_extension if voice_assets else target
+            )
         image_global_digest = (
             image_global_effect_identity(image_profile)
             if image_profile.global_effect != "off" else None

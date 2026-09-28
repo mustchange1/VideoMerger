@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Qt, QUrl, Signal
+from PySide6.QtCore import QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QBrush, QCloseEvent, QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
@@ -1461,39 +1461,29 @@ class MainWindow(QMainWindow):
         typewriter_layout.addWidget(self.tw_short_box)
         outer.addWidget(typewriter_group)
 
-        # Phase 30: Image Timeline & Visual Effects. Strictly separate
-        # Long-Form and Shorts sections; both default to DISABLED with empty
-        # folder lists, so the historical video-only rendering stays
-        # byte-identical until the user explicitly configures one of them.
-        image_timeline_group = QGroupBox("7 · Image Timeline & Visual Effects")
-        image_timeline_layout = QVBoxLayout(image_timeline_group)
-        image_timeline_layout.addWidget(QLabel(
-            "Images become genuine timeline elements BETWEEN the video clips "
-            "(A → B → Image → C …). Long-Form and Shorts own completely "
-            "independent folder lists and rules - they never mix. Disabled mode "
-            "or an empty folder list keeps the historical video-only rendering."
-        ))
-        self.img_long_box = QGroupBox("YouTube Long-Form Image Timeline")
+        # Phase 36 removes the former standalone "Image Timeline & Visual
+        # Effects" block.  Hidden compatibility widgets continue to load and
+        # round-trip legacy projects, while every active image/video control is
+        # exposed in the unified Smart Visual panels below.
+        self.img_long_box = QGroupBox()
         self._build_image_timeline_widgets(self.img_long_box, "img_long")
-        self.img_short_box = QGroupBox("YouTube Shorts Image Timeline")
+        self.img_long_box.hide()
+        self.img_short_box = QGroupBox()
         self._build_image_timeline_widgets(self.img_short_box, "img_short")
-        image_timeline_layout.addWidget(self.img_long_box)
-        image_timeline_layout.addWidget(self.img_short_box)
-        outer.addWidget(image_timeline_group)
+        self.img_short_box.hide()
 
         # Phase 31: Smart Visual Hybrid. Strictly opt-in: the switch defaults
         # to OFF and the folder lists start empty, so the historical rendering
         # (including Manual/Random/Folder selection and the Phase-30 image
         # timeline) stays byte-identical until the user explicitly enables a
         # profile. Long-Form and Shorts own completely independent settings.
-        smart_visual_group = QGroupBox("8 · Smart Visuals (Content-Aware Media Selection)")
+        smart_visual_group = QGroupBox("7 · Smart Visuals — Unified Media Pool")
         smart_visual_layout = QVBoxLayout(smart_visual_group)
         smart_visual_layout.addWidget(QLabel(
-            "Optional: semantic slots from the script are matched against your own "
-            "media folders (folder name = category, optional smart_metadata.json/csv); "
-            "a matching image or video is placed, otherwise local generation may be "
-            "used per strategy. Strictly additive - when disabled, nothing changes. "
-            "Long-Form and Shorts are fully independent."
+            "Optional: images and videos share one Media Pool. Semantic Sections from "
+            "the aligned script select cohesive visuals in Smart Order, or use a "
+            "Randomized Order. The timeline is always locked to the voiceover endpoint. "
+            "Long-Form and Shorts remain fully independent."
         ))
         self.sv_long_box = QGroupBox("YouTube Long-Form Smart Visuals")
         self._build_smart_visual_widgets(self.sv_long_box, "sv_long")
@@ -2963,9 +2953,8 @@ class MainWindow(QMainWindow):
     # Phase 33: Smart Visuals selection modes. Generation is no longer part
     # of the workflow; weak matches fall back to a random EXISTING asset.
     _SMART_MODE_LABELS = {
-        "smart_match": "Smart Match (smart whenever possible)",
-        "smart_inserts": "Mostly Random (strong matches at insert frequency)",
-        "random_only": "Random Only (baseline / debug)",
+        "smart_match": "Smart Order (semantic relevance)",
+        "random_only": "Randomized Order",
     }
     _IMAGE_TRANSITION_LABELS = {
         "project": "Project (follow video transition)",
@@ -3006,7 +2995,7 @@ class MainWindow(QMainWindow):
         )
         row += 1
 
-        put(QLabel("Smart Visual Media Folders (folder name = category)"), row, 0, 1, 4)
+        put(QLabel("Unified Media Pool Folders (images + videos; folder name = category)"), row, 0, 1, 4)
         row += 1
         w["folders"] = put(QListWidget(), row, 0, 2, 3)
         w["folders"].setSelectionMode(QAbstractItemView.SingleSelection)
@@ -3120,6 +3109,25 @@ class MainWindow(QMainWindow):
             w["image_visual_effect_intensity"].addItem(label, key)
         row += 1
 
+        # Phase 36 consolidates the active image/B-roll controls from the
+        # removed standalone Block 7 into the unified Media Pool.
+        put(QLabel("Image Motion / Zoom"), row, 0)
+        w["image_motion"] = put(QComboBox(), row, 1)
+        for key, label in self._IMAGE_MOTION_LABELS.items():
+            w["image_motion"].addItem(label, key)
+        put(QLabel("Image Scaling"), row, 2)
+        w["image_fit_mode"] = put(QComboBox(), row, 3)
+        for key, label in (("fill", "Fill / center crop"), ("fit", "Fit / letterbox"), ("crop", "Crop")):
+            w["image_fit_mode"].addItem(label, key)
+        row += 1
+        put(QLabel("B-roll Behavior"), row, 0)
+        w["broll_behavior"] = put(QComboBox(), row, 1)
+        w["broll_behavior"].addItem("Replace source time (audio-locked)", "replace")
+        w["broll_behavior"].setToolTip(
+            "Phase 36 always replaces fitted source time. B-roll can never extend the voiceover timeline."
+        )
+        row += 1
+
         index_row = QHBoxLayout()
         w["index_button"] = QPushButton("Build / Refresh Media Index")
         w["index_button"].setToolTip(
@@ -3147,7 +3155,7 @@ class MainWindow(QMainWindow):
             "chosen by Smart matching or Random, and the match score + reason."
         )
         w["analyze_button"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_analyze_timeline(p))
-        w["randomize_button"] = QPushButton("Randomize Timeline")
+        w["randomize_button"] = QPushButton("Reload / Reshuffle Smart Order")
         w["randomize_button"].setToolTip(
             "Creates a NEW valid assignment from the same pools (new seed): uniqueness is "
             "preserved, the mode, the image duration and the timeline itself stay as they "
@@ -3193,6 +3201,42 @@ class MainWindow(QMainWindow):
         self._sync_smart_visual_controls(prefix, widgets_override=w)
         self._smart_visual_widgets = getattr(self, "_smart_visual_widgets", {})
         self._smart_visual_widgets[prefix] = w
+        # Phase 36 live refresh: geometry-affecting changes are debounced onto
+        # the event loop, keeping control interaction responsive while the
+        # exact transition-aware preview is rebuilt.
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(250)
+        timer.timeout.connect(lambda p=prefix: self._smart_visual_analyze_timeline(p))
+        w["_refresh_timer"] = timer
+        for control in (
+            w["mode"], w["image_duration"], w["insert_percent"],
+            w["image_transition"], w["image_transition_duration"],
+            w["image_visual_effect"], w["image_visual_effect_intensity"],
+            w["image_motion"], w["image_fit_mode"], w["timeline_mode"],
+        ):
+            signal = getattr(control, "valueChanged", None)
+            if signal is None:
+                signal = getattr(control, "currentIndexChanged", None)
+            if signal is not None:
+                signal.connect(lambda _value=None, p=prefix: self._schedule_smart_visual_refresh(p))
+        self.transition_combo.currentIndexChanged.connect(
+            lambda _value, p=prefix: self._schedule_smart_visual_refresh(p)
+        )
+        self.transition_spin.valueChanged.connect(
+            lambda _value, p=prefix: self._schedule_smart_visual_refresh(p)
+        )
+
+    def _schedule_smart_visual_refresh(self, prefix: str) -> None:
+        """Invalidate confirmation and debounce an exact preview refresh."""
+        widgets = getattr(self, "_smart_visual_widgets", {}).get(prefix)
+        if not widgets or not widgets["enabled"].isChecked():
+            return
+        widgets["timeline_confirmed"].setChecked(False)
+        widgets["index_status"].setText("Timeline recalculation queued …")
+        timer = widgets.get("_refresh_timer")
+        if timer is not None:
+            timer.start()
 
     def _sync_smart_visual_controls(self, prefix: str, widgets_override: dict | None = None) -> None:
         """Enable only the controls the current state can use."""
@@ -3208,7 +3252,8 @@ class MainWindow(QMainWindow):
         for key in ("mode", "image_duration", "index_button",
                     "analyze_button", "randomize_button", "analyze_list",
                     "image_transition", "image_transition_duration",
-                    "image_visual_effect", "timeline_mode", "timeline_confirmed",
+                    "image_visual_effect", "image_motion", "image_fit_mode",
+                    "broll_behavior", "timeline_mode", "timeline_confirmed",
                     "edit_start", "edit_duration", "replace_visual",
                     "remove_visual", "restore_visual"):
             widgets[key].setEnabled(enabled)
@@ -3297,6 +3342,7 @@ class MainWindow(QMainWindow):
         from ..image_timeline import (
             clamp_image_transition_duration,
             normalize_image_transition_choice,
+            normalize_motion,
             normalize_visual_effect,
             normalize_visual_effect_intensity,
         )
@@ -3321,6 +3367,10 @@ class MainWindow(QMainWindow):
             "image_visual_effect_intensity": normalize_visual_effect_intensity(
                 data("image_visual_effect_intensity", "low")
             ),
+            "image_motion": normalize_motion(data("image_motion", "zoom_in")),
+            "image_fit_mode": data("image_fit_mode", "fill")
+            if data("image_fit_mode", "fill") in {"fit", "fill", "crop"} else "fill",
+            "broll_behavior": "replace",
         }
 
     def _smart_visual_build_index(self, prefix: str) -> None:
@@ -3368,7 +3418,7 @@ class MainWindow(QMainWindow):
         elif action == "duration":
             value, ok = QInputDialog.getDouble(
                 self, "Smart Visual Duration", "Duration (seconds):",
-                float(current.get("duration", 5.0) or 5.0), 0.12, 15.0, 3,
+                float(current.get("duration", 5.0) or 5.0), 4.0, 15.0, 3,
             )
             if not ok:
                 return
@@ -3574,6 +3624,12 @@ class MainWindow(QMainWindow):
                 str(image_value("visual_effect_intensity", "low")),
                 "low",
             )
+            set_combo(w["image_motion"], str(image_value("motion", "zoom_in")), "zoom_in")
+            set_combo(
+                w["image_fit_mode"],
+                str(value("image_fit_mode", "fill")),
+                "fill",
+            )
 
         apply("sv_long", "smart_visual_", "long_form_smart_visual_folders", "long_form_image_")
         apply("sv_short", "shorts_smart_visual_", "shorts_smart_visual_folders", "shorts_image_")
@@ -3622,6 +3678,9 @@ class MainWindow(QMainWindow):
                 "timeline_mode": profile.timeline_mode,
                 "manual_overrides": dict(profile.manual_overrides),
                 "timeline_confirmed": profile.timeline_confirmed,
+                "image_fit_mode": str(
+                    self._smart_visual_widgets[prefix]["image_fit_mode"].currentData() or "fill"
+                ),
             }
             for key, default in legacy_keys.items():
                 result[key] = getattr(self.saved, settings_prefix + key, default)
@@ -3644,6 +3703,7 @@ class MainWindow(QMainWindow):
             kwargs[f"{field_prefix}transition_duration"] = rendering["image_transition_duration"]
             kwargs[f"{field_prefix}visual_effect"] = rendering["image_visual_effect"]
             kwargs[f"{field_prefix}visual_effect_intensity"] = rendering["image_visual_effect_intensity"]
+            kwargs[f"{field_prefix}motion"] = rendering["image_motion"]
         return kwargs
 
     def _typewriter_browse_background(self, prefix: str) -> None:

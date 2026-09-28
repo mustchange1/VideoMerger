@@ -40,8 +40,8 @@ PHASE34_SCRIPT = (
     "Physical exercise is another useful habit."
 )
 
-# Word timings per script sentence (voiceover 2.4 s). Consumed directly by
-# ``_phase34_factory``'s deterministic aligner.
+# Compact source timings, scaled by 3× in the real-render fixture so Phase 36
+# can exercise its four-second hard minimum without extending past audio.
 PHASE34_TIMINGS = [
     ("Meditation", 0.05, 0.28), ("is", 0.30, 0.34), ("important", 0.36, 0.58),
     ("and", 0.60, 0.62), ("has", 0.64, 0.70), ("many", 0.72, 0.82),
@@ -97,12 +97,15 @@ def _phase34_factory(tmp_path: Path, ffmpeg: Path, ffprobe: Path):
         clips.append(clip)
 
     voice = tmp_path / "voice.wav"
-    _tone(ffmpeg, voice, 850, 2.4, 0.65)
+    _tone(ffmpeg, voice, 850, 7.2, 0.65)
     script = tmp_path / "script.txt"
     script.write_text(PHASE34_SCRIPT + "\n", encoding="utf-8")
 
     def recognize(path: Path, _language: str):
-        return [RecognizedWord(word, start, end, 0.99) for word, start, end in PHASE34_TIMINGS], "en"
+        return [
+            RecognizedWord(word, start * 3.0, end * 3.0, 0.99)
+            for word, start, end in PHASE34_TIMINGS
+        ], "en"
 
     aligner = LocalWordAligner("phase34-fixture", recognize, cache_dir=tmp_path / "align-cache")
     engine = VideoMergerEngine(ffmpeg, ffprobe)
@@ -255,10 +258,10 @@ def test_phase34_render_visuals_follow_sentences(tmp_path, ffmpeg_paths):
     # --- voiceover untouched --------------------------------------------------
     base_duration = _probe_duration(ffprobe, baseline.video)
     final_duration = _probe_duration(ffprobe, result.video)
-    # Phase 35's mandatory four-second automatic minimum retains the first
-    # topic and defers the two sub-four-second dense boundaries. The voiceover
-    # itself remains the same 2.4 s track in both renders.
-    assert final_duration > base_duration + 3.0
+    # Phase 36 locks the complete render to the 7.2-second voiceover; the
+    # baseline's legacy end padding may be longer but Smart Visuals never are.
+    assert final_duration == pytest.approx(7.2, abs=0.08)
+    assert final_duration <= base_duration + 0.08
 
     width, height = _probe_size(ffprobe, result.video)
     yellow = _find_windows(ffmpeg, result.video, width, height, final_duration, _is_yellow)
@@ -266,22 +269,18 @@ def test_phase34_render_visuals_follow_sentences(tmp_path, ffmpeg_paths):
     cyan = _find_windows(ffmpeg, result.video, width, height, final_duration, _is_cyan)
     orange = _find_windows(ffmpeg, result.video, width, height, final_duration, _is_orange)
 
-    assert len(yellow) == 1, f"retained topic visual missing: {yellow}"
-    assert not magenta and not cyan, (
-        f"dense boundaries must be deferred rather than creating <4 s visuals: "
-        f"m={magenta} c={cyan}"
-    )
-    # A cross-dissolve blend frame (e.g. red clip -> yellow still) can match
-    # the orange predicate for a single scan sample; real asset windows are
-    # longer than the 0.15 s transition.
+    # The three dense sentences form one coherent seven-second section, so
+    # exactly one relevant topic visual is retained and no flash is emitted.
+    topic_windows = [windows for windows in (yellow, magenta, cyan) if windows]
+    assert len(topic_windows) == 1, (yellow, magenta, cyan)
     assert all(end - start <= 0.15 for start, end in orange), \
         f"the unrelated asset must never appear: {orange}"
-    assert yellow[0][1] - yellow[0][0] >= 3.5  # four seconds minus edge fades
+    assert topic_windows[0][0][1] - topic_windows[0][0][0] >= 5.0
 
     trace = json.loads((tmp_path / "smart" / "PHASE_35_DEBUG_TRACE.json").read_text(encoding="utf-8"))
     inserted = [item for item in trace["placements"] if item["status"] == "inserted"]
     assert len(inserted) == 1
-    assert inserted[0]["visual_duration"] == pytest.approx(4.0)
+    assert inserted[0]["visual_duration"] == pytest.approx(7.0, abs=0.1)
 
     # --- nothing was generated anywhere ---------------------------------------
     generated = tmp_path / "cache" / "smart_visual_generated"

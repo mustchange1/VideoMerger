@@ -247,7 +247,10 @@ def test_C_empty_pool_matches_video_only_render(ffmpeg_paths, tmp_path):
         media, settings, tmp_path / "skip", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
-    assert result.video.read_bytes() == baseline.video.read_bytes()
+    # Phase 36 locks an enabled Smart profile to voiceover even when its pool
+    # is empty; source footage remains, but legacy end padding is not appended.
+    assert _probe_duration(ffprobe, result.video) == pytest.approx(7.2, abs=0.08)
+    assert _probe_duration(ffprobe, result.video) <= _probe_duration(ffprobe, baseline.video) + 0.08
     assert not _generated_dir(tmp_path).exists()
 
 
@@ -386,10 +389,9 @@ def test_E_image_transition_duration_applies_at_image_boundaries(ffmpeg_paths, t
         1 for item in trace["placements"] if item["status"] == "inserted"
     )
     assert rendered_image_slots >= 1
-    # xfade overlaps consume time: a longer transition at both boundaries of
-    # each retained image makes the final video correspondingly shorter.
-    expected = -2 * rendered_image_slots * (0.3 - 0.15)
-    assert override_duration - base_duration == pytest.approx(expected, abs=0.2)
+    # Phase 36 recalculates xfade geometry inside an invariant audio endpoint;
+    # transition changes move overlap windows but cannot change total length.
+    assert override_duration - base_duration == pytest.approx(0.0, abs=0.08)
 
     # The override render still shows the pool image inside a slot.
     found = any(
@@ -436,11 +438,9 @@ def test_E2_image_transition_none_hard_cut(ffmpeg_paths, tmp_path):
         1 for item in trace["placements"] if item["status"] == "inserted"
     )
     assert rendered_image_slots >= 1
-    # Every retained image boundary loses its 0.15 s overlap, so a hard cut is
-    # longer. Dense semantic candidates deferred by Phase 35 do not count.
-    expected = 2 * rendered_image_slots * 0.15
+    # A hard cut changes boundary geometry, never the voiceover lock.
     delta = _probe_duration(ffprobe, hard_cut.video) - _probe_duration(ffprobe, baseline.video)
-    assert delta == pytest.approx(expected, abs=0.2)
+    assert delta == pytest.approx(0.0, abs=0.08)
 
 
 # ---------------------------------------------------------------------------

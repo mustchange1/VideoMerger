@@ -1,0 +1,41 @@
+{
+  "schema": "videomerger-phase36-e2e-v1",
+  "ffmpeg": "ffmpeg version 6.0-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2000-2023 the FFmpeg developers",
+  "ffprobe": "ffprobe version 6.0-static https://johnvansickle.com/ffmpeg/  Copyright (c) 2007-2023 the FFmpeg developers",
+  "output": "/tmp/pytest-of-user/pytest-12/test_phase35_real_rendered_bou0/output/MainVideo_16x9.mp4",
+  "fps": 30.0,
+  "voiceover_duration": 14.0,
+  "timeline_duration": 14.0,
+  "zero_frames_past_voiceover": true,
+  "requested_visuals": 1,
+  "planned_visuals": 1,
+  "rendered_visuals": 1,
+  "maximum_frame_drift": 1,
+  "maximum_timing_drift_seconds": 0.033333333333333326,
+  "sentence_boundaries": [
+    0.5,
+    4.5,
+    9.5
+  ],
+  "visuals": [
+    {
+      "visual": "city",
+      "requested_boundary": 0.5,
+      "planned_start": 0.5,
+      "planned_end": 13.5,
+      "rendered_start": 0.5333333333333333,
+      "rendered_end": 13.5,
+      "start_drift_seconds": 0.033333333333333326,
+      "end_drift_seconds": 0.0,
+      "start_frame_drift": 1,
+      "end_frame_drift": 0,
+      "no_mid_word": true,
+      "transition_overlap": 0.3,
+      "duration": 13.0
+    }
+  ],
+  "subtitle_alignment_reused": true,
+  "all_changes_at_word_boundaries": true,
+  "transition_chain_verified": true,
+  "semantic_sections": 1
+}

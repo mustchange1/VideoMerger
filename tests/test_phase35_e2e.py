@@ -89,11 +89,12 @@ def _signal_interval(frames: list[tuple[int, int, int]], channel: int) -> tuple[
 
 def _write_results(path: Path, payload: dict) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    (path / "PHASE_35_E2E_RESULTS.json").write_text(
+    phase = "PHASE_36" if "phase36" in str(payload.get("schema", "")) else "PHASE_35"
+    (path / f"{phase}_E2E_RESULTS.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     lines = [
-        "PHASE 35 REAL FFMPEG E2E RESULTS",
+        f"{phase.replace('_', ' ')} REAL FFMPEG E2E RESULTS",
         f"output: {payload['output']}",
         f"fps: {payload['fps']}",
         f"maximum_frame_drift: {payload['maximum_frame_drift']}",
@@ -108,7 +109,7 @@ def _write_results(path: Path, payload: dict) -> None:
             f"start_drift={item['start_drift_seconds']:+.6f}s "
             f"frames={item['start_frame_drift']:+d} no_mid_word={item['no_mid_word']}"
         )
-    (path / "PHASE_35_E2E_RESULTS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (path / f"{phase}_E2E_RESULTS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def test_phase35_real_rendered_boundaries_and_drift(tmp_path, ffmpeg_paths):
@@ -162,55 +163,59 @@ def test_phase35_real_rendered_boundaries_and_drift(tmp_path, ffmpeg_paths):
     trace_path = output_dir / "PHASE_35_DEBUG_TRACE.json"
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
     placements = [item for item in trace["placements"] if item["status"] == "inserted"]
-    assert len(placements) == 3
-    assert all(4.0 <= item["visual_duration"] <= 10.0 for item in placements)
+    # Phase 36 merges these three short topic sentences into one stable
+    # 13-second semantic section instead of producing three 3–4 second cuts.
+    assert len(placements) == 1
+    assert 5.0 <= placements[0]["visual_duration"] <= 15.0
+    assert placements[0]["final_expected_end"] <= 14.0
 
     frames = _decode_average_frames(ffmpeg, result.video)
-    visuals = []
-    max_frames = 0
-    for placement, (term, _color), channel in zip(placements, specifications, (0, 1, 2)):
-        first, last = _signal_interval(frames, channel)
-        rendered_start = first / FPS
-        # end is the exclusive timestamp immediately after the final signal frame
-        rendered_end = (last + 1) / FPS
-        planned_start = float(placement["final_expected_start"])
-        planned_end = float(placement["final_expected_end"])
-        start_frame_drift = round((rendered_start - planned_start) * FPS)
-        end_frame_drift = round((rendered_end - planned_end) * FPS)
-        max_frames = max(max_frames, abs(start_frame_drift), abs(end_frame_drift))
-        requested = float(placement["requested_audio_boundary"])
-        # The xfade event itself must be constrained to the aligned first-word
-        # boundary (within frame-grid geometry). A gradual fade can cross the
-        # RGB detection threshold one frame later without constituting a new
-        # mid-word timeline change.
-        no_mid_word = abs(planned_start - requested) <= 2.0 / FPS + 1e-6
-        for _word, word_start, word_end in WORD_TIMINGS:
-            if word_start + 2.0 / FPS < planned_start < word_end - 2.0 / FPS:
-                no_mid_word = False
-        visuals.append({
-            "visual": term,
-            "requested_boundary": requested,
-            "planned_start": planned_start,
-            "planned_end": planned_end,
-            "rendered_start": rendered_start,
-            "rendered_end": rendered_end,
-            "start_drift_seconds": rendered_start - planned_start,
-            "end_drift_seconds": rendered_end - planned_end,
-            "start_frame_drift": start_frame_drift,
-            "end_frame_drift": end_frame_drift,
-            "no_mid_word": no_mid_word,
-            "transition_overlap": placement["xfade_overlap"],
-            "duration": placement["visual_duration"],
-        })
-    assert all(item["no_mid_word"] for item in visuals), visuals
+    # 14.0 seconds at 30 fps: zero decoded frames may exist beyond audio.
+    assert len(frames) == 420
+    selected_term = Path(placements[0]["visual_path"]).stem
+    selected_index = [term for term, _color in specifications].index(selected_term)
+    channel = selected_index
+    placement = placements[0]
+    first, last = _signal_interval(frames, channel)
+    rendered_start = first / FPS
+    rendered_end = (last + 1) / FPS
+    planned_start = float(placement["final_expected_start"])
+    planned_end = float(placement["final_expected_end"])
+    start_frame_drift = round((rendered_start - planned_start) * FPS)
+    end_frame_drift = round((rendered_end - planned_end) * FPS)
+    max_frames = max(abs(start_frame_drift), abs(end_frame_drift))
+    requested = float(placement["requested_audio_boundary"])
+    no_mid_word = abs(planned_start - requested) <= 2.0 / FPS + 1e-6
+    for _word, word_start, word_end in WORD_TIMINGS:
+        if word_start + 2.0 / FPS < planned_start < word_end - 2.0 / FPS:
+            no_mid_word = False
+    visuals = [{
+        "visual": selected_term,
+        "requested_boundary": requested,
+        "planned_start": planned_start,
+        "planned_end": planned_end,
+        "rendered_start": rendered_start,
+        "rendered_end": rendered_end,
+        "start_drift_seconds": rendered_start - planned_start,
+        "end_drift_seconds": rendered_end - planned_end,
+        "start_frame_drift": start_frame_drift,
+        "end_frame_drift": end_frame_drift,
+        "no_mid_word": no_mid_word,
+        "transition_overlap": placement["xfade_overlap"],
+        "duration": placement["visual_duration"],
+    }]
+    assert no_mid_word, visuals
     assert max_frames <= 1, visuals
     payload = {
-        "schema": "videomerger-phase35-e2e-v1",
+        "schema": "videomerger-phase36-e2e-v1",
         "ffmpeg": subprocess.check_output([str(ffmpeg), "-version"], text=True).splitlines()[0],
         "ffprobe": subprocess.check_output([str(ffprobe), "-version"], text=True).splitlines()[0],
         "output": str(result.video),
         "fps": FPS,
-        "requested_visuals": 3,
+        "voiceover_duration": 14.0,
+        "timeline_duration": len(frames) / FPS,
+        "zero_frames_past_voiceover": len(frames) == 420,
+        "requested_visuals": 1,
         "planned_visuals": len(placements),
         "rendered_visuals": len(visuals),
         "maximum_frame_drift": max_frames,
@@ -223,6 +228,7 @@ def test_phase35_real_rendered_boundaries_and_drift(tmp_path, ffmpeg_paths):
         "subtitle_alignment_reused": True,
         "all_changes_at_word_boundaries": all(item["no_mid_word"] for item in visuals),
         "transition_chain_verified": True,
+        "semantic_sections": 1,
     }
     report_dir = Path(os.environ.get("PHASE35_RESULTS_DIR", str(tmp_path)))
     _write_results(report_dir, payload)

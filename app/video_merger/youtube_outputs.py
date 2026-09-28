@@ -971,6 +971,11 @@ def short_settings(
         smart_visual_randomize_nonce=clamp_smart_visual_nonce(
             getattr(settings, "shorts_smart_visual_randomize_nonce", 0)
         ),
+        smart_visual_image_fit_mode=(
+            str(getattr(settings, "shorts_smart_visual_image_fit_mode", "fill") or "fill")
+            if str(getattr(settings, "shorts_smart_visual_image_fit_mode", "fill") or "fill")
+            in {"fit", "fill", "crop"} else "fill"
+        ),
         smart_visual_timeline_mode=str(
             getattr(settings, "shorts_smart_visual_timeline_mode", "auto") or "auto"
         ),
