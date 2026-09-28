@@ -206,3 +206,13 @@ def test_smart_order_reshuffle_changes_sequence_but_keeps_relevant_candidates():
     assert shuffled_paths != base_paths
     assert all(slot.source_mode == "SMART" for slot in shuffled)
     assert all(slot.score >= 0.5 for slot in shuffled)
+
+
+def test_dynamic_smart_refresh_uses_widget_free_qthread_worker() -> None:
+    root = Path(__file__).resolve().parents[1]
+    main_source = (root / "app/video_merger/gui/main_window.py").read_text(encoding="utf-8")
+    worker_source = (root / "app/video_merger/gui/workers.py").read_text(encoding="utf-8")
+    assert "timer.timeout.connect(lambda p=prefix: self._smart_visual_recalculate_background(p))" in main_source
+    assert "worker.moveToThread(thread)" in main_source
+    assert "class SmartTimelineWorker(QObject):" in worker_source
+    assert "build_smart_visual_plan(**self.arguments)" in worker_source

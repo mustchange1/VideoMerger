@@ -57,7 +57,7 @@ The visible `7 · Image Timeline & Visual Effects` block was removed. Legacy fie
 - audio-locked B-roll replacement behavior;
 - index, timeline analysis, reshuffle, and manual review controls.
 
-Geometry-affecting Smart Visual and project-transition changes invalidate timeline confirmation and schedule a debounced event-loop recalculation of the preview plan. Rendering still performs the authoritative alignment-backed recalculation and validates the final production transition geometry before FFmpeg starts.
+Geometry-affecting Smart Visual and project-transition changes invalidate timeline confirmation and schedule a debounced recalculation. The GUI thread first snapshots all widget state; a dedicated `SmartTimelineWorker` then performs the pure indexing/planning work on a `QThread`, coalescing further edits to the latest pending request. Only the resulting immutable plan is returned for GUI display, so the worker never reads a Qt widget. Rendering still performs the authoritative alignment-backed recalculation and validates the final production transition geometry before FFmpeg starts.
 
 ## Test coverage
 
@@ -70,7 +70,8 @@ Geometry-affecting Smart Visual and project-transition changes invalidate timeli
 5. short-section merging;
 6. the documented unsplittable-sentence exception;
 7. GUI Block-7 removal and unified controls;
-8. Smart Order reshuffle diversity with relevance preserved.
+8. Smart Order reshuffle diversity with relevance preserved;
+9. widget-free `QThread` background recalculation wiring.
 
 The real FFmpeg E2E fixture additionally verifies:
 

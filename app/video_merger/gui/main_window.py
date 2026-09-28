@@ -122,7 +122,7 @@ from ..youtube_outputs import (
     output_transition_type,
 )
 from .style import APP_STYLE
-from .workers import ProcessingWorker
+from .workers import ProcessingWorker, SmartTimelineWorker
 
 
 def _format_time(seconds: float | None) -> str:
@@ -2954,6 +2954,9 @@ class MainWindow(QMainWindow):
     # of the workflow; weak matches fall back to a random EXISTING asset.
     _SMART_MODE_LABELS = {
         "smart_match": "Smart Order (semantic relevance)",
+        # Backward-compatible Smart Order variant: old projects may persist
+        # ``smart_inserts`` and must round-trip without silently changing mode.
+        "smart_inserts": "Smart Order (selective semantic inserts)",
         "random_only": "Randomized Order",
     }
     _IMAGE_TRANSITION_LABELS = {
@@ -3207,7 +3210,7 @@ class MainWindow(QMainWindow):
         timer = QTimer(self)
         timer.setSingleShot(True)
         timer.setInterval(250)
-        timer.timeout.connect(lambda p=prefix: self._smart_visual_analyze_timeline(p))
+        timer.timeout.connect(lambda p=prefix: self._smart_visual_recalculate_background(p))
         w["_refresh_timer"] = timer
         for control in (
             w["mode"], w["image_duration"], w["insert_percent"],
@@ -3357,7 +3360,6 @@ class MainWindow(QMainWindow):
         from ..image_timeline import (
             clamp_image_transition_duration,
             normalize_image_transition_choice,
-            normalize_motion,
             normalize_visual_effect,
             normalize_visual_effect_intensity,
         )
@@ -3382,10 +3384,6 @@ class MainWindow(QMainWindow):
             "image_visual_effect_intensity": normalize_visual_effect_intensity(
                 data("image_visual_effect_intensity", "low")
             ),
-            "image_motion": normalize_motion(data("image_motion", "zoom_in")),
-            "image_fit_mode": data("image_fit_mode", "fill")
-            if data("image_fit_mode", "fill") in {"fit", "fill", "crop"} else "fill",
-            "broll_behavior": "replace",
         }
 
     def _smart_visual_build_index(self, prefix: str) -> None:
@@ -3473,33 +3471,28 @@ class MainWindow(QMainWindow):
         widgets["_randomize_nonce"] = int(widgets.get("_randomize_nonce", 0)) + 1
         self._smart_visual_analyze_timeline(prefix)
 
-    def _smart_visual_analyze_timeline(self, prefix: str) -> None:
-        """Phase 33: Analyze Timeline - the REAL plan, nothing rendered.
-
-        Builds the selection plan exactly like the render (script context,
-        voiceover duration, media index, mode + uniqueness rules) and lists
-        every visual region: start/end/duration, media type and file name,
-        topic, SMART-or-RANDOM source, match score and the reason. No
-        rendering happens and no generation provider is ever touched.
-        """
+    def _smart_visual_plan_arguments(self, prefix: str):
+        """Snapshot Qt state and return widget-free planner arguments."""
         from ..paths import project_root
-        from ..project_assets import probe_audio
-        from ..smart_visuals import build_smart_visual_plan
 
         widgets = self._smart_visual_widgets[prefix]
-        widgets["analyze_list"].clear()
         profile = self._smart_visual_profile_from_ui(prefix)
+        if not profile.active:
+            return profile, None
         is_shorts = prefix == "sv_short"
         width, height = (720, 1280) if is_shorts else (1280, 720)
 
-        if not profile.active:
-            widgets["analyze_list"].addItem("Smart Visuals disabled or no folders - plan stays empty.")
-            return
-
         script_text = ""
-        script_path = str(self.global_script_edit.text().strip() or getattr(self.saved, "global_script_path", "") or "")
+        script_path = str(
+            self.global_script_edit.text().strip()
+            or getattr(self.saved, "global_script_path", "")
+            or ""
+        )
         if not script_path:
-            unit_scripts = [str(path) for path in (getattr(self.saved, "script_paths", None) or []) if str(path).strip()]
+            unit_scripts = [
+                str(path) for path in (getattr(self.saved, "script_paths", None) or [])
+                if str(path).strip()
+            ]
             script_path = unit_scripts[0] if unit_scripts else ""
         if script_path and Path(script_path).is_file():
             try:
@@ -3512,50 +3505,136 @@ class MainWindow(QMainWindow):
             _ffmpeg, ffprobe = locate_ffmpeg()
         except Exception:
             ffprobe = None
-        voiceover_units = list(getattr(self, "voiceover_paths_list", []) or [])
-        if ffprobe is not None:
-            for unit in voiceover_units:
-                try:
-                    program_duration += float(probe_audio(ffprobe, Path(unit)).duration)
-                except Exception:
-                    continue
+        for unit in list(getattr(self, "voiceover_paths_list", []) or []):
+            if ffprobe is None:
+                break
+            try:
+                program_duration += float(probe_audio(ffprobe, Path(unit)).duration)
+            except Exception:
+                continue
         if program_duration <= 0.0:
             program_duration = 30.0
 
         image_rendering = self._smart_visual_image_rendering_from_ui(prefix)
-        try:
-            plan = build_smart_visual_plan(
-                profile=profile,
-                script_text=script_text,
-                program_duration=program_duration,
-                width=width,
-                height=height,
-                fps=30.0,
-                cache_dir=project_root() / "cache",
-                ffprobe_path=ffprobe if ffprobe is not None else "ffprobe",
-                seed_parts=(
-                    "gui-analyze", prefix, "|".join(profile.folders),
-                    f"nonce={int(profile.randomize_nonce)}",
-                ),
-                image_transition_type=image_rendering["image_transition_type"],
-                image_transition_duration=image_rendering["image_transition_duration"],
-                image_visual_effect=image_rendering["image_visual_effect"],
-                image_visual_effect_intensity=image_rendering["image_visual_effect_intensity"],
-                log=lambda *_args, **_kwargs: None,
+        arguments = {
+            "profile": profile,
+            "script_text": script_text,
+            "program_duration": program_duration,
+            "width": width,
+            "height": height,
+            "fps": 30.0,
+            "cache_dir": project_root() / "cache",
+            "ffprobe_path": ffprobe if ffprobe is not None else "ffprobe",
+            "seed_parts": (
+                "gui-analyze", prefix, "|".join(profile.folders),
+                f"nonce={int(profile.randomize_nonce)}",
+            ),
+            "image_transition_type": image_rendering["image_transition_type"],
+            "image_transition_duration": image_rendering["image_transition_duration"],
+            "image_visual_effect": image_rendering["image_visual_effect"],
+            "image_visual_effect_intensity": image_rendering["image_visual_effect_intensity"],
+            "log": lambda *_args, **_kwargs: None,
+        }
+        return profile, arguments
+
+    def _smart_visual_analyze_timeline(self, prefix: str) -> None:
+        """Build and display the production-equivalent plan synchronously."""
+        from ..smart_visuals import build_smart_visual_plan
+
+        widgets = self._smart_visual_widgets[prefix]
+        widgets["analyze_list"].clear()
+        profile, arguments = self._smart_visual_plan_arguments(prefix)
+        if arguments is None:
+            widgets["analyze_list"].addItem(
+                "Smart Visuals disabled or no folders - plan stays empty."
             )
+            return
+        try:
+            plan = build_smart_visual_plan(**arguments)
         except Exception as exc:
             widgets["analyze_list"].addItem(f"Timeline analysis failed: {exc}")
             return
+        self._display_smart_visual_plan(prefix, profile, plan)
+
+    def _smart_visual_recalculate_background(self, prefix: str) -> None:
+        """Queue the latest dynamic preview calculation on a real QThread."""
+        widgets = self._smart_visual_widgets[prefix]
+        profile, arguments = self._smart_visual_plan_arguments(prefix)
+        if arguments is None:
+            widgets["analyze_list"].clear()
+            widgets["analyze_list"].addItem(
+                "Smart Visuals disabled or no folders - plan stays empty."
+            )
+            return
+
+        states = getattr(self, "_smart_timeline_refreshes", None)
+        if states is None:
+            states = {}
+            self._smart_timeline_refreshes = states
+        state = states.setdefault(prefix, {})
+        if state.get("thread") is not None and state["thread"].isRunning():
+            state["pending"] = (profile, arguments)
+            return
+        self._start_smart_visual_worker(prefix, profile, arguments)
+
+    def _start_smart_visual_worker(self, prefix: str, profile, arguments: dict) -> None:
+        states = self._smart_timeline_refreshes
+        state = states.setdefault(prefix, {})
+        state["pending"] = None
+        thread = QThread(self)
+        worker = SmartTimelineWorker(arguments)
+        worker.moveToThread(thread)
+        state.update(thread=thread, worker=worker, profile=profile)
+        thread.started.connect(worker.run)
+        worker.ready.connect(
+            lambda plan, p=prefix, w=worker: self._smart_visual_background_ready(p, w, plan)
+        )
+        worker.failed.connect(
+            lambda message, p=prefix, w=worker: self._smart_visual_background_failed(p, w, message)
+        )
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(
+            lambda p=prefix, w=worker: self._smart_visual_background_finished(p, w)
+        )
+        thread.start()
+
+    def _smart_visual_background_ready(self, prefix: str, worker, plan) -> None:
+        state = self._smart_timeline_refreshes.get(prefix, {})
+        if state.get("worker") is worker and state.get("pending") is None:
+            self._smart_visual_widgets[prefix]["analyze_list"].clear()
+            self._display_smart_visual_plan(prefix, state["profile"], plan)
+
+    def _smart_visual_background_failed(self, prefix: str, worker, message: str) -> None:
+        state = self._smart_timeline_refreshes.get(prefix, {})
+        if state.get("worker") is worker and state.get("pending") is None:
+            output = self._smart_visual_widgets[prefix]["analyze_list"]
+            output.clear()
+            output.addItem(f"Timeline analysis failed: {message}")
+
+    def _smart_visual_background_finished(self, prefix: str, worker) -> None:
+        state = self._smart_timeline_refreshes.get(prefix, {})
+        if state.get("worker") is not worker:
+            return
+        pending = state.get("pending")
+        state.update(thread=None, worker=None, pending=None)
+        if pending is not None:
+            profile, arguments = pending
+            self._start_smart_visual_worker(prefix, profile, arguments)
+
+    def _display_smart_visual_plan(self, prefix: str, profile, plan) -> None:
+        widgets = self._smart_visual_widgets[prefix]
         if not plan.slots:
-            widgets["analyze_list"].addItem("No visual regions derived (no script text and no duration).")
+            widgets["analyze_list"].addItem(
+                "No visual regions derived (no script text and no duration)."
+            )
         widgets["analyze_list"].addItem(
             f"Selection Mode: {profile.mode} · Image Duration: "
             f"{profile.image_duration:.1f}s · Insert Frequency: {profile.insert_percent}% · "
             f"Randomize nonce: {profile.randomize_nonce}"
         )
         for record in plan.to_records():
-            # Phase 33 Analyze Timeline: per-region start/end/duration, type
-            # and file name, topic, Smart-or-Random source, score and reason.
             visual_item = QListWidgetItem(
                 f"[{record['time']}] {record['kind'].upper()} {record['selected']} · "
                 f"{record['insert_duration']:.1f}s · topic: {record['topic']}"
@@ -3566,7 +3645,6 @@ class MainWindow(QMainWindow):
                 f"    Source: {record.get('source_label') or record['source']} · score "
                 f"{record['match']} · reason: {record['reason'] or '–'}"
             )
-            # Phase 34: metadata-driven evidence (few strongest terms only).
             if record.get("matched_terms"):
                 widgets["analyze_list"].addItem(f"    Matched: {record['matched_terms']}")
         for note in plan.diagnostics[:4]:
@@ -5927,6 +6005,19 @@ class MainWindow(QMainWindow):
             if self.thread:
                 self.thread.quit()
                 self.thread.wait(6000)
+        # Stop queued refreshes and let any widget-free planner finish before
+        # destroying its QThread. This prevents lifecycle races on fast close.
+        for widgets in getattr(self, "_smart_visual_widgets", {}).values():
+            timer = widgets.get("_refresh_timer")
+            if timer is not None:
+                timer.stop()
+        for state in getattr(self, "_smart_timeline_refreshes", {}).values():
+            state["pending"] = None
+            refresh_thread = state.get("thread")
+            if refresh_thread is not None and refresh_thread.isRunning():
+                refresh_thread.quit()
+                refresh_thread.wait()
+
         # Persist the complete project, including Stage-2 Image Insertion and
         # subtitle output mode, even when the user closes without starting a
         # render. This also preserves the existing settings-store contract for
