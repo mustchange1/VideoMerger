@@ -96,4 +96,19 @@ Evidence is stored in `PHASE_36_E2E_RESULTS.json` and `PHASE_36_E2E_RESULTS.txt`
 - Real Phase-36 FFmpeg E2E: **1 passed**.
 - Transition render probe: `tests/test_transition_renders.py`: **5 passed**. The larger transition invocation reached its known long-running cross-dissolve/music case and was terminated at the 900-second local limit; native Windows regression remains authoritative for that path.
 
-Native Windows results are recorded after the final pushed commit is exercised by `.github/workflows/phase35-windows-regression.yml` (the workflow name is retained for compatibility, but it runs the complete repository suite).
+### Final native Windows verification
+
+The final pushed Phase-36 commit was verified by `.github/workflows/phase35-windows-regression.yml` (the historical workflow name is retained for compatibility; it executes the complete repository suite):
+
+- commit: `8e7d20067e449cd404381557639a289e1238d83c`;
+- workflow run: `36495107340`;
+- Windows job: `109172737850`;
+- runner: `windows-latest`, Python 3.11, Qt offscreen, packaged FFmpeg, real alignment enabled;
+- result: **SUCCESS** with zero test-failure or test-error annotations;
+- complete regression-suite step: **passed**;
+- summary-publication step: **passed**;
+- evidence-upload step: **passed**;
+- job duration: **13m 43s** (22:54:41–23:08:24 UTC on 2026-09-28);
+- evidence artifact: `phase35-windows-regression-8e7d20067e449cd404381557639a289e1238d83c`, 29,191 bytes, SHA-256 `ce472c272ee6ee6b35d6ee76f725d03d0ab0ec670949e537d85ec285f1d7aebc`.
+
+The only workflow annotation was GitHub's infrastructure warning that Node.js 20 actions are being forced onto Node.js 24; it is unrelated to application behavior. Native Qt lifecycle, settings load/save, Smart Visual compatibility, Typewriter/subtitle paths, transition rendering, real alignment, and the complete Windows test collection all passed.
