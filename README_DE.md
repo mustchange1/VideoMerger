@@ -1,5 +1,20 @@
 # VideoMerger 1.5.0 für Windows
 
+## Neu in Phase 34
+
+### Smart Visuals: metadatengesteuertes Matching + satzverankerte Timeline
+
+Smart Visuals gleicht jetzt jeden **Skriptsatz** mit den **vorab generierten Analyse-Metadaten** deiner Pool-Medien ab (`.analysis.json`-Sidecars / `_DeepImageAnalysis`-JSON) und startet das passende Visual an der **Satz-/Themen-Grenze** — nicht nach einem festen Timer. Es wird nichts generiert und zur Auswahlzeit läuft kein Vision-Modell; Medien ohne Metadaten behalten exakt das bisherige Verhalten.
+
+* **Satzverankerte Auswahl** — jeder Satz erhält eine eigene Anfrage; das gewählte Asset startet an der Satzgrenze, und der `relevance_score` des stärksten passenden Keywords entscheidet (ein 100-Punkte-Keyword schlägt viele schwache generische).
+* **Wortfamilie- und klassenbewusstes Matching** — meditate/meditating/meditation gehören zu einer Familie; Direct Uses schlagen Strong Associations, Contextual und Metaphorical; `negative_matches` unterdrücken False Positives; die visuelle Qualität entscheidet nur bei nahezu Gleichstand.
+* **Sichere Dauer-Regel** — die Single Image Duration (5,0 s) ist ein Zielwert: Wechselt der nächste Satz das Thema, endet das aktuelle Visual an dieser Grenze; bleibt das Thema gleich, bleibt das Visual — Voiceover, Untertitel und Audio-Timing werden nie verschoben.
+* **Einmaligkeit & Reservierung überall** — Assets werden einmal genutzt, solange Alternativen vorhanden sind (alle Modi), seltene Assets werden für den Satz reserviert, der sie eindeutig braucht, und Randomize bleibt im Smart-Match semantisch relevant.
+* **Analyze Timeline** zeigt jetzt zusätzlich das Quellen-Label (Smart Match / Random Fallback / …) und die wenigen stärksten Matching-Begriffe pro Slot; der analysierte Plan ist der Plan, den das Rendering nutzt.
+* **Gecacht & schnell** — Metadaten werden einmal geparst und aus dem Medienindex wiederverwendet (bei Änderung pro Sidecar invalidiert); getestet mit 250 Bild- + 250 Video-Datensätzen.
+
+Pools ohne Analyzer-Metadaten behalten das bewährte Phase-33-Lexikon-Matching. Details in `PHASE34_DELIVERY.md`.
+
 ## Neu in Phase 33
 
 ### Smart Visuals: inhaltsbasierte Auswahl (ohne Generierung)

@@ -1,5 +1,20 @@
 # VideoMerger 1.5.0 for Windows
 
+## New in Phase 34
+
+### Smart Visuals: metadata-driven matching + sentence-anchored timeline
+
+Smart Visuals now matches each **script sentence** against the **pre-generated analysis metadata** of your pool media (`.analysis.json` sidecars / `_DeepImageAnalysis` JSON) and begins the matching visual at the **sentence/topic boundary** — not on a fixed timer. Nothing is generated and no vision model runs at selection time; media without metadata keep exactly the previous behavior.
+
+* **Sentence-anchored selection** — every sentence gets its own query; the selected asset starts at the sentence boundary, and the strongest matching keyword's `relevance_score` drives the decision (a 100-point keyword beats many weak generic ones).
+* **Word-family & class-aware matching** — meditate/meditating/meditation meet in one family; direct uses outrank strong associations, contextual and metaphorical uses; `negative_matches` suppress false positives; visual quality only breaks near-ties.
+* **Safe duration rule** — the Single Image Duration (5.0 s) is a target: when the next sentence changes the topic, the current visual ends at that boundary; when the topic continues, the visual stays — voiceover, subtitles and audio timing are never moved.
+* **Uniqueness & reservation everywhere** — assets are used once while alternatives remain (all modes), rare assets are reserved for the sentence that uniquely needs them, and Randomize stays semantically relevant in Smart Match.
+* **Analyze Timeline** now also shows the source label (Smart Match / Random Fallback / …) and the few strongest matched terms per slot; the analyzed plan is the plan the render uses.
+* **Cached & fast** — metadata is parsed once and reused from the media index (invalidated per sidecar on change); tested with 250 image + 250 video records.
+
+Pools without analyzer metadata keep the proven Phase-33 lexical matching. See `PHASE34_DELIVERY.md` for the full contract and verification.
+
 ## New in Phase 33
 
 ### Smart Visuals: content-aware selection (no generation)
