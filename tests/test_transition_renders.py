@@ -51,7 +51,13 @@ def test_all_four_transitions_render_with_synced_aac_audio(ffmpeg_paths, tmp_pat
     output = tmp_path / f"render_{transition}.mp4"
     report = engine.export(media, settings, resolved, output)
     assert report.ok and report.has_audio
-    assert report.duration == pytest.approx(1.3, abs=0.08)
+    # ExportSettings intentionally defaults duration_before_merge to 0.70.
+    # Direct engine callers pass raw media, so export() applies that canonical
+    # pre-merge playback rate before rebuilding transition geometry. Each
+    # 0.8 s clip therefore occupies 0.8 / 0.70 s and the 0.3 s overlap is
+    # subtracted once: 2 * (0.8 / 0.70) - 0.3 = 1.985714 s.
+    expected_duration = 2 * (0.8 / settings.duration_before_merge) - 0.3
+    assert report.duration == pytest.approx(expected_duration, abs=0.08)
 
     probe = json.loads(_run([
         str(ffprobe), "-v", "error", "-show_streams", "-of", "json", str(output)
@@ -82,12 +88,15 @@ def test_cross_dissolve_has_continuous_professional_ab_blend_without_flash(ffmpe
     output = tmp_path / "cross_visual.mp4"
     assert engine.export(media, settings, resolved, output).ok
 
-    # Transition spans 0.4..0.8 s. The midpoint must contain meaningful A and
-    # B components, while frames around it evolve from red to blue. Controlled
-    # values also rule out a white flash or a black gap.
-    before = _center_rgb(ffmpeg, output, 0.45)
-    middle = _center_rgb(ffmpeg, output, 0.60)
-    after = _center_rgb(ffmpeg, output, 0.75)
+    # The authoritative default duration_before_merge=0.70 stretches each
+    # raw 0.8 s clip to 1.142857 s. Export rebuilds the plan, so this 0.4 s
+    # transition spans 0.742857..1.142857 s rather than the stale raw-clock
+    # 0.4..0.8 s window. Sample that rendered window to verify the actual A→B
+    # blend and rule out a white flash or black gap.
+    assert "offset=0.742857" in engine.last_filter_graph
+    before = _center_rgb(ffmpeg, output, 0.76)
+    middle = _center_rgb(ffmpeg, output, 0.94)
+    after = _center_rgb(ffmpeg, output, 1.12)
     assert before[0] > before[2]
     assert after[2] > after[0]
     assert middle[0] > 45 and middle[2] > 45

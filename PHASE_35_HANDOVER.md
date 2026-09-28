@@ -56,7 +56,7 @@ Maximum measured planned-vs-rendered drift is one frame (0.033333 seconds). All 
 - Focused Phase-35/protected suite: 43 passed.
 - Automatic 4–10-second policy: 6 passed.
 - Linux non-E2E broad run: 1119 passed; 7 failures and 11 setup errors are GUI imports blocked by missing host `libGL.so.1`/pytest-qt; 7 skipped and 141 E2E deselected.
-- Existing direct transition render probe: 12 passed, 5 failed because those tests render with the current default before-merge speed 0.7 but assert/sample raw-speed timing. This is outside the Phase-35 optional path; it remains explicitly reported rather than hidden.
+- Direct transition render probe: **17 passed**. Five stale assertions were corrected to the authoritative default `duration_before_merge=0.70` clock. Production behavior was retained: two 0.8-second clips with a 0.3-second overlap render for 1.985714 seconds, and the 0.4-second cross-dissolve occupies 0.742857–1.142857 seconds after the default speed conversion.
 
 ## Files
 
