@@ -3226,6 +3226,21 @@ class MainWindow(QMainWindow):
         self.transition_spin.valueChanged.connect(
             lambda _value, p=prefix: self._schedule_smart_visual_refresh(p)
         )
+        w["image_motion"].currentIndexChanged.connect(
+            lambda _value, p=prefix: self._sync_unified_motion_to_legacy(p)
+        )
+
+    def _sync_unified_motion_to_legacy(self, prefix: str) -> None:
+        """Round-trip the consolidated motion control through legacy fields."""
+        smart = getattr(self, "_smart_visual_widgets", {}).get(prefix)
+        legacy_prefix = "img_short" if prefix == "sv_short" else "img_long"
+        legacy = getattr(self, "_image_timeline_widgets", {}).get(legacy_prefix)
+        if not smart or not legacy:
+            return
+        value = str(smart["image_motion"].currentData() or "zoom_in")
+        index = legacy["motion"].findData(value)
+        if index >= 0:
+            legacy["motion"].setCurrentIndex(index)
 
     def _schedule_smart_visual_refresh(self, prefix: str) -> None:
         """Invalidate confirmation and debounce an exact preview refresh."""
@@ -3703,7 +3718,6 @@ class MainWindow(QMainWindow):
             kwargs[f"{field_prefix}transition_duration"] = rendering["image_transition_duration"]
             kwargs[f"{field_prefix}visual_effect"] = rendering["image_visual_effect"]
             kwargs[f"{field_prefix}visual_effect_intensity"] = rendering["image_visual_effect_intensity"]
-            kwargs[f"{field_prefix}motion"] = rendering["image_motion"]
         return kwargs
 
     def _typewriter_browse_background(self, prefix: str) -> None:
