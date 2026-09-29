@@ -157,6 +157,34 @@ def _confirmed(media, settings, ffprobe: Path, aligner):
     )
 
 
+def _create_confirmed(engine, media, settings, output_dir, *, aligner, ffprobe=None, **kwargs):
+    """Explicitly perform the headless Analyze→Confirm step before render."""
+    settings = _confirmed(media, settings, ffprobe or engine.ffprobe_path, aligner)
+    return MainProjectEngine(engine).create_main(
+        media, settings, output_dir, aligner=aligner, **kwargs,
+    )
+
+
+def _create_confirmed_youtube(engine, media, settings, output_dir, *, aligner, ffprobe=None, **kwargs):
+    """Analyze/confirm the single-Short fixture profile before export."""
+    from dataclasses import replace
+    from app.video_merger.youtube_outputs import build_short_jobs, short_settings
+    jobs = build_short_jobs(settings)
+    assert len(jobs) == 1, "fixture helper supports one reviewed Short timeline"
+    reviewed = _confirmed(
+        media, short_settings(settings, jobs[0]), ffprobe or engine.ffprobe_path, aligner
+    )
+    settings = replace(
+        settings,
+        shorts_smart_visual_timeline_confirmed=True,
+        shorts_smart_visual_master_timeline=reviewed.smart_visual_master_timeline,
+        shorts_smart_visual_master_timeline_identity=reviewed.smart_visual_master_timeline_identity,
+    )
+    return MainProjectEngine(engine).create_youtube_exports(
+        media, settings, output_dir, aligner=aligner, **kwargs,
+    )
+
+
 def _city_folder(tmp_path: Path, ffmpeg: Path, two_files: bool = True) -> Path:
     folder = tmp_path / "city"
     _make_image(ffmpeg, folder / "city street.png", "yellow")
@@ -193,15 +221,15 @@ def test_A_disabled_smart_visuals_keep_historical_render_byte_identical(ffmpeg_p
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script, image_folder, pattern_folder = _project_factory(tmp_path, ffmpeg, ffprobe)
 
-    historical = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script), tmp_path / "hist", aligner=aligner,
+    historical = _create_confirmed(
+        engine, media, _base_settings(voice, script), tmp_path / "hist", aligner=aligner,
     )
     assert historical.video.is_file() and historical.report.ok
 
     # Fully configured but switched OFF stays exactly historical.
     city = _city_folder(tmp_path, ffmpeg)
-    disabled = MainProjectEngine(engine).create_main(
-        media,
+    disabled = _create_confirmed(
+        engine, media,
         _base_settings(
             voice, script, smart_visual_enabled=False,
             smart_visual_folders=[str(city)],
@@ -215,8 +243,8 @@ def test_A_disabled_smart_visuals_keep_historical_render_byte_identical(ffmpeg_p
 
     # Unified mode remains usable without extra folders because ordinary
     # source videos are first-class members of the single Media Pool.
-    source_only = MainProjectEngine(engine).create_main(
-        media,
+    source_only = _create_confirmed(
+        engine, media,
         _base_settings(
             voice, script, smart_visual_enabled=True,
             smart_visual_folders=[], asset_cooldown_videos=0,
@@ -236,11 +264,11 @@ def test_B_matching_image_chosen_without_generation(ffmpeg_paths, tmp_path):
     city = _city_folder(tmp_path, ffmpeg, two_files=True)
 
     logs: list[str] = []
-    baseline = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
     )
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(city)),
+    result = _create_confirmed(
+        engine, media, _base_settings(voice, script, **_smart_lf(city)),
         tmp_path / "smart", aligner=aligner, log=logs.append,
     )
     assert result.video.is_file() and result.report.ok
@@ -276,11 +304,11 @@ def test_C_matching_video_chosen_with_video_first_priority(ffmpeg_paths, tmp_pat
     make_clip(ffmpeg, city / "city street.mp4", size="160x90", duration=1.6, color="white", audio_rate=None)
     _make_image(ffmpeg, city / "city street.png", "yellow")
 
-    baseline = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
     )
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(
+    result = _create_confirmed(
+        engine, media, _base_settings(voice, script, **_smart_lf(
             city, smart_visual_source_priority="video_first",
             image_ratio_min=0, image_ratio_max=0,
         )),
@@ -310,8 +338,8 @@ def test_D_no_match_falls_back_to_existing_image_and_G_landscape_geometry(ffmpeg
     engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, GLACIER_SCRIPT)
     city = _city_folder(tmp_path, ffmpeg)
 
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(city)),
+    result = _create_confirmed(
+        engine, media, _base_settings(voice, script, **_smart_lf(city)),
         tmp_path / "smart_fallback", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
@@ -338,12 +366,12 @@ def test_E_repeated_sentence_selection_is_deterministic(ffmpeg_paths, tmp_path):
     engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, NIGHT_SCRIPT)
     city = _city_folder(tmp_path, ffmpeg)
 
-    first = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(city)),
+    first = _create_confirmed(
+        engine, media, _base_settings(voice, script, **_smart_lf(city)),
         tmp_path / "smart_repeat_1", aligner=aligner,
     )
-    second = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(city)),
+    second = _create_confirmed(
+        engine, media, _base_settings(voice, script, **_smart_lf(city)),
         tmp_path / "smart_repeat_2", aligner=aligner,
     )
     assert first.video.is_file() and first.report.ok
@@ -365,8 +393,8 @@ def test_F_shorts_portrait_selection_and_profile_separation(ffmpeg_paths, tmp_pa
     engine, media, aligner, voice, script = _smart_project_factory(tmp_path, ffmpeg, ffprobe, MOUNTAIN_SCRIPT)
     city = _city_folder(tmp_path, ffmpeg)
 
-    result = MainProjectEngine(engine).create_youtube_exports(
-        media, _shorts_settings(
+    result = _create_confirmed_youtube(
+        engine, media, _shorts_settings(
             voice, script,
             shorts_smart_visual_enabled=True,
             shorts_smart_visual_folders=[str(city)],
@@ -391,8 +419,8 @@ def test_F_shorts_portrait_selection_and_profile_separation(ffmpeg_paths, tmp_pa
 
     # The Long-Form profile was never enabled: a Long-Form job of the same
     # project keeps the historical render (no smart visuals).
-    lf = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script), tmp_path / "lf_no_smart", aligner=aligner,
+    lf = _create_confirmed(
+        engine, media, _base_settings(voice, script), tmp_path / "lf_no_smart", aligner=aligner,
     )
     assert lf.video.is_file() and lf.report.ok
     lf_width, lf_height = _probe_size(ffprobe, lf.video)
@@ -413,8 +441,8 @@ def test_H_generation_unavailable_falls_back_to_existing_media(ffmpeg_paths, tmp
         "app.video_merger.image_generation.resolve_generation_provider",
         lambda ffmpeg_path=None: (None, ["Kein Backend verfügbar"]),
     )
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(city)),
+    result = _create_confirmed(
+        engine, media, _base_settings(voice, script, **_smart_lf(city)),
         tmp_path / "smart_fallback", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok, "the project must stay renderable"
@@ -439,12 +467,12 @@ def test_I_disabled_smart_visuals_keep_typewriter_render_identical(ffmpeg_paths,
         typewriter_hook_text="WAIT FOR IT",
         typewriter_hold_seconds=0.6,
     )
-    baseline = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **typewriter), tmp_path / "tw_base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, _base_settings(voice, script, **typewriter), tmp_path / "tw_base", aligner=aligner,
     )
     assert baseline.video.is_file() and baseline.report.ok
-    with_smart_config = MainProjectEngine(engine).create_main(
-        media, _base_settings(
+    with_smart_config = _create_confirmed(
+        engine, media, _base_settings(
             voice, script, **typewriter,
             smart_visual_enabled=False,
             smart_visual_folders=[str(city)],
@@ -466,12 +494,12 @@ def test_J_subtitles_music_transitions_intact_with_smart_visuals(ffmpeg_paths, t
     music = tmp_path / "music.wav"
     _tone(ffmpeg, music, 300, 8.0, .4)
 
-    base = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, subtitle_enabled=True, music_path=str(music), music_volume=60),
+    base = _create_confirmed(
+        engine, media, _base_settings(voice, script, subtitle_enabled=True, music_path=str(music), music_volume=60),
         tmp_path / "j_base", aligner=aligner,
     )
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(
+    result = _create_confirmed(
+        engine, media, _base_settings(
             voice, script, subtitle_enabled=True, music_path=str(music), music_volume=60,
             transition_type="cross_dissolve",
             **_smart_lf(city, smart_visual_generation_strategy="always"),
@@ -533,8 +561,8 @@ def test_K_selected_image_reuses_motion_and_tv_effect(ffmpeg_paths, tmp_path):
     city = _textured_city_folder(tmp_path, ffmpeg)
 
     def render(name: str, motion: str, effect: str = "none") -> Path:
-        result = MainProjectEngine(engine).create_main(
-            media, _base_settings(
+        result = _create_confirmed(
+            engine, media, _base_settings(
                 voice, script,
                 timeline_image_motion=motion,
                 timeline_image_effect=effect,
@@ -580,8 +608,8 @@ def test_L_video_generated_image_video_transitions(ffmpeg_paths, tmp_path):
     city.mkdir(parents=True, exist_ok=True)
     make_clip(ffmpeg, city / "city traffic.mp4", size="160x90", duration=1.6, color="white", audio_rate=None)
 
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(
+    result = _create_confirmed(
+        engine, media, _base_settings(
             voice, script, transition_type="cross_dissolve",
             **_smart_lf(city, smart_visual_source_priority="video_first"),
         ),

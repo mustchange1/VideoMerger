@@ -37,6 +37,8 @@ from tests.test_phase31_e2e import (
     CITY_SCRIPT,
     GLACIER_SCRIPT,
     MOUNTAIN_SCRIPT,
+    _create_confirmed,
+    _create_confirmed_youtube,
     _smart_lf,
     _smart_project_factory,
     _yellow_predicate,
@@ -113,11 +115,11 @@ def test_smart_match_places_matched_images_and_keeps_timing(ffmpeg_paths, tmp_pa
     assert smart, "the city sentences must match the city media"
     assert all(not slot.generation_used for slot in slots)
 
-    baseline = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
     )
-    result = MainProjectEngine(engine).create_main(
-        media, settings, tmp_path / "smart", aligner=aligner,
+    result = _create_confirmed(
+        engine, media, settings, tmp_path / "smart", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
     assert baseline.srt.is_file() and result.srt.is_file()
@@ -153,8 +155,8 @@ def test_weak_match_falls_back_to_existing_and_never_generates(ffmpeg_paths, tmp
         assert slot.source_mode in {"RANDOM", ""}
         assert not slot.generation_used
 
-    result = MainProjectEngine(engine).create_main(
-        media, settings, tmp_path / "weak", aligner=aligner,
+    result = _create_confirmed(
+        engine, media, settings, tmp_path / "weak", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
     width, height = _probe_size(ffprobe, result.video)
@@ -228,8 +230,8 @@ def test_exhausted_pool_reuses_without_back_to_back_repeats(ffmpeg_paths, tmp_pa
     for previous, current in zip(paths, paths[1:]):
         assert previous != current, "never the same asset twice in a row"
 
-    result = MainProjectEngine(_engine).create_main(
-        _media, settings, tmp_path / "exhaust", aligner=_aligner,
+    result = _create_confirmed(
+        _engine, _media, settings, tmp_path / "exhaust", aligner=_aligner,
     )
     assert result.video.is_file() and result.report.ok
 
@@ -246,8 +248,8 @@ def test_automatic_speech_duration_ignores_legacy_fixed_image_duration(ffmpeg_pa
     _make_image(ffmpeg, city / "city street.png", "yellow")
 
     def render(name: str, duration: float) -> float:
-        result = MainProjectEngine(engine).create_main(
-            media,
+        result = _create_confirmed(
+            engine, media,
             _base_settings(voice, script, **_smart_lf(
                 city, smart_visual_mode="random_only",
                 smart_visual_image_duration=duration,
@@ -268,8 +270,8 @@ def test_automatic_speech_duration_ignores_legacy_fixed_image_duration(ffmpeg_pa
     )
     assert image_slots >= 1
 
-    baseline = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
     )
     base_duration = _probe_duration(ffprobe, baseline.video)
     short = render("dur_short", 1.0)
@@ -330,8 +332,8 @@ def test_randomize_produces_a_different_valid_assignment(ffmpeg_paths, tmp_path)
            [(round(s.start, 3), round(s.end, 3)) for s in alt_slots]
 
     # The randomized render still succeeds end-to-end.
-    result = MainProjectEngine(_engine).create_main(
-        _media, randomized, tmp_path / "randomized", aligner=_aligner,
+    result = _create_confirmed(
+        _engine, _media, randomized, tmp_path / "randomized", aligner=_aligner,
     )
     assert result.video.is_file() and result.report.ok
 
@@ -394,8 +396,8 @@ def test_shorts_selection_keeps_portrait_geometry(ffmpeg_paths, tmp_path):
     city = tmp_path / "city"
     _make_image(ffmpeg, city / "mountain view.png", "yellow")
 
-    result = MainProjectEngine(engine).create_youtube_exports(
-        media, _shorts_settings(
+    result = _create_confirmed_youtube(
+        engine, media, _shorts_settings(
             voice, script,
             shorts_smart_visual_enabled=True,
             shorts_smart_visual_folders=[str(city)],
@@ -426,12 +428,12 @@ def test_disabled_smart_visuals_keep_historical_render_byte_identical(ffmpeg_pat
     engine, media, aligner, voice, script = _smart_project_factory(
         tmp_path, ffmpeg, ffprobe, CITY_SCRIPT
     )
-    baseline = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
     )
     # Phase-33 fields present but the feature disabled -> untouched render.
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(
+    result = _create_confirmed(
+        engine, media, _base_settings(
             voice, script,
             smart_visual_enabled=False,
             smart_visual_mode="smart_match",

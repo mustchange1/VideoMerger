@@ -30,7 +30,7 @@ from tests.test_phase30_e2e import (
     _probe_size,
     _tone,
 )
-from tests.test_phase31_e2e import _smart_lf
+from tests.test_phase31_e2e import _create_confirmed, _smart_lf
 
 pytestmark = pytest.mark.e2e
 
@@ -242,8 +242,8 @@ def test_phase34_render_visuals_follow_sentences(tmp_path, ffmpeg_paths):
     )
     assert baseline.video.is_file() and baseline.report.ok
 
-    result = MainProjectEngine(engine).create_main(
-        media,
+    result = _create_confirmed(
+        engine, media,
         _base_settings(voice, script, subtitle_enabled=True, **_smart_lf(pool)),
         tmp_path / "smart",
         aligner=aligner,

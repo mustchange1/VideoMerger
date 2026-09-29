@@ -42,6 +42,8 @@ from tests.test_phase30_e2e import (
 from tests.test_phase31_e2e import (
     CITY_SCRIPT,
     MOUNTAIN_SCRIPT,
+    _create_confirmed,
+    _create_confirmed_youtube,
     _smart_lf,
     _smart_project_factory,
 )
@@ -128,8 +130,8 @@ def test_A_phase32_defaults_keep_phase31_render_byte_identical(ffmpeg_paths, tmp
     city = tmp_path / "city"
     _make_image(ffmpeg, city / "city street.png", "yellow")
 
-    reference = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(city)),
+    reference = _create_confirmed(
+        engine, media, _base_settings(voice, script, **_smart_lf(city)),
         tmp_path / "reference", aligner=aligner,
     )
     assert reference.video.is_file() and reference.report.ok
@@ -148,8 +150,8 @@ def test_A_phase32_defaults_keep_phase31_render_byte_identical(ffmpeg_paths, tmp
         typewriter_completion_sound_preset="enter_return",
         typewriter_completion_sound_volume=40,
     )
-    result = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(city), **phase32_defaults),
+    result = _create_confirmed(
+        engine, media, _base_settings(voice, script, **_smart_lf(city), **phase32_defaults),
         tmp_path / "phase32", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
@@ -176,8 +178,8 @@ def test_B_random_fallback_inserts_pool_video_without_generation(ffmpeg_paths, t
     slots = _plan_slots(settings, MOUNTAIN_SCRIPT, tmp_path, ffmpeg, ffprobe)
     assert any(slot.fallback_mode == "FALLBACK_RANDOM_VIDEO" for slot in slots), \
         "per-slot diagnostic must tag the random-video draw"
-    result = MainProjectEngine(engine).create_main(
-        media, settings, tmp_path / "rv", aligner=aligner,
+    result = _create_confirmed(
+        engine, media, settings, tmp_path / "rv", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
     assert not _generated_dir(tmp_path).exists(), "random fallback must never generate"
@@ -210,8 +212,8 @@ def test_B2_random_fallback_inserts_pool_image(ffmpeg_paths, tmp_path):
     slots = _plan_slots(settings, CITY_SCRIPT, tmp_path, ffmpeg, ffprobe)
     assert any(slot.fallback_mode == "FALLBACK_RANDOM_IMAGE" for slot in slots), \
         "per-slot diagnostic must tag the random-image draw"
-    result = MainProjectEngine(engine).create_main(
-        media, settings, tmp_path / "ri", aligner=aligner,
+    result = _create_confirmed(
+        engine, media, settings, tmp_path / "ri", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
     assert not _generated_dir(tmp_path).exists()
@@ -238,11 +240,11 @@ def test_C_empty_pool_matches_video_only_render(ffmpeg_paths, tmp_path):
     assert all(slot.fallback_mode == "SKIPPED" for slot in slots), \
         "an empty pool must skip every slot cleanly"
 
-    baseline = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
     )
-    result = MainProjectEngine(engine).create_main(
-        media, settings, tmp_path / "skip", aligner=aligner,
+    result = _create_confirmed(
+        engine, media, settings, tmp_path / "skip", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
     # Phase 36 locks an enabled Smart profile to voiceover even when its pool
@@ -272,8 +274,8 @@ def test_D_allow_generated_off_never_generates(ffmpeg_paths, tmp_path):
     assert slots, "the plan must still produce slots"
     assert all(slot.fallback_mode != "FALLBACK_GENERATED" for slot in slots), \
         "generation must be impossible when the toggle is OFF"
-    result = MainProjectEngine(engine).create_main(
-        media, settings, tmp_path / "nogen", aligner=aligner,
+    result = _create_confirmed(
+        engine, media, settings, tmp_path / "nogen", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
     assert not _generated_dir(tmp_path).exists(), "generation must not run when disabled"
@@ -314,8 +316,8 @@ def test_I_legacy_generation_settings_never_generate_anymore(ffmpeg_paths, tmp_p
         "legacy generation settings are inert: random existing fallback wins"
     assert not any(slot.generation_used for slot in slots)
 
-    result = MainProjectEngine(engine).create_main(
-        media, settings, tmp_path / "gen", aligner=aligner,
+    result = _create_confirmed(
+        engine, media, settings, tmp_path / "gen", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok
     generated = _generated_dir(tmp_path)
@@ -361,11 +363,11 @@ def test_E_image_transition_duration_applies_at_image_boundaries(ffmpeg_paths, t
     )
     assert image_slots >= 1, "the city image must match and be inserted"
 
-    baseline = MainProjectEngine(engine).create_main(
-        media, base, tmp_path / "td_project", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, base, tmp_path / "td_project", aligner=aligner,
     )
-    override = MainProjectEngine(engine).create_main(
-        media,
+    override = _create_confirmed(
+        engine, media,
         settings(
             timeline_image_transition_type="film_dissolve",
             timeline_image_transition_duration=0.3,
@@ -421,11 +423,11 @@ def test_E2_image_transition_none_hard_cut(ffmpeg_paths, tmp_path):
     )
     assert image_slots >= 1
 
-    baseline = MainProjectEngine(engine).create_main(
-        media, base, tmp_path / "cut_base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, base, tmp_path / "cut_base", aligner=aligner,
     )
-    hard_cut = MainProjectEngine(engine).create_main(
-        media, settings(timeline_image_transition_type="none"),
+    hard_cut = _create_confirmed(
+        engine, media, settings(timeline_image_transition_type="none"),
         tmp_path / "cut_none", aligner=aligner,
     )
     assert hard_cut.video.is_file() and hard_cut.report.ok
@@ -465,11 +467,11 @@ def test_F_image_visual_effect_changes_frames_without_timing_change(ffmpeg_paths
         for slot in _plan_slots(base, CITY_SCRIPT, tmp_path, ffmpeg, ffprobe)
     )
 
-    baseline = MainProjectEngine(engine).create_main(
-        media, base, tmp_path / "fx_none", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, base, tmp_path / "fx_none", aligner=aligner,
     )
-    shimmered = MainProjectEngine(engine).create_main(
-        media,
+    shimmered = _create_confirmed(
+        engine, media,
         settings(
             timeline_image_visual_effect="soft_shimmer",
             timeline_image_visual_effect_intensity="high",
@@ -521,8 +523,8 @@ def test_G_shorts_use_their_own_selection_mode_and_rendering_profile(ffmpeg_path
         "the Short profile must use its own Shorts selection mode"
     assert all(slot.source_mode != "SMART" for slot in slots), \
         "random_only must not match semantically"
-    result = MainProjectEngine(engine).create_youtube_exports(
-        media, settings, tmp_path / "short", aligner=aligner,
+    result = _create_confirmed_youtube(
+        engine, media, settings, tmp_path / "short", aligner=aligner,
     )
     shorts = result.shorts
     assert shorts and shorts[0].video.is_file() and shorts[0].report.ok
@@ -552,8 +554,8 @@ def test_H_completion_sound_plays_once_without_disturbing_timing(ffmpeg_paths, t
     ffmpeg, ffprobe = ffmpeg_paths
     engine, media, aligner, voice, script = _typewriter_project_factory(tmp_path, ffmpeg, ffprobe)
 
-    baseline = MainProjectEngine(engine).create_main(
-        media, _typewriter_base_settings(voice, script), tmp_path / "base", aligner=aligner,
+    baseline = _create_confirmed(
+        engine, media, _typewriter_base_settings(voice, script), tmp_path / "base", aligner=aligner,
     )
     program_duration = _probe_duration(ffprobe, baseline.video)
 
@@ -561,11 +563,11 @@ def test_H_completion_sound_plays_once_without_disturbing_timing(ffmpeg_paths, t
         voice, script, **HOOK, typewriter_completion_sound_enabled=False,
     )
     settings_on = _typewriter_base_settings(voice, script, **HOOK)  # default ON
-    result_off = MainProjectEngine(engine).create_main(
-        media, settings_off, tmp_path / "intro_off", aligner=aligner,
+    result_off = _create_confirmed(
+        engine, media, settings_off, tmp_path / "intro_off", aligner=aligner,
     )
-    result_on = MainProjectEngine(engine).create_main(
-        media, settings_on, tmp_path / "intro_on", aligner=aligner,
+    result_on = _create_confirmed(
+        engine, media, settings_on, tmp_path / "intro_on", aligner=aligner,
     )
     assert result_off.video.is_file() and result_off.report.ok
     assert result_on.video.is_file() and result_on.report.ok
@@ -627,8 +629,8 @@ def test_H2_shorts_completion_sound_default_on(ffmpeg_paths, tmp_path):
         short_typewriter_hold_seconds=0.4,
         short_typewriter_sound_volume=100,
     )
-    result = MainProjectEngine(engine).create_youtube_exports(
-        media, settings, tmp_path / "short", aligner=aligner,
+    result = _create_confirmed_youtube(
+        engine, media, settings, tmp_path / "short", aligner=aligner,
     )
     assert result.shorts and result.shorts[0].video.is_file()
     short_profile = profile_from_settings(settings, short=True)
