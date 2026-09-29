@@ -98,3 +98,55 @@ The implementation commit `8ab16cfb1c1b93eb45be93379c113541ad502677` passed the 
 - duration: **14m 37s** (2026-09-29 02:57:51–03:12:28 UTC).
 
 The only annotation was GitHub's infrastructure warning that Node.js 20 actions are being forced onto Node.js 24. There were no application test failures or errors.
+
+## GUI/render source-of-truth correction
+
+The follow-up correction removes the remaining dual-planner architecture.
+
+### Canonical snapshot contract
+
+`MasterTimeline` now owns the single canonical serialization and SHA-256 identity algorithm. Its versioned snapshot includes ordered slots, exact boundaries, asset paths/kinds/IDs, semantic evidence, diagnostics, pool/alignment/cooldown/settings fingerprints, and confirmation state. `from_dict()` strictly validates schema, ordering, asset identity, geometry, and the stored identity.
+
+`MediaPool.fingerprint` deterministically covers each deduplicated canonical asset and relevant metadata. `MasterTimelineRequest` is the shared plain-data request used to construct the real timeline. Slot replacement uses immutable replacement semantics: only `MasterTimelineSlot.asset` changes, start/end/duration remain byte-identical, identity changes, and confirmation is cleared.
+
+### GUI authority
+
+The active GUI now requires analyzed `current_media`, obtains canonical voiceover/script alignment, indexes configured image/video folders, creates one `MediaPool.unified(...)`, and invokes `MasterTimelineRequest.build()` / `MasterTimelineBuilder`. The worker returns the actual `MasterTimeline`; neither the GUI nor its worker imports or calls `build_smart_visual_plan()`.
+
+The list rows correspond one-for-one to Master slots and store the Master slot index as Qt user data. Source videos, indexed videos, and indexed images are shown in one chronological list. The summary reports pool composition, image/video slot counts, target endpoint, canonical identity, and confirmation state.
+
+Legacy Move Start, Change Duration, and Remove Visual operations were removed. The active editor offers only Replace Slot Asset and Restore Automatic Asset. Legacy image-duration and insert-frequency controls remain loadable but are visibly labeled inactive and disabled because slot duration comes only from canonical speech timing.
+
+Long-Form and Shorts persist separate snapshot and identity fields. Any relevant GUI input change clears confirmation. A headless `prepare_confirmed_master_timeline_settings()` entry point performs the same explicit Analyze→Confirm step for automation; rendering never invokes it.
+
+### Render authority and no fallback
+
+Active unified rendering now requires the confirmed persisted snapshot. It reconstructs the current pool for resolution/validation only, validates every fingerprint and endpoint, restores the exact ordered slots, and materializes those slots without rebuilding an assignment. GUI, persisted, and render identities use the same `MasterTimeline.identity` implementation; mismatch or stale state aborts with an actionable error.
+
+The active render module no longer imports or calls `build_smart_visual_plan()` or `apply_smart_visual_plan()`. Missing voiceover/alignment, missing snapshots, unconfirmed snapshots, stale inputs, missing assets, cooldown incompatibility, and identity mismatch are all hard failures. Disabled unified mode continues through the historical fit/render workflow and does not require a snapshot.
+
+Runtime trace/log output now includes mode, media-pool count, slot/image/video counts, exact target, GUI identity, render identity, and confirmation state.
+
+### Correction verification
+
+Focused local verification at branch tip before native execution:
+
+- canonical unified/identity/GUI-source-of-truth and protected Phase-35/36 set: **43 passed**;
+- production and test Python compilation: **passed**;
+- `git diff --check`: **passed**;
+- native-only Qt/FFmpeg execution remained delegated to Windows because this checkout lacks `libGL.so.1` and project-local FFmpeg.
+
+The implementation was developed in `0fdb09d35b7a6cb2d50304ed8812f0795db19ac6`, with explicit Analyze→Confirm E2E migration in `22cd80eb9ac797bcf4da5c050cdbae5288a34ac9`, and protected compatibility updates in `a9c145e3bb4c85c9a0b091befbf274efdb57e2f6`.
+
+Native Windows branch-tip verification for `a9c145e3bb4c85c9a0b091befbf274efdb57e2f6`:
+
+- workflow run: `36572140250`;
+- job: `109418497416` (`windows-regression`);
+- URL: `https://github.com/mustchange1/VideoMerger/actions/runs/36572140250`;
+- result: **SUCCESS**;
+- complete Windows regression suite: **passed**;
+- summary publication: **passed**;
+- evidence upload: **passed**;
+- duration: **14m 54s** (2026-09-29 13:01:42–13:16:36 UTC).
+
+The only annotation was GitHub's Node.js 20-to-24 infrastructure deprecation warning. No application failures or errors remained.
