@@ -150,6 +150,13 @@ def _smart_lf(folder: Path | None = None, **overrides) -> dict:
     return values
 
 
+def _confirmed(media, settings, ffprobe: Path, aligner):
+    from app.video_merger.main_project import prepare_confirmed_master_timeline_settings
+    return prepare_confirmed_master_timeline_settings(
+        media, settings, ffprobe_path=ffprobe, aligner=aligner,
+    )
+
+
 def _city_folder(tmp_path: Path, ffmpeg: Path, two_files: bool = True) -> Path:
     folder = tmp_path / "city"
     _make_image(ffmpeg, folder / "city street.png", "yellow")

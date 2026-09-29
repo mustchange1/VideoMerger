@@ -107,14 +107,15 @@ from .image_timeline import (
 )
 from .smart_visuals import (
     SmartVisualApplyResult,
-    apply_smart_visual_plan,
     build_media_index,
-    build_smart_visual_plan,
     smart_visual_profile_from_settings,
 )
 from .asset_cooldown import AssetCooldownHistory
-from .master_timeline import MasterTimelineBuilder, materialize_master_timeline
-from .media_pool import MediaPool
+from .master_timeline import (
+    MASTER_MODE_RANDOM, MASTER_MODE_SMART, MasterTimelineRequest,
+    canonical_fingerprint, materialize_master_timeline,
+    validate_confirmed_master_timeline,
+)
 from .validation import validate_output
 from .video_pool import (
     VIDEO_ORDER_RANDOM,
@@ -426,6 +427,79 @@ def _prepare_smart_visual_alignment(
     )
     alignment.hard_breaks = sorted(set(alignment.hard_breaks + pause_boundaries))
     return script, alignment
+
+
+def prepare_confirmed_master_timeline_settings(
+    media: list[MediaInfo], settings: ExportSettings, *, ffprobe_path: Path,
+    aligner: LocalWordAligner | None = None,
+) -> ExportSettings:
+    """Explicit non-GUI Analyze + Confirm entry point for automation/tests.
+
+    Rendering never calls this function. It exists so headless clients can
+    perform the same required build→confirm→persist sequence before render.
+    """
+    profile = smart_visual_profile_from_settings(settings)
+    if not profile.active:
+        return settings
+    script_mode = "matched" if str(settings.script_mode).casefold() in {"matched", "individual"} else "single"
+    units, unit_scripts = ordered_voiceover_units(settings)
+    available = [(unit, unit_scripts[index] if index < len(unit_scripts) else None)
+                 for index, unit in enumerate(units) if unit.is_file()]
+    if not available:
+        raise VideoMergerError("Unified Master Timeline requires valid voiceover audio.")
+    voice_assets = [probe_audio(ffprobe_path, require_asset(unit, "Voiceover", AUDIO_EXTENSIONS))
+                    for unit, _script in available]
+    scripts = [script for _unit, script in available]
+    pause = voiceover_pause(settings)
+    target = voiceover_timeline_duration([asset.duration for asset in voice_assets], pause)
+    global_script = global_script_path(settings) if script_mode == "single" else None
+    aligner = aligner or LocalWordAligner(settings.subtitle_model)
+    script, alignment = _prepare_smart_visual_alignment(
+        aligner=aligner, script_mode=script_mode, global_script=global_script,
+        unit_scripts=scripts, voice_assets=voice_assets,
+        language=settings.subtitle_language, pause=pause, log=lambda _message: None,
+    )
+    from .smart_timeline import build_semantic_sections, build_speech_units
+    sections = tuple(build_semantic_sections(build_speech_units(script, alignment.words)))
+    if not sections:
+        raise VideoMergerError("Unified Master Timeline could not derive canonical speech sections.")
+    entries, _stats = build_media_index(profile.folders, project_root() / "cache" / "smart_visual_index")
+    blocked = tuple(sorted(AssetCooldownHistory().blocked_assets(profile.cooldown_videos)))
+    alignment_fingerprint = canonical_fingerprint({
+        "target": target, "script": script,
+        "words": [(word.text, word.start, word.end) for word in alignment.words],
+        "hard_breaks": list(alignment.hard_breaks),
+    })
+    profile_key = "sv_short" if str(getattr(settings, "export_mode", "")) == "shorts" else "sv_long"
+    settings_payload = tuple(sorted({
+        "profile": profile_key, "mode": profile.mode,
+        "image_ratio_min": profile.image_ratio_min,
+        "image_ratio_max": profile.image_ratio_max,
+        "cooldown_videos": profile.cooldown_videos,
+        "randomize_nonce": profile.randomize_nonce,
+        "transition_type": str(settings.transition_type),
+        "transition_duration": float(settings.transition_duration),
+        "image_transition_type": str(getattr(settings, "timeline_image_transition_type", "project") or "project"),
+        "image_transition_duration": getattr(settings, "timeline_image_transition_duration", None),
+        "image_visual_effect": str(getattr(settings, "timeline_image_visual_effect", "none") or "none"),
+        "image_visual_effect_intensity": str(getattr(settings, "timeline_image_visual_effect_intensity", "low") or "low"),
+    }.items()))
+    request = MasterTimelineRequest(
+        source_media=tuple(media), indexed_media=tuple(entries), sections=sections,
+        voiceover_duration=target,
+        mode=MASTER_MODE_RANDOM if profile.mode == "random_only" else MASTER_MODE_SMART,
+        image_ratio_min=profile.image_ratio_min, image_ratio_max=profile.image_ratio_max,
+        cooldown_videos=profile.cooldown_videos, blocked_asset_ids=blocked,
+        seed_parts=(profile.mode, profile.randomize_nonce, profile.folders, alignment_fingerprint),
+        alignment_fingerprint=alignment_fingerprint, settings_payload=settings_payload,
+    )
+    timeline = request.build()
+    timeline.confirmed = True
+    return replace(
+        settings, smart_visual_timeline_confirmed=True,
+        smart_visual_master_timeline=timeline.to_dict(),
+        smart_visual_master_timeline_identity=timeline.identity,
+    )
 
 
 def _aspect_token(aspect: str) -> str:
@@ -1182,16 +1256,6 @@ class MainProjectEngine:
         phase35_script = ""
         phase35_alignment: AlignmentResult | None = None
         phase35_speech_units: list = []
-        if (
-            smart_profile.active
-            and smart_profile.timeline_mode in {"hybrid", "manual"}
-            and smart_profile.manual_overrides
-            and not smart_profile.timeline_confirmed
-        ):
-            raise VideoMergerError(
-                "Smart Visual timeline has unconfirmed manual edits. Review the "
-                "timeline and enable 'Confirm Smart Visual Timeline for render'."
-            )
         # Canonical speech timing is paid for ONLY by active Smart Visuals.
         # The ordinary path never imports/runs the Phase-35 model. If captions
         # are also requested, the subtitle block below reuses this exact
@@ -1219,45 +1283,83 @@ class MainProjectEngine:
                     "audio-anchored unit(s), canonical alignment reused."
                 )
             except Exception as exc:
-                # Smart Visuals remains an optional layer. Preserve the stable
-                # render and report why speech-aware placement was unavailable.
-                log(f"Phase 35 speech timing unavailable; Smart Visuals uses legacy planning ({exc}).")
-                phase35_script = ""
-                phase35_alignment = None
-                phase35_speech_units = []
-        smart_base_media = list(render_media)
+                raise VideoMergerError(
+                    "Unified Master Timeline canonical speech alignment failed; "
+                    "legacy Smart Visual fallback is disabled. Analyze and confirm the "
+                    f"Unified Timeline again ({exc})."
+                ) from exc
         master_selected_assets: tuple[str, ...] = ()
         master_applied = False
-        if smart_profile.active and render_media and voice_assets:
+        if smart_profile.active:
+            if not render_media or not voice_assets:
+                raise VideoMergerError(
+                    "Unified Master Timeline requires valid source videos and voiceover audio. "
+                    "Analyze and confirm the Unified Visual Timeline again."
+                )
+            if phase35_alignment is None or not phase35_speech_units:
+                raise VideoMergerError(
+                    "Unified Master Timeline requires valid canonical speech alignment. "
+                    "Analyze and confirm the Unified Visual Timeline again."
+                )
+            snapshot = getattr(settings, "smart_visual_master_timeline", {}) or {}
+            persisted_identity = str(
+                getattr(settings, "smart_visual_master_timeline_identity", "") or ""
+            )
+            if not snapshot or not bool(getattr(settings, "smart_visual_timeline_confirmed", False)):
+                raise VideoMergerError(
+                    "Unified Master Timeline cannot be rendered because the confirmed timeline "
+                    "snapshot is missing or unconfirmed. Please analyze the Unified Timeline "
+                    "and confirm it again."
+                )
             try:
-                from .smart_timeline import SemanticSection, build_semantic_sections
-
-                master_canvas = resolve_export(render_media, settings)
-                sections = build_semantic_sections(phase35_speech_units) if phase35_speech_units else [
-                    SemanticSection(
-                        index=0, text=phase35_script, start=0.0, end=voice_total,
-                        speech_unit_indices=(), boundary_reason="inferred_thought_boundary",
-                    )
-                ]
                 entries, pool_stats = build_media_index(
                     smart_profile.folders, project_root() / "cache" / "smart_visual_index"
                 )
-                unified_pool = MediaPool.unified(render_media, entries)
                 cooldown_history = AssetCooldownHistory()
-                master_plan = MasterTimelineBuilder(
-                    media_pool=unified_pool,
-                    sections=sections,
-                    voiceover_duration=voice_total,
-                    mode=("pure_random" if smart_profile.mode == "random_only" else "smart_visuals"),
+                blocked = tuple(sorted(cooldown_history.blocked_assets(smart_profile.cooldown_videos)))
+                alignment_fingerprint = canonical_fingerprint({
+                    "target": voice_total,
+                    "script": phase35_script,
+                    "words": [(word.text, word.start, word.end) for word in phase35_alignment.words],
+                    "hard_breaks": list(phase35_alignment.hard_breaks),
+                })
+                profile_key = "sv_short" if str(getattr(settings, "export_mode", "")) == "shorts" else "sv_long"
+                settings_payload = tuple(sorted({
+                    "profile": profile_key,
+                    "mode": smart_profile.mode,
+                    "image_ratio_min": smart_profile.image_ratio_min,
+                    "image_ratio_max": smart_profile.image_ratio_max,
+                    "cooldown_videos": smart_profile.cooldown_videos,
+                    "randomize_nonce": smart_profile.randomize_nonce,
+                    "transition_type": str(settings.transition_type),
+                    "transition_duration": float(settings.transition_duration),
+                    "image_transition_type": str(
+                        getattr(settings, "timeline_image_transition_type", "project") or "project"
+                    ),
+                    "image_transition_duration": getattr(settings, "timeline_image_transition_duration", None),
+                    "image_visual_effect": str(
+                        getattr(settings, "timeline_image_visual_effect", "none") or "none"
+                    ),
+                    "image_visual_effect_intensity": str(
+                        getattr(settings, "timeline_image_visual_effect_intensity", "low") or "low"
+                    ),
+                }.items()))
+                request = MasterTimelineRequest(
+                    source_media=tuple(render_media), indexed_media=tuple(entries),
+                    sections=tuple(), voiceover_duration=voice_total,
+                    mode=MASTER_MODE_RANDOM if smart_profile.mode == "random_only" else MASTER_MODE_SMART,
                     image_ratio_min=smart_profile.image_ratio_min,
                     image_ratio_max=smart_profile.image_ratio_max,
                     cooldown_videos=smart_profile.cooldown_videos,
-                    cooldown_history=cooldown_history,
-                    seed_parts=(
-                        getattr(settings, "export_mode", ""), video_order_seed,
-                        smart_profile.randomize_nonce, "|".join(smart_profile.folders),
-                    ),
-                ).build()
+                    blocked_asset_ids=blocked,
+                    alignment_fingerprint=alignment_fingerprint,
+                    settings_payload=settings_payload,
+                )
+                unified_pool = request.media_pool
+                master_plan = validate_confirmed_master_timeline(
+                    snapshot, request, persisted_identity
+                )
+                master_canvas = resolve_export(render_media, settings)
                 render_media = materialize_master_timeline(
                     master_plan,
                     width=master_canvas.width, height=master_canvas.height,
@@ -1265,35 +1367,41 @@ class MainProjectEngine:
                     image_profile=image_timeline_profile_from_settings(settings),
                     ffprobe_path=self.engine.ffprobe_path, render_settings=settings,
                 )
+                render_identity = master_plan.identity
+                if render_identity != persisted_identity:
+                    raise ValueError(
+                        "Master Timeline identity mismatch. Rendering aborted to prevent GUI/render divergence."
+                    )
                 master_selected_assets = master_plan.selected_asset_ids
-                identity_payload = [
-                    (slot.start, slot.end, slot.asset.asset_id, slot.asset.kind)
-                    for slot in master_plan.slots
-                ]
-                master_identity = hashlib.sha256(
-                    json.dumps(identity_payload, sort_keys=True).encode("utf-8")
-                ).hexdigest()
                 smart_apply = SmartVisualApplyResult(
                     media=render_media,
                     inserted=[
                         (slot.index, Path(slot.asset.path), slot.duration, slot.asset.kind)
                         for slot in master_plan.slots
                     ],
-                    identity=master_identity,
+                    identity=render_identity,
                 )
                 master_applied = True
                 output_dir.mkdir(parents=True, exist_ok=True)
                 from .smart_timeline import render_chain as resolved_render_chain
                 master_chain = resolved_render_chain(render_media, settings)
                 master_trace = {
-                    "schema": "videomerger-master-timeline-v1",
+                    "schema": "videomerger-master-timeline-v2",
                     "valid": True,
+                    "mode": master_plan.slots[0].selection_mode if master_plan.slots else smart_profile.mode,
+                    "confirmed": master_plan.confirmed,
+                    "timeline_identity": render_identity,
+                    "gui_identity": persisted_identity,
+                    "render_identity": render_identity,
+                    "media_pool_assets": len(unified_pool.assets),
+                    "slot_count": len(master_plan.slots),
+                    "image_count": master_plan.image_count,
+                    "video_count": master_plan.video_count,
                     "target_duration": master_plan.target_duration,
                     "placements": [
                         {
                             "placement_id": f"master-{slot.index + 1:03d}",
-                            "status": "inserted",
-                            "visual_path": slot.asset.path,
+                            "status": "inserted", "visual_path": slot.asset.path,
                             "visual_kind": slot.asset.kind,
                             "requested_audio_boundary": slot.start,
                             "final_expected_start": master_chain[slot.index].final_start,
@@ -1310,117 +1418,28 @@ class MainProjectEngine:
                     json.dumps(master_trace, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
                 (output_dir / "PHASE_35_DEBUG_TRACE.txt").write_text(
-                    "UNIFIED MASTER TIMELINE TRACE\n"
-                    + f"valid: true\ntarget_duration: {master_plan.target_duration:.6f}\n"
+                    "UNIFIED MASTER TIMELINE RENDER\n"
+                    + f"timeline_identity: {render_identity}\n"
+                    + f"confirmed: true\ntarget_duration: {master_plan.target_duration:.6f}\n"
                     + f"placements: {len(master_plan.slots)}\n",
                     encoding="utf-8",
                 )
                 log(
-                    f"Phase 31 Smart Visuals insertion resolved by Unified Master Timeline: "
-                    f"{len(master_plan.slots)} visual(s)."
+                    "UNIFIED MASTER TIMELINE RENDER "
+                    f"mode={master_plan.slots[0].selection_mode if master_plan.slots else smart_profile.mode} "
+                    f"media_pool_assets={len(unified_pool.assets)} slots={len(master_plan.slots)} "
+                    f"images={master_plan.image_count} videos={master_plan.video_count} "
+                    f"target_duration={master_plan.target_duration:.3f} "
+                    f"gui_identity={persisted_identity} render_identity={render_identity} confirmed=true"
                 )
-                log(
-                    f"Unified Master Timeline: {len(master_plan.slots)} slot(s), "
-                    f"{master_plan.image_count} image(s), {master_plan.video_count} video(s), "
-                    f"endpoint={master_plan.target_duration:.3f}s; pool={len(unified_pool.assets)} "
-                    f"asset(s), indexed={pool_stats.indexed}, reused={pool_stats.reused}."
-                )
-                for diagnostic in master_plan.diagnostics:
-                    log("Unified Master Timeline: " + diagnostic)
+            except VideoMergerError:
+                raise
             except Exception as exc:
-                # Never bypass cooldown or ratio constraints by silently
-                # falling back to the former split timeline. The user can
-                # lower the cooldown/ratio constraints or add pool media.
-                raise VideoMergerError(f"Unified Master Timeline planning failed: {exc}") from exc
-
-        if smart_profile.active and render_media and not master_applied:
-            try:
-                smart_canvas = resolve_export(render_media, settings)
-                smart_script_text = phase35_script or (
-                    "\n".join(
-                        path.read_text(encoding="utf-8", errors="replace")
-                        for path in script_files
-                    ) if script_files else ""
-                )
-                smart_plan = build_smart_visual_plan(
-                    profile=smart_profile,
-                    script_text=smart_script_text,
-                    program_duration=program_duration or target,
-                    width=smart_canvas.width,
-                    height=smart_canvas.height,
-                    fps=smart_canvas.fps,
-                    cache_dir=project_root() / "cache",
-                    ffprobe_path=self.engine.ffprobe_path,
-                    ffmpeg_path=self.engine.ffmpeg_path,
-                    seed_parts=(
-                        getattr(settings, "export_mode", ""),
-                        getattr(settings, "video_order_mode", "natural"),
-                        video_order_seed if video_order_seed is not None else "auto",
-                        "|".join(smart_profile.folders),
-                        # Phase 33: Randomize Timeline - a new nonce produces a
-                        # new valid, uniqueness-preserving assignment without
-                        # touching mode, duration or the fitted timeline.
-                        f"nonce={smart_profile.randomize_nonce}",
-                    ),
-                    # Phase 32: the profile's dedicated image rendering feeds
-                    # the plan preview and the conditional plan identity.
-                    image_transition_type=str(
-                        getattr(settings, "timeline_image_transition_type", "project") or "project"
-                    ),
-                    image_transition_duration=getattr(
-                        settings, "timeline_image_transition_duration", None
-                    ),
-                    image_visual_effect=str(
-                        getattr(settings, "timeline_image_visual_effect", "none") or "none"
-                    ),
-                    image_visual_effect_intensity=str(
-                        getattr(settings, "timeline_image_visual_effect_intensity", "low") or "low"
-                    ),
-                    speech_units=phase35_speech_units or None,
-                    log=log,
-                )
-                if smart_plan.selected_count:
-                    smart_apply = apply_smart_visual_plan(
-                        render_media,
-                        smart_plan,
-                        width=smart_canvas.width,
-                        height=smart_canvas.height,
-                        fps=smart_canvas.fps,
-                        transition_type=settings.transition_type,
-                        image_profile=image_timeline_profile_from_settings(settings),
-                        ffprobe_path=self.engine.ffprobe_path,
-                        render_settings=settings,
-                        # Phase 36 Golden Rule: the optional Smart Visual
-                        # chain is locked to the actual concatenated voiceover
-                        # audio, never to its own inserted-media duration.
-                        timeline_target_duration=voice_total,
-                        log=log,
-                    )
-                    if smart_apply.count:
-                        chain_probe = replace(settings, workflow_stage="", timeline_target_duration=0.0)
-                        before_chain = resolve_export(render_media, chain_probe).expected_duration
-                        render_media = smart_apply.media
-                        after_chain = resolve_export(render_media, chain_probe).expected_duration
-                        smart_target_extension = max(0.0, after_chain - before_chain)
-                        if smart_apply.smart_timeline is not None:
-                            output_dir.mkdir(parents=True, exist_ok=True)
-                            smart_apply.smart_timeline.write_reports(
-                                output_dir / "PHASE_35_DEBUG_TRACE.json",
-                                output_dir / "PHASE_35_DEBUG_TRACE.txt",
-                            )
-                            if not smart_apply.smart_timeline.valid:
-                                raise VideoMergerError(
-                                    "Smart Visual timeline validation failed: "
-                                    + "; ".join(smart_apply.smart_timeline.validation_errors)
-                                )
-            except Exception as exc:  # spec section 32: the project stays renderable
-                log(f"Phase 33 Smart Visuals: deaktiviert durch Fallback ({exc}).")
-                # Application may already have produced a candidate list before
-                # validation/reporting failed. Restore the exact fitted baseline
-                # so optional Smart Visuals can never leak a partial timeline.
-                render_media = smart_base_media
-                smart_apply = None
-                smart_target_extension = 0.0
+                raise VideoMergerError(
+                    "Unified Master Timeline cannot be rendered because the confirmed timeline "
+                    f"snapshot is missing/stale/invalid ({exc}). Please analyze the Unified "
+                    "Timeline and confirm it again."
+                ) from exc
 
         # Phase 30: Image Timeline. Images become genuine timeline elements
         # BETWEEN the already fitted video occurrences (A -> B -> Image ->

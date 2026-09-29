@@ -7,14 +7,15 @@ voiceover interval exactly once.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import random
 import re
 from pathlib import Path
 from dataclasses import dataclass, field, replace
-from typing import Sequence
+from typing import Any, Sequence
 
-from .asset_cooldown import AssetCooldownHistory
+from .asset_cooldown import AssetCooldownHistory, canonical_asset_id
 from .media_pool import MediaPool, MediaPoolAsset
 from .smart_timeline import SemanticSection
 
@@ -55,11 +56,135 @@ class MasterTimelineSlot:
         return self.end - self.start
 
 
+MASTER_TIMELINE_SCHEMA_VERSION = 2
+
+
 @dataclass(slots=True)
 class MasterTimeline:
     target_duration: float
     slots: list[MasterTimelineSlot] = field(default_factory=list)
     diagnostics: list[str] = field(default_factory=list)
+    media_pool_fingerprint: str = ""
+    alignment_fingerprint: str = ""
+    cooldown_fingerprint: str = ""
+    settings_fingerprint: str = ""
+    confirmed: bool = False
+
+    def _identity_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": MASTER_TIMELINE_SCHEMA_VERSION,
+            "target_duration": float(self.target_duration),
+            "media_pool_fingerprint": self.media_pool_fingerprint,
+            "alignment_fingerprint": self.alignment_fingerprint,
+            "cooldown_fingerprint": self.cooldown_fingerprint,
+            "settings_fingerprint": self.settings_fingerprint,
+            "slots": [
+                {
+                    "index": slot.index,
+                    "start": float(slot.start),
+                    "end": float(slot.end),
+                    "topic": slot.topic,
+                    "text": slot.text,
+                    "asset": {
+                        "asset_id": slot.asset.asset_id,
+                        "path": str(Path(slot.asset.path).expanduser().resolve(strict=False)),
+                        "kind": slot.asset.kind,
+                        "category": slot.asset.category,
+                        "keywords": list(slot.asset.keywords),
+                        "metadata_text": slot.asset.metadata_text,
+                    },
+                    "score": float(slot.score),
+                    "selection_mode": slot.selection_mode,
+                    "boundary_reason": slot.boundary_reason,
+                }
+                for slot in self.slots
+            ],
+        }
+
+    @property
+    def identity(self) -> str:
+        encoded = json.dumps(
+            self._identity_payload(), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = self._identity_payload()
+        payload.update({
+            "diagnostics": list(self.diagnostics),
+            "confirmation_state": bool(self.confirmed),
+            "timeline_identity": self.identity,
+        })
+        return payload
+
+    @classmethod
+    def from_dict(
+        cls, payload: object, *, media_pool: MediaPool | None = None,
+        require_identity: bool = True,
+    ) -> "MasterTimeline":
+        if not isinstance(payload, dict):
+            raise ValueError("Master Timeline snapshot is not an object")
+        if payload.get("schema_version") != MASTER_TIMELINE_SCHEMA_VERSION:
+            raise ValueError("Master Timeline snapshot schema is unsupported")
+        raw_slots = payload.get("slots")
+        if not isinstance(raw_slots, list):
+            raise ValueError("Master Timeline snapshot has no ordered slots")
+        slots: list[MasterTimelineSlot] = []
+        for expected_index, raw in enumerate(raw_slots):
+            if not isinstance(raw, dict) or int(raw.get("index", -1)) != expected_index:
+                raise ValueError("Master Timeline slot ordering is invalid")
+            raw_asset = raw.get("asset")
+            if not isinstance(raw_asset, dict):
+                raise ValueError(f"Master Timeline slot {expected_index} has no asset")
+            path = str(raw_asset.get("path", "") or "")
+            kind = str(raw_asset.get("kind", "") or "").casefold()
+            if not path or kind not in {"image", "video"}:
+                raise ValueError(f"Master Timeline slot {expected_index} has an invalid asset")
+            snapshot_id = str(raw_asset.get("asset_id", "") or "")
+            if snapshot_id != MediaPoolAsset(path=path, kind=kind).asset_id:
+                raise ValueError(f"Master Timeline slot {expected_index} asset identity is invalid")
+            asset = media_pool.asset_by_id(snapshot_id) if media_pool is not None else None
+            if media_pool is not None and asset is None:
+                raise ValueError(f"Master Timeline asset is no longer in the unified pool: {path}")
+            asset = asset or MediaPoolAsset(
+                path=path, kind=kind,
+                category=str(raw_asset.get("category", "") or ""),
+                keywords=tuple(str(value) for value in (raw_asset.get("keywords", []) or [])),
+                metadata_text=str(raw_asset.get("metadata_text", "") or ""),
+            )
+            if asset.kind != kind:
+                raise ValueError(f"Master Timeline asset kind changed: {path}")
+            slots.append(MasterTimelineSlot(
+                index=expected_index, start=float(raw["start"]), end=float(raw["end"]),
+                topic=str(raw.get("topic", "")), text=str(raw.get("text", "")), asset=asset,
+                score=float(raw.get("score", 0.0)),
+                selection_mode=str(raw.get("selection_mode", MASTER_MODE_SMART)),
+                boundary_reason=str(raw.get("boundary_reason", "")),
+            ))
+        timeline = cls(
+            target_duration=float(payload.get("target_duration", 0.0)), slots=slots,
+            diagnostics=[str(value) for value in (payload.get("diagnostics", []) or [])],
+            media_pool_fingerprint=str(payload.get("media_pool_fingerprint", "") or ""),
+            alignment_fingerprint=str(payload.get("alignment_fingerprint", "") or ""),
+            cooldown_fingerprint=str(payload.get("cooldown_fingerprint", "") or ""),
+            settings_fingerprint=str(payload.get("settings_fingerprint", "") or ""),
+            confirmed=bool(payload.get("confirmation_state", False)),
+        )
+        timeline.validate()
+        stored_identity = str(payload.get("timeline_identity", "") or "")
+        if require_identity and stored_identity != timeline.identity:
+            raise ValueError("Master Timeline identity mismatch")
+        return timeline
+
+    def replace_asset(self, slot_index: int, asset: MediaPoolAsset) -> "MasterTimeline":
+        """Return an unconfirmed timeline with identical canonical geometry."""
+        if not 0 <= slot_index < len(self.slots):
+            raise IndexError("Master Timeline slot index is out of range")
+        slots = list(self.slots)
+        slots[slot_index] = replace(slots[slot_index], asset=asset, score=0.0)
+        changed = replace(self, slots=slots, confirmed=False)
+        changed.validate()
+        return changed
 
     @property
     def selected_asset_ids(self) -> tuple[str, ...]:
@@ -153,6 +278,91 @@ def _partition(
         reason = section.boundary_reason if exact_boundary or index == count - 1 else "inferred_thought_boundary"
         result.append((round(start, 9), round(end, 9), section, reason))
     return result
+
+
+def canonical_fingerprint(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(slots=True, frozen=True)
+class MasterTimelineRequest:
+    """Complete widget-free input shared by GUI planning and validation.
+
+    Indexed entries and MediaInfo instances are deliberately retained as the
+    production objects consumed by MediaPool; this request introduces no new
+    timeline representation.
+    """
+    source_media: tuple[Any, ...]
+    indexed_media: tuple[Any, ...]
+    sections: tuple[SemanticSection, ...]
+    voiceover_duration: float
+    mode: str = MASTER_MODE_SMART
+    image_ratio_min: int = 30
+    image_ratio_max: int = 40
+    cooldown_videos: int = 3
+    blocked_asset_ids: tuple[str, ...] = ()
+    seed_parts: tuple[object, ...] = ()
+    alignment_fingerprint: str = ""
+    settings_payload: tuple[tuple[str, object], ...] = ()
+
+    @property
+    def media_pool(self) -> MediaPool:
+        return MediaPool.unified(self.source_media, self.indexed_media)
+
+    @property
+    def cooldown_fingerprint(self) -> str:
+        return canonical_fingerprint(sorted(canonical_asset_id(value) for value in self.blocked_asset_ids))
+
+    @property
+    def settings_fingerprint(self) -> str:
+        return canonical_fingerprint(dict(self.settings_payload))
+
+    def build(self) -> MasterTimeline:
+        complete_pool = self.media_pool
+        eligible_pool = complete_pool.without(self.blocked_asset_ids)
+        timeline = MasterTimelineBuilder(
+            media_pool=eligible_pool, sections=self.sections,
+            voiceover_duration=self.voiceover_duration, mode=self.mode,
+            image_ratio_min=self.image_ratio_min, image_ratio_max=self.image_ratio_max,
+            cooldown_videos=self.cooldown_videos, cooldown_history=None,
+            seed_parts=self.seed_parts,
+        ).build()
+        timeline.media_pool_fingerprint = complete_pool.fingerprint
+        timeline.alignment_fingerprint = self.alignment_fingerprint
+        timeline.cooldown_fingerprint = self.cooldown_fingerprint
+        timeline.settings_fingerprint = self.settings_fingerprint
+        return timeline
+
+
+def validate_confirmed_master_timeline(
+    snapshot: object, request: MasterTimelineRequest, persisted_identity: str,
+) -> MasterTimeline:
+    """Restore and audit the exact GUI-confirmed snapshot for rendering."""
+    pool = request.media_pool
+    timeline = MasterTimeline.from_dict(snapshot, media_pool=pool)
+    if not timeline.confirmed:
+        raise ValueError("Master Timeline snapshot is not confirmed")
+    stale = []
+    if timeline.media_pool_fingerprint != pool.fingerprint:
+        stale.append("media pool")
+    if timeline.alignment_fingerprint != request.alignment_fingerprint:
+        stale.append("voiceover/alignment")
+    if timeline.settings_fingerprint != request.settings_fingerprint:
+        stale.append("Unified settings")
+    blocked = {canonical_asset_id(value) for value in request.blocked_asset_ids}
+    if (timeline.cooldown_fingerprint != request.cooldown_fingerprint
+            or any(asset_id in blocked for asset_id in timeline.selected_asset_ids)):
+        stale.append("asset cooldown")
+    if abs(timeline.target_duration - request.voiceover_duration) > 1e-6:
+        stale.append("voiceover endpoint")
+    if stale:
+        raise ValueError("stale " + ", ".join(stale) + " fingerprint")
+    if persisted_identity != timeline.identity:
+        raise ValueError(
+            "Master Timeline identity mismatch. Rendering aborted to prevent GUI/render divergence."
+        )
+    return timeline
 
 
 class MasterTimelineBuilder:

@@ -52,7 +52,11 @@ def test_long_form_and_shorts_manual_state_do_not_leak(tmp_path):
         smart_visual_timeline_confirmed=True,
         shorts_smart_visual_timeline_mode="manual",
         shorts_smart_visual_manual_overrides={"1": {"removed": True}},
+        smart_visual_master_timeline={"profile": "long"},
+        smart_visual_master_timeline_identity="long-id",
         shorts_smart_visual_timeline_confirmed=False,
+        shorts_smart_visual_master_timeline={"profile": "short"},
+        shorts_smart_visual_master_timeline_identity="short-id",
     )
     job = ShortJob(
         index=1, voiceover_path=voice, script_path=None,
@@ -62,4 +66,8 @@ def test_long_form_and_shorts_manual_state_do_not_leak(tmp_path):
     assert short.smart_visual_timeline_mode == "manual"
     assert short.smart_visual_manual_overrides == {"1": {"removed": True}}
     assert short.smart_visual_timeline_confirmed is False
+    assert short.smart_visual_master_timeline == {"profile": "short"}
+    assert short.smart_visual_master_timeline_identity == "short-id"
+    assert base.smart_visual_master_timeline == {"profile": "long"}
+    assert base.smart_visual_master_timeline_identity == "long-id"
     assert base.smart_visual_manual_overrides == {"0": {"start": 1.0}}

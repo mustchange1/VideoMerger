@@ -122,7 +122,7 @@ from ..youtube_outputs import (
     output_transition_type,
 )
 from .style import APP_STYLE
-from .workers import ProcessingWorker, SmartTimelineWorker
+from .workers import MasterTimelineWorker, ProcessingWorker
 
 
 def _format_time(seconds: float | None) -> str:
@@ -1477,7 +1477,7 @@ class MainWindow(QMainWindow):
         # (including Manual/Random/Folder selection and the Phase-30 image
         # timeline) stays byte-identical until the user explicitly enables a
         # profile. Long-Form and Shorts own completely independent settings.
-        smart_visual_group = QGroupBox("7 · Smart Visuals — Unified Media Pool")
+        smart_visual_group = QGroupBox("7 · Smart Visuals — Unified Timeline")
         smart_visual_layout = QVBoxLayout(smart_visual_group)
         smart_visual_layout.addWidget(QLabel(
             "Optional: images and videos share one Media Pool. Semantic Sections from "
@@ -3045,7 +3045,7 @@ class MainWindow(QMainWindow):
             "strong matches are placed at the Smart Insert Frequency share of the insert "
             "opportunities. Random Only: seeded random draws, no matching (baseline/debug)."
         )
-        put(QLabel("Image Duration (s)"), row, 2)
+        put(QLabel("Legacy Image Duration (inactive in Unified Timeline)"), row, 2)
         duration_row = QHBoxLayout()
         w["image_duration"] = QDoubleSpinBox()
         w["image_duration"].setRange(4.0, 12.0)
@@ -3061,7 +3061,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(duration_row, row, 3)
         row += 1
 
-        put(QLabel("Smart Insert Frequency"), row, 0)
+        put(QLabel("Legacy Insert Frequency (inactive in Unified Timeline)"), row, 0)
         frequency_row = QHBoxLayout()
         w["insert_percent"] = QSpinBox()
         w["insert_percent"].setRange(0, 100)
@@ -3201,30 +3201,20 @@ class MainWindow(QMainWindow):
         analyze_row.addWidget(w["randomize_button"])
         layout.addLayout(analyze_row, row, 0, 1, 4)
         row += 1
-        # Phase 35 pre-render review/editor. Edits are persisted as Smart-
-        # Visual-only overrides and are applied to the resolved model before
-        # FFmpeg starts; no normal source timeline is ever modified.
-        put(QLabel("Timeline Mode"), row, 0)
-        w["timeline_mode"] = put(QComboBox(), row, 1)
-        for key, label in (("auto", "Auto"), ("hybrid", "Hybrid (Auto + edits)"), ("manual", "Manual")):
-            w["timeline_mode"].addItem(label, key)
-        w["timeline_confirmed"] = put(QCheckBox("Confirm Smart Visual Timeline for render"), row, 2, 1, 2)
+        # Confirmation certifies one concrete canonical Master Timeline.
+        w["timeline_confirmed"] = put(QCheckBox("Confirm this Unified Visual Timeline for render"), row, 0, 1, 4)
+        w["timeline_confirmed"].toggled.connect(
+            lambda checked, p=prefix: self._smart_visual_confirmation_changed(p, checked)
+        )
         row += 1
         edit_row = QHBoxLayout()
-        w["edit_start"] = QPushButton("Move Start …")
-        w["edit_duration"] = QPushButton("Change Duration …")
-        w["replace_visual"] = QPushButton("Replace Visual …")
-        w["remove_visual"] = QPushButton("Remove Visual")
-        w["restore_visual"] = QPushButton("Restore Automatic")
-        for button in (w["edit_start"], w["edit_duration"], w["replace_visual"], w["remove_visual"], w["restore_visual"]):
-            edit_row.addWidget(button)
+        w["replace_visual"] = QPushButton("Replace Slot Asset …")
+        w["restore_visual"] = QPushButton("Restore Automatic Asset")
+        edit_row.addWidget(w["replace_visual"])
+        edit_row.addWidget(w["restore_visual"])
         layout.addLayout(edit_row, row, 0, 1, 4)
         row += 1
-        w["_manual_overrides"] = {}
-        w["edit_start"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "start"))
-        w["edit_duration"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "duration"))
         w["replace_visual"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "replace"))
-        w["remove_visual"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "remove"))
         w["restore_visual"].clicked.connect(lambda _c=False, p=prefix: self._smart_visual_edit_selected(p, "restore"))
         w["analyze_list"] = put(QListWidget(), row, 0, 1, 4)
         w["analyze_list"].setMaximumHeight(150)
@@ -3249,7 +3239,7 @@ class MainWindow(QMainWindow):
             w["image_transition"], w["image_transition_duration"],
             w["image_visual_effect"], w["image_visual_effect_intensity"],
             w["image_motion"], w["image_fit_mode"], w["cooldown_videos"],
-            w["image_ratio_min"], w["image_ratio_max"], w["timeline_mode"],
+            w["image_ratio_min"], w["image_ratio_max"],
         ):
             signal = getattr(control, "valueChanged", None)
             if signal is None:
@@ -3278,6 +3268,20 @@ class MainWindow(QMainWindow):
         if index >= 0:
             legacy["motion"].setCurrentIndex(index)
 
+    def _invalidate_master_timelines(self, reason: str) -> None:
+        for widgets in getattr(self, "_smart_visual_widgets", {}).values():
+            timeline = widgets.get("_master_timeline")
+            if timeline is not None and timeline.confirmed:
+                from dataclasses import replace
+                timeline = replace(timeline, confirmed=False)
+                widgets["_master_timeline"] = timeline
+                widgets["_master_snapshot"] = timeline.to_dict()
+            widgets["timeline_confirmed"].blockSignals(True)
+            widgets["timeline_confirmed"].setChecked(False)
+            widgets["timeline_confirmed"].blockSignals(False)
+            if widgets.get("index_status") is not None:
+                widgets["index_status"].setText(f"Unified timeline unconfirmed: {reason}")
+
     def _schedule_smart_visual_refresh(self, prefix: str) -> None:
         """Invalidate confirmation and debounce an exact preview refresh."""
         widgets = getattr(self, "_smart_visual_widgets", {}).get(prefix)
@@ -3305,13 +3309,13 @@ class MainWindow(QMainWindow):
                     "image_transition", "image_transition_duration",
                     "image_visual_effect", "image_motion", "image_fit_mode",
                     "cooldown_videos", "image_ratio_min", "image_ratio_max",
-                    "broll_behavior", "timeline_mode", "timeline_confirmed",
-                    "edit_start", "edit_duration", "replace_visual",
-                    "remove_visual", "restore_visual"):
+                    "broll_behavior", "timeline_confirmed", "replace_visual",
+                    "restore_visual"):
             widgets[key].setEnabled(enabled)
-        # Smart Insert Frequency only means something in Mostly Random mode.
-        mode = str(widgets["mode"].currentData() or "smart_match")
-        widgets["insert_percent"].setEnabled(enabled and mode == "smart_inserts")
+        # Slot boundaries come exclusively from the voiceover-locked Master
+        # Timeline. Legacy insertion duration/frequency remain loadable only.
+        widgets["image_duration"].setEnabled(False)
+        widgets["insert_percent"].setEnabled(False)
         # The image effect intensity only matters while an effect is chosen.
         effect = str(widgets["image_visual_effect"].currentData() or "none")
         widgets["image_visual_effect_intensity"].setEnabled(enabled and effect != "none")
@@ -3328,12 +3332,14 @@ class MainWindow(QMainWindow):
         existing = [widgets["folders"].item(i).text() for i in range(widgets["folders"].count())]
         if chosen not in existing:
             widgets["folders"].addItem(chosen)
+            self._schedule_smart_visual_refresh(prefix)
 
     def _smart_visual_remove_folder(self, prefix: str) -> None:
         widgets = self._smart_visual_widgets[prefix]
         current = widgets["folders"].currentRow()
         if current >= 0:
             widgets["folders"].takeItem(current)
+            self._schedule_smart_visual_refresh(prefix)
 
     def _smart_visual_move_folder(self, prefix: str, direction: int) -> None:
         widgets = self._smart_visual_widgets[prefix]
@@ -3344,9 +3350,11 @@ class MainWindow(QMainWindow):
         item = widgets["folders"].takeItem(current)
         widgets["folders"].insertItem(target, item)
         widgets["folders"].setCurrentRow(target)
+        self._schedule_smart_visual_refresh(prefix)
 
     def _smart_visual_clear_folders(self, prefix: str) -> None:
         self._smart_visual_widgets[prefix]["folders"].clear()
+        self._schedule_smart_visual_refresh(prefix)
 
     def _smart_visual_folders(self, prefix: str) -> list[str]:
         widgets = self._smart_visual_widgets[prefix]
@@ -3383,8 +3391,10 @@ class MainWindow(QMainWindow):
             cooldown_videos=int(w["cooldown_videos"].value()),
             image_ratio_min=int(w["image_ratio_min"].value()),
             image_ratio_max=int(w["image_ratio_max"].value()),
-            timeline_mode=data("timeline_mode", "auto"),
-            manual_overrides=dict(w.get("_manual_overrides", {}) or {}),
+            # Legacy insertion overrides are intentionally not part of the
+            # active Unified Timeline representation.
+            timeline_mode="auto",
+            manual_overrides={},
             timeline_confirmed=bool(w["timeline_confirmed"].isChecked()),
         )
 
@@ -3447,55 +3457,52 @@ class MainWindow(QMainWindow):
         )
 
     def _smart_visual_edit_selected(self, prefix: str, action: str) -> None:
-        """Edit one pre-render placement; never mutate the source timeline."""
+        """Replace only a MasterTimeline slot asset; canonical geometry is immutable."""
         widgets = self._smart_visual_widgets[prefix]
+        timeline = widgets.get("_master_timeline")
         item = widgets["analyze_list"].currentItem()
-        sentence_index = item.data(Qt.UserRole) if item is not None else None
-        if sentence_index is None or int(sentence_index) < 0:
-            QMessageBox.information(self, "Smart Visual Timeline", "Select a visual placement row first.")
+        slot_index = item.data(Qt.UserRole) if item is not None else None
+        if timeline is None or slot_index is None or not 0 <= int(slot_index) < len(timeline.slots):
+            QMessageBox.information(self, "Unified Visual Timeline", "Select a Master Timeline slot first.")
             return
-        key = str(int(sentence_index))
-        overrides = dict(widgets.get("_manual_overrides", {}) or {})
-        current = dict(overrides.get(key, {}) or {})
-        if action == "start":
-            value, ok = QInputDialog.getDouble(
-                self, "Move Smart Visual Start", "Final audio timeline start (seconds):",
-                float(current.get("start", 0.0) or 0.0), 0.0, 86400.0, 3,
-            )
-            if not ok:
+        slot_index = int(slot_index)
+        if action == "restore":
+            automatic = widgets.get("_automatic_master_timeline")
+            if automatic is None:
                 return
-            current["start"] = value
-        elif action == "duration":
-            value, ok = QInputDialog.getDouble(
-                self, "Smart Visual Duration", "Duration (seconds):",
-                float(current.get("duration", 5.0) or 5.0), 4.0, 12.0, 3,
-            )
-            if not ok:
-                return
-            current["duration"] = value
+            asset = automatic.slots[slot_index].asset
         elif action == "replace":
             path, _selected = QFileDialog.getOpenFileName(
-                self, "Replace Smart Visual", "",
+                self, "Replace Master Timeline Slot Asset", "",
                 "Visual Media (*.png *.jpg *.jpeg *.webp *.bmp *.mp4 *.mov *.mkv *.webm *.m4v *.avi)",
             )
             if not path:
                 return
-            current["path"] = str(Path(path).expanduser().resolve())
-        elif action == "remove":
-            current["removed"] = True
-        elif action == "restore":
-            overrides.pop(key, None)
-            widgets["_manual_overrides"] = overrides
-            mode = "auto" if not overrides else "hybrid"
-            widgets["timeline_mode"].setCurrentIndex(widgets["timeline_mode"].findData(mode))
-            widgets["timeline_confirmed"].setChecked(False)
-            self._smart_visual_analyze_timeline(prefix)
-            return
-        overrides[key] = current
-        widgets["_manual_overrides"] = overrides
-        widgets["timeline_mode"].setCurrentIndex(widgets["timeline_mode"].findData("hybrid"))
+            request = widgets.get("_master_request")
+            eligible_pool = (
+                request.media_pool.without(request.blocked_asset_ids)
+                if request is not None else None
+            )
+            candidate = eligible_pool.asset_by_id(path) if eligible_pool is not None else None
+            if candidate is None:
+                QMessageBox.warning(
+                    self, "Unified Visual Timeline",
+                    "Choose an asset from the current Unified Media Pool. Add its folder and analyze again first.",
+                )
+                return
+            asset = candidate
+        else:
+            raise ValueError(f"Unsupported Unified Timeline edit: {action}")
+        old = timeline.slots[slot_index]
+        edited = timeline.replace_asset(slot_index, asset)
+        assert edited.slots[slot_index].start == old.start
+        assert edited.slots[slot_index].end == old.end
+        widgets["_master_timeline"] = edited
+        widgets["_master_snapshot"] = edited.to_dict()
+        widgets["timeline_confirmed"].blockSignals(True)
         widgets["timeline_confirmed"].setChecked(False)
-        self._smart_visual_analyze_timeline(prefix)
+        widgets["timeline_confirmed"].blockSignals(False)
+        self._display_master_timeline_rows(prefix)
 
     def _smart_visual_randomize_timeline(self, prefix: str) -> None:
         """Phase 33: Randomize Timeline - bump the nonce and re-analyze.
@@ -3509,99 +3516,128 @@ class MainWindow(QMainWindow):
         self._smart_visual_analyze_timeline(prefix)
 
     def _smart_visual_plan_arguments(self, prefix: str):
-        """Snapshot Qt state and return widget-free planner arguments."""
-        from ..paths import project_root
+        """Create the complete widget-free MasterTimelineRequest on the GUI thread."""
+        from types import SimpleNamespace
+        from ..alignment import LocalWordAligner
+        from ..asset_cooldown import AssetCooldownHistory
+        from ..main_project import _prepare_smart_visual_alignment
+        from ..master_timeline import (
+            MASTER_MODE_RANDOM, MASTER_MODE_SMART, MasterTimelineRequest,
+            canonical_fingerprint,
+        )
+        from ..smart_timeline import build_semantic_sections, build_speech_units
+        from ..smart_visuals import build_media_index
 
         widgets = self._smart_visual_widgets[prefix]
         profile = self._smart_visual_profile_from_ui(prefix)
+        is_shorts = prefix == "sv_short"
         if not profile.active:
             return profile, None
-        is_shorts = prefix == "sv_short"
-        width, height = (720, 1280) if is_shorts else (1280, 720)
-
-        script_text = ""
-        script_path = str(
-            self.global_script_edit.text().strip()
-            or getattr(self.saved, "global_script_path", "")
-            or ""
+        source_media = tuple(getattr(self, "current_media", ()) or ())
+        if not source_media:
+            raise ValueError(
+                "No analyzed source videos are available. Run source analysis first, "
+                "then analyze the Unified Visual Timeline."
+            )
+        voice_paths = [Path(value).expanduser().resolve() for value in
+                       (getattr(self, "voiceover_paths_list", ()) or ())]
+        if not voice_paths:
+            raise ValueError("Unified Visual Timeline requires at least one valid voiceover.")
+        _ffmpeg, ffprobe = locate_ffmpeg()
+        voice_assets = []
+        for path in voice_paths:
+            if not path.is_file():
+                raise ValueError(f"Unified Visual Timeline voiceover is missing: {path}")
+            voice_assets.append(SimpleNamespace(path=path, duration=float(probe_audio(ffprobe, path).duration)))
+        pause = float(self.voiceover_pause_spin.value())
+        target = sum(item.duration for item in voice_assets) + pause * max(0, len(voice_assets) - 1)
+        script_mode = str(self.script_mode_combo.currentData() or "single")
+        global_script_text = self.global_script_edit.text().strip()
+        global_script = Path(global_script_text).expanduser().resolve() if global_script_text else None
+        unit_scripts = [
+            Path(value).expanduser().resolve() if str(value).strip() else None
+            for value in (getattr(self, "voiceover_scripts_list", ()) or ())
+        ]
+        while len(unit_scripts) < len(voice_assets):
+            unit_scripts.append(None)
+        aligner = LocalWordAligner(str(getattr(self.saved, "subtitle_model", "small") or "small"))
+        script, alignment = _prepare_smart_visual_alignment(
+            aligner=aligner, script_mode=script_mode, global_script=global_script,
+            unit_scripts=unit_scripts, voice_assets=voice_assets,
+            language=str(self.subtitle_language_combo.currentData()), pause=pause,
+            log=lambda *_args, **_kwargs: None,
         )
-        if not script_path:
-            unit_scripts = [
-                str(path) for path in (getattr(self.saved, "script_paths", None) or [])
-                if str(path).strip()
-            ]
-            script_path = unit_scripts[0] if unit_scripts else ""
-        if script_path and Path(script_path).is_file():
-            try:
-                script_text = Path(script_path).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                script_text = ""
-
-        program_duration = 0.0
-        try:
-            _ffmpeg, ffprobe = locate_ffmpeg()
-        except Exception:
-            ffprobe = None
-        for unit in list(getattr(self, "voiceover_paths_list", []) or []):
-            if ffprobe is None:
-                break
-            try:
-                program_duration += float(probe_audio(ffprobe, Path(unit)).duration)
-            except Exception:
-                continue
-        if program_duration <= 0.0:
-            program_duration = 30.0
-
+        speech_units = build_speech_units(script, alignment.words)
+        sections = tuple(build_semantic_sections(speech_units))
+        if not sections:
+            raise ValueError("Unified Visual Timeline could not derive canonical speech sections.")
+        entries, stats = build_media_index(profile.folders, project_root() / "cache" / "smart_visual_index")
+        blocked = tuple(sorted(AssetCooldownHistory().blocked_assets(profile.cooldown_videos)))
+        alignment_fingerprint = canonical_fingerprint({
+            "target": target,
+            "script": script,
+            "words": [(word.text, word.start, word.end) for word in alignment.words],
+            "hard_breaks": list(alignment.hard_breaks),
+        })
         image_rendering = self._smart_visual_image_rendering_from_ui(prefix)
-        arguments = {
-            "profile": profile,
-            "script_text": script_text,
-            "program_duration": program_duration,
-            "width": width,
-            "height": height,
-            "fps": 30.0,
-            "cache_dir": project_root() / "cache",
-            "ffprobe_path": ffprobe if ffprobe is not None else "ffprobe",
-            "seed_parts": (
-                "gui-analyze", prefix, "|".join(profile.folders),
-                f"nonce={int(profile.randomize_nonce)}",
-            ),
-            "image_transition_type": image_rendering["image_transition_type"],
-            "image_transition_duration": image_rendering["image_transition_duration"],
-            "image_visual_effect": image_rendering["image_visual_effect"],
-            "image_visual_effect_intensity": image_rendering["image_visual_effect_intensity"],
-            "log": lambda *_args, **_kwargs: None,
+        transition_combo = self.short_transition_combo if is_shorts else self.transition_combo
+        transition_spin = self.short_transition_spin if is_shorts else self.transition_spin
+        settings_payload = tuple(sorted({
+            "profile": prefix,
+            "mode": profile.mode,
+            "image_ratio_min": profile.image_ratio_min,
+            "image_ratio_max": profile.image_ratio_max,
+            "cooldown_videos": profile.cooldown_videos,
+            "randomize_nonce": profile.randomize_nonce,
+            "transition_type": str(transition_combo.currentData() or "cross_dissolve"),
+            "transition_duration": float(transition_spin.value()),
+            **image_rendering,
+        }.items()))
+        request = MasterTimelineRequest(
+            source_media=source_media, indexed_media=tuple(entries), sections=sections,
+            voiceover_duration=target,
+            mode=MASTER_MODE_RANDOM if profile.mode == "random_only" else MASTER_MODE_SMART,
+            image_ratio_min=profile.image_ratio_min, image_ratio_max=profile.image_ratio_max,
+            cooldown_videos=profile.cooldown_videos, blocked_asset_ids=blocked,
+            seed_parts=(profile.mode, profile.randomize_nonce, profile.folders, alignment_fingerprint),
+            alignment_fingerprint=alignment_fingerprint, settings_payload=settings_payload,
+        )
+        widgets["_master_request"] = request
+        widgets["_pool_stats"] = {
+            "source_videos": len(source_media),
+            "indexed_videos": sum(getattr(item, "kind", "") == "video" for item in entries),
+            "indexed_images": sum(getattr(item, "kind", "") == "image" for item in entries),
+            "indexed_new": stats.indexed,
         }
-        return profile, arguments
+        return profile, request
 
     def _smart_visual_analyze_timeline(self, prefix: str) -> None:
-        """Build and display the production-equivalent plan synchronously."""
-        from ..smart_visuals import build_smart_visual_plan
-
+        """Build and display the actual production MasterTimeline."""
         widgets = self._smart_visual_widgets[prefix]
         widgets["analyze_list"].clear()
-        profile, arguments = self._smart_visual_plan_arguments(prefix)
-        if arguments is None:
-            widgets["analyze_list"].addItem(
-                "Smart Visuals disabled or no folders - plan stays empty."
-            )
-            return
         try:
-            plan = build_smart_visual_plan(**arguments)
+            profile, request = self._smart_visual_plan_arguments(prefix)
+            if request is None:
+                widgets["analyze_list"].addItem("Unified Visual Timeline is disabled.")
+                return
+            timeline = request.build()
         except Exception as exc:
-            widgets["analyze_list"].addItem(f"Timeline analysis failed: {exc}")
+            widgets["analyze_list"].addItem(f"Unified timeline analysis failed: {exc}")
             return
-        self._display_smart_visual_plan(prefix, profile, plan)
+        self._display_master_timeline(prefix, profile, timeline)
 
     def _smart_visual_recalculate_background(self, prefix: str) -> None:
         """Queue the latest dynamic preview calculation on a real QThread."""
         widgets = self._smart_visual_widgets[prefix]
-        profile, arguments = self._smart_visual_plan_arguments(prefix)
+        try:
+            profile, arguments = self._smart_visual_plan_arguments(prefix)
+        except Exception as exc:
+            widgets["analyze_list"].clear()
+            widgets["analyze_list"].addItem(f"Unified timeline analysis failed: {exc}")
+            return
         if arguments is None:
             widgets["analyze_list"].clear()
-            widgets["analyze_list"].addItem(
-                "Smart Visuals disabled or no folders - plan stays empty."
-            )
+            widgets["analyze_list"].addItem("Unified Visual Timeline is disabled.")
             return
 
         states = getattr(self, "_smart_timeline_refreshes", None)
@@ -3619,7 +3655,7 @@ class MainWindow(QMainWindow):
         state = states.setdefault(prefix, {})
         state["pending"] = None
         thread = QThread(self)
-        worker = SmartTimelineWorker(arguments)
+        worker = MasterTimelineWorker(arguments)
         worker.moveToThread(thread)
         state.update(thread=thread, worker=worker, profile=profile)
         thread.started.connect(worker.run)
@@ -3641,7 +3677,7 @@ class MainWindow(QMainWindow):
         state = self._smart_timeline_refreshes.get(prefix, {})
         if state.get("worker") is worker and state.get("pending") is None:
             self._smart_visual_widgets[prefix]["analyze_list"].clear()
-            self._display_smart_visual_plan(prefix, state["profile"], plan)
+            self._display_master_timeline(prefix, state["profile"], plan)
 
     def _smart_visual_background_failed(self, prefix: str, worker, message: str) -> None:
         state = self._smart_timeline_refreshes.get(prefix, {})
@@ -3660,32 +3696,81 @@ class MainWindow(QMainWindow):
             profile, arguments = pending
             self._start_smart_visual_worker(prefix, profile, arguments)
 
-    def _display_smart_visual_plan(self, prefix: str, profile, plan) -> None:
+    def _display_master_timeline(self, prefix: str, profile, timeline) -> None:
+        """Display and persist exactly the MasterTimeline returned by the builder."""
         widgets = self._smart_visual_widgets[prefix]
-        if not plan.slots:
-            widgets["analyze_list"].addItem(
-                "No visual regions derived (no script text and no duration)."
-            )
+        from dataclasses import replace
+        widgets["analyze_list"].clear()
+        timeline = replace(timeline, confirmed=False)
+        widgets["_master_timeline"] = timeline
+        widgets["_automatic_master_timeline"] = timeline
+        widgets["_master_snapshot"] = timeline.to_dict()
+        widgets["timeline_confirmed"].blockSignals(True)
+        widgets["timeline_confirmed"].setChecked(False)
+        widgets["timeline_confirmed"].blockSignals(False)
+        stats = widgets.get("_pool_stats", {})
         widgets["analyze_list"].addItem(
-            f"Selection Mode: {profile.mode} · Image Duration: "
-            f"{profile.image_duration:.1f}s · Insert Frequency: {profile.insert_percent}% · "
-            f"Randomize nonce: {profile.randomize_nonce}"
+            f"UNIFIED MASTER TIMELINE · mode={timeline.slots[0].selection_mode if timeline.slots else profile.mode} · "
+            f"identity={timeline.identity} · confirmed=false"
         )
-        for record in plan.to_records():
-            visual_item = QListWidgetItem(
-                f"[{record['time']}] {record['kind'].upper()} {record['selected']} · "
-                f"{record['insert_duration']:.1f}s · topic: {record['topic']}"
+        widgets["analyze_list"].addItem(
+            f"Pool: {stats.get('source_videos', 0)} source video(s), "
+            f"{stats.get('indexed_videos', 0)} indexed video(s), "
+            f"{stats.get('indexed_images', 0)} indexed image(s) · "
+            f"Slots: {timeline.video_count} video / {timeline.image_count} image · "
+            f"voiceover endpoint={timeline.target_duration:.3f}s"
+        )
+        for slot in timeline.slots:
+            item = QListWidgetItem(
+                f"#{slot.index + 1:02d}  {slot.start:09.3f} → {slot.end:09.3f}   "
+                f"{slot.asset.kind.upper():5s}   {Path(slot.asset.path).name}"
             )
-            visual_item.setData(Qt.UserRole, int(record.get("sentence_index", -1)))
-            widgets["analyze_list"].addItem(visual_item)
-            widgets["analyze_list"].addItem(
-                f"    Source: {record.get('source_label') or record['source']} · score "
-                f"{record['match']} · reason: {record['reason'] or '–'}"
-            )
-            if record.get("matched_terms"):
-                widgets["analyze_list"].addItem(f"    Matched: {record['matched_terms']}")
-        for note in plan.diagnostics[:4]:
+            item.setData(Qt.UserRole, slot.index)
+            widgets["analyze_list"].addItem(item)
+        for note in timeline.diagnostics[:4]:
             widgets["analyze_list"].addItem(f"· {note}")
+
+    def _smart_visual_confirmation_changed(self, prefix: str, checked: bool) -> None:
+        widgets = self._smart_visual_widgets[prefix]
+        timeline = widgets.get("_master_timeline")
+        if timeline is None:
+            if checked:
+                widgets["timeline_confirmed"].blockSignals(True)
+                widgets["timeline_confirmed"].setChecked(False)
+                widgets["timeline_confirmed"].blockSignals(False)
+            return
+        from dataclasses import replace
+        timeline = replace(timeline, confirmed=bool(checked))
+        widgets["_master_timeline"] = timeline
+        widgets["_master_snapshot"] = timeline.to_dict()
+        self._display_master_timeline_rows(prefix, profile=self._smart_visual_profile_from_ui(prefix))
+
+    def _display_master_timeline_rows(self, prefix: str, profile=None) -> None:
+        """Refresh rows without replacing the edited/confirmed timeline."""
+        widgets = self._smart_visual_widgets[prefix]
+        timeline = widgets.get("_master_timeline")
+        if timeline is None:
+            return
+        widgets["analyze_list"].clear()
+        stats = widgets.get("_pool_stats", {})
+        widgets["analyze_list"].addItem(
+            f"UNIFIED MASTER TIMELINE · mode={timeline.slots[0].selection_mode if timeline.slots else 'unknown'} · "
+            f"identity={timeline.identity} · confirmed={str(timeline.confirmed).lower()}"
+        )
+        widgets["analyze_list"].addItem(
+            f"Pool: {stats.get('source_videos', 0)} source video(s), "
+            f"{stats.get('indexed_videos', 0)} indexed video(s), "
+            f"{stats.get('indexed_images', 0)} indexed image(s) · "
+            f"Slots: {timeline.video_count} video / {timeline.image_count} image · "
+            f"voiceover endpoint={timeline.target_duration:.3f}s"
+        )
+        for slot in timeline.slots:
+            item = QListWidgetItem(
+                f"#{slot.index + 1:02d}  {slot.start:09.3f} → {slot.end:09.3f}   "
+                f"{slot.asset.kind.upper():5s}   {Path(slot.asset.path).name}"
+            )
+            item.setData(Qt.UserRole, slot.index)
+            widgets["analyze_list"].addItem(item)
 
     def _load_smart_visual_settings(self) -> None:
         """Phase 31: fill BOTH Smart Visual sections from the saved project.
@@ -3741,10 +3826,24 @@ class MainWindow(QMainWindow):
             w["cooldown_videos"].setValue(max(0, min(100, int(getattr(saved, cooldown_name, 3) or 0))))
             w["image_ratio_min"].setValue(max(0, min(100, int(getattr(saved, ratio_min_name, 30) or 0))))
             w["image_ratio_max"].setValue(max(0, min(100, int(getattr(saved, ratio_max_name, 40) or 0))))
-            set_combo(w["timeline_mode"], str(value("timeline_mode", "auto")), "auto")
-            raw_overrides = value("manual_overrides", {})
-            w["_manual_overrides"] = dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
-            w["timeline_confirmed"].setChecked(bool(value("timeline_confirmed", False)))
+            # Load the canonical profile-local snapshot. Legacy sentence-index
+            # overrides remain in project files but are not active inputs.
+            raw_snapshot = value("master_timeline", {})
+            w["_master_snapshot"] = dict(raw_snapshot) if isinstance(raw_snapshot, dict) else {}
+            w["_master_timeline"] = None
+            if w["_master_snapshot"]:
+                try:
+                    from ..master_timeline import MasterTimeline
+                    w["_master_timeline"] = MasterTimeline.from_dict(w["_master_snapshot"])
+                except (TypeError, ValueError, KeyError):
+                    w["_master_snapshot"] = {}
+            w["timeline_confirmed"].blockSignals(True)
+            w["timeline_confirmed"].setChecked(bool(
+                value("timeline_confirmed", False)
+                and w.get("_master_timeline") is not None
+                and w["_master_timeline"].confirmed
+            ))
+            w["timeline_confirmed"].blockSignals(False)
             # Phase 32: the dedicated image rendering (missing keys fall
             # back to the safe defaults).
             set_combo(w["image_transition"], str(image_value("transition_type", "project")), "project")
@@ -3811,9 +3910,17 @@ class MainWindow(QMainWindow):
                 "image_duration": profile.image_duration,
                 "insert_percent": profile.insert_percent,
                 "randomize_nonce": profile.randomize_nonce,
-                "timeline_mode": profile.timeline_mode,
-                "manual_overrides": dict(profile.manual_overrides),
+                # Old override keys are carried as inert migration fields.
+                "timeline_mode": "auto",
+                "manual_overrides": {},
                 "timeline_confirmed": profile.timeline_confirmed,
+                "master_timeline": dict(
+                    self._smart_visual_widgets[prefix].get("_master_snapshot", {}) or {}
+                ),
+                "master_timeline_identity": str(
+                    (self._smart_visual_widgets[prefix].get("_master_timeline").identity
+                     if self._smart_visual_widgets[prefix].get("_master_timeline") is not None else "")
+                ),
                 "image_fit_mode": str(
                     self._smart_visual_widgets[prefix]["image_fit_mode"].currentData() or "fill"
                 ),
@@ -4467,6 +4574,7 @@ class MainWindow(QMainWindow):
             self.current_media = []
             self.files_table.setRowCount(0)
             self.summary_label.setText("Input Folder changed – please Analyze Inputs again.")
+            self._invalidate_master_timelines("source media changed")
 
     def _browse_asset(self, edit: QLineEdit, role: str) -> None:
         filters = {
@@ -5933,6 +6041,7 @@ class MainWindow(QMainWindow):
         # The worker emits media in the exact persisted active order captured at
         # job start. Keep that sequence; never sort it in the GUI.
         self.current_media = list(media)
+        self._invalidate_master_timelines("source analysis changed")
         self._render_media_table()
         self.summary_label.setText(
             f"{len(media)} Clips · nummerierte aktive Exportreihenfolge · "

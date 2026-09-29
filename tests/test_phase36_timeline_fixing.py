@@ -148,7 +148,7 @@ def test_gui_removes_block_7_and_exposes_unified_media_controls():
         encoding="utf-8"
     )
     assert 'QGroupBox("7 · Image Timeline & Visual Effects")' not in source
-    assert 'QGroupBox("7 · Smart Visuals — Unified Media Pool")' in source
+    assert 'QGroupBox("7 · Smart Visuals — Unified Timeline")' in source
     assert 'QPushButton("Reload / Reshuffle Smart Order")' in source
     assert 'w["image_motion"]' in source
     assert 'w["image_fit_mode"]' in source
@@ -213,5 +213,6 @@ def test_dynamic_smart_refresh_uses_widget_free_qthread_worker() -> None:
     worker_source = (root / "app/video_merger/gui/workers.py").read_text(encoding="utf-8")
     assert "timer.timeout.connect(lambda p=prefix: self._smart_visual_recalculate_background(p))" in main_source
     assert "worker.moveToThread(thread)" in main_source
-    assert "class SmartTimelineWorker(QObject):" in worker_source
-    assert "build_smart_visual_plan(**self.arguments)" in worker_source
+    assert "class MasterTimelineWorker(QObject):" in worker_source
+    assert "build_smart_visual_plan" not in worker_source
+    assert "self.ready.emit(self.request.build())" in worker_source

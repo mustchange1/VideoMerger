@@ -994,6 +994,12 @@ def short_settings(
         smart_visual_timeline_confirmed=bool(
             getattr(settings, "shorts_smart_visual_timeline_confirmed", False)
         ),
+        smart_visual_master_timeline=dict(
+            getattr(settings, "shorts_smart_visual_master_timeline", {}) or {}
+        ),
+        smart_visual_master_timeline_identity=str(
+            getattr(settings, "shorts_smart_visual_master_timeline_identity", "") or ""
+        ),
         # Phase 32: Shorts dedicated image transition + image visual effect,
         # resolved onto the canonical per-job fields of THIS Short only.
         timeline_image_transition_type=normalize_image_transition_choice(

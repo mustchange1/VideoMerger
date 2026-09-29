@@ -18,29 +18,31 @@ from ..project_order import GeneratedOutputStore, ProjectOrderStore
 from ..video_pool import legacy_priority_prefix, order_media_for_video_order
 
 
-class SmartTimelineWorker(QObject):
-    """Run a widget-free Smart Visual plan calculation on a QThread."""
+class MasterTimelineWorker(QObject):
+    """Build the actual widget-free MasterTimeline on a QThread."""
 
     ready = Signal(object)
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, arguments: dict):
+    def __init__(self, request):
         super().__init__()
-        # The GUI constructs this plain-data snapshot before the object is
-        # moved. No QWidget is ever read from the worker thread.
-        self.arguments = dict(arguments)
+        # The GUI constructs this immutable/plain-data request before moving
+        # the worker. No QWidget is ever read from the worker thread.
+        self.request = request
 
     @Slot()
     def run(self) -> None:
         try:
-            from ..smart_visuals import build_smart_visual_plan
-
-            self.ready.emit(build_smart_visual_plan(**self.arguments))
+            self.ready.emit(self.request.build())
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:
             self.finished.emit()
+
+
+# Import compatibility only. Active Unified code uses the explicit name.
+SmartTimelineWorker = MasterTimelineWorker
 
 
 class ProcessingWorker(QObject):

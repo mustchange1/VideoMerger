@@ -1,6 +1,8 @@
 """Unified image/video pool used by the Master Timeline."""
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -57,6 +59,33 @@ class MediaPool:
     def without(self, blocked: Iterable[str | Path]) -> "MediaPool":
         blocked_ids = {canonical_asset_id(path) for path in blocked}
         return MediaPool([asset for asset in self.assets if asset.asset_id not in blocked_ids])
+
+    def asset_by_id(self, asset_id: str) -> MediaPoolAsset | None:
+        """Resolve one canonical asset without ever matching by display name."""
+        wanted = canonical_asset_id(asset_id)
+        return next((asset for asset in self.assets if asset.asset_id == wanted), None)
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable identity of every eligible physical asset and relevant metadata."""
+        records = []
+        for asset in sorted(self.assets, key=lambda item: item.asset_id):
+            source = asset.source_media
+            records.append({
+                "asset_id": asset.asset_id,
+                "path": canonical_asset_id(asset.path),
+                "kind": asset.kind,
+                "category": asset.category,
+                "keywords": list(asset.keywords),
+                "metadata_text": asset.metadata_text,
+                "duration": float(source.source_duration or source.duration) if source is not None else None,
+                "width": int(source.width) if source is not None else None,
+                "height": int(source.height) if source is not None else None,
+                "fps": float(source.fps) if source is not None else None,
+                "video_codec": str(source.video_codec) if source is not None else None,
+            })
+        encoded = json.dumps(records, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     @property
     def images(self) -> list[MediaPoolAsset]:

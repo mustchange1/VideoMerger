@@ -812,9 +812,15 @@ class ExportSettings:
     smart_visual_timeline_mode: str = "auto"       # auto | hybrid | manual
     smart_visual_manual_overrides: dict = field(default_factory=dict)
     smart_visual_timeline_confirmed: bool = False
+    # Canonical Unified Master Timeline snapshots.  These are deliberately
+    # profile-local: a Long-Form confirmation can never authorize a Short.
+    smart_visual_master_timeline: dict = field(default_factory=dict)
+    smart_visual_master_timeline_identity: str = ""
     shorts_smart_visual_timeline_mode: str = "auto"
     shorts_smart_visual_manual_overrides: dict = field(default_factory=dict)
     shorts_smart_visual_timeline_confirmed: bool = False
+    shorts_smart_visual_master_timeline: dict = field(default_factory=dict)
+    shorts_smart_visual_master_timeline_identity: str = ""
     # Dedicated image transitions, independent from the normal video
     # transitions. "project" = follow the profile's video transition (the
     # historical behavior); any explicit type is used at every boundary

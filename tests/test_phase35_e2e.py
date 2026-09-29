@@ -155,6 +155,10 @@ def test_phase35_real_rendered_boundaries_and_drift(tmp_path, ffmpeg_paths):
         timeline_image_transition_type="project", timeline_image_motion="none",
         encoding="CPU", preset="fast", crf=18,
     )
+    from app.video_merger.main_project import prepare_confirmed_master_timeline_settings
+    settings = prepare_confirmed_master_timeline_settings(
+        media, settings, ffprobe_path=ffprobe, aligner=aligner,
+    )
     output_dir = tmp_path / "output"
     result = MainProjectEngine(engine).create_main(
         media, settings, output_dir, aligner=aligner, log=lambda _message: None,
