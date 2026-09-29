@@ -2953,11 +2953,9 @@ class MainWindow(QMainWindow):
     # Phase 33: Smart Visuals selection modes. Generation is no longer part
     # of the workflow; weak matches fall back to a random EXISTING asset.
     _SMART_MODE_LABELS = {
-        "smart_match": "Smart Order (semantic relevance)",
-        # Backward-compatible Smart Order variant: old projects may persist
-        # ``smart_inserts`` and must round-trip without silently changing mode.
-        "smart_inserts": "Smart Order (selective semantic inserts)",
-        "random_only": "Randomized Order",
+        "smart_match": "Smart Visuals Mode (semantic relevance)",
+        "smart_inserts": "Legacy Smart Inserts (migrated to Smart Visuals)",
+        "random_only": "Pure Random Mode",
     }
     _IMAGE_TRANSITION_LABELS = {
         "project": "Project (follow video transition)",
@@ -2991,10 +2989,10 @@ class MainWindow(QMainWindow):
             return widget
 
         row = 0
-        w["enabled"] = put(QCheckBox("Enable Smart Visual Hybrid for this profile"), row, 0, 1, 4)
+        w["enabled"] = put(QCheckBox("Enable Unified Master Timeline for this profile"), row, 0, 1, 4)
         w["enabled"].setToolTip(
-            "Opt-in feature. When OFF (default) the renderer behaves exactly as before: "
-            "Manual/Random/Folder clip selection and the Phase-30 image timeline are untouched."
+            "When enabled, source videos and configured image/video folders feed one audio-locked "
+            "Master Timeline. Choose Pure Random or Smart Visuals selection below."
         )
         row += 1
 
@@ -3037,6 +3035,9 @@ class MainWindow(QMainWindow):
         w["mode"] = put(QComboBox(), row, 1)
         for key, label in self._SMART_MODE_LABELS.items():
             w["mode"].addItem(label, key)
+        legacy_mode_index = w["mode"].findData("smart_inserts")
+        if legacy_mode_index >= 0:
+            w["mode"].view().setRowHidden(legacy_mode_index, True)
         w["mode"].setCurrentIndex(w["mode"].findData("smart_match"))
         w["mode"].setToolTip(
             "Smart Match: the best semantic match per timeline region; a random existing "
@@ -3047,7 +3048,7 @@ class MainWindow(QMainWindow):
         put(QLabel("Image Duration (s)"), row, 2)
         duration_row = QHBoxLayout()
         w["image_duration"] = QDoubleSpinBox()
-        w["image_duration"].setRange(0.5, 15.0)
+        w["image_duration"].setRange(4.0, 12.0)
         w["image_duration"].setSingleStep(0.5)
         w["image_duration"].setDecimals(1)
         w["image_duration"].setValue(5.0)
@@ -3072,6 +3073,37 @@ class MainWindow(QMainWindow):
         )
         frequency_row.addWidget(w["insert_percent"])
         layout.addLayout(frequency_row, row, 1)
+        row += 1
+
+        put(QLabel("Skip used asset for next N videos"), row, 0)
+        w["cooldown_videos"] = put(QSpinBox(), row, 1)
+        w["cooldown_videos"].setRange(0, 100)
+        w["cooldown_videos"].setValue(3)
+        w["cooldown_videos"].setToolTip(
+            "Assets used by a completed output are excluded from the next N generated videos. "
+            "Preview and failed renders never consume cooldown history."
+        )
+        put(QLabel("Target Image Ratio"), row, 2)
+        ratio_row = QHBoxLayout()
+        w["image_ratio_min"] = QSlider(Qt.Horizontal)
+        w["image_ratio_max"] = QSlider(Qt.Horizontal)
+        w["image_ratio_min_label"] = QLabel("30%")
+        w["image_ratio_max_label"] = QLabel("40%")
+        for control, value in ((w["image_ratio_min"], 30), (w["image_ratio_max"], 40)):
+            control.setRange(0, 100)
+            control.setValue(value)
+        w["image_ratio_min"].valueChanged.connect(
+            lambda value, label=w["image_ratio_min_label"]: label.setText(f"{value}%")
+        )
+        w["image_ratio_max"].valueChanged.connect(
+            lambda value, label=w["image_ratio_max_label"]: label.setText(f"{value}%")
+        )
+        ratio_row.addWidget(w["image_ratio_min"])
+        ratio_row.addWidget(w["image_ratio_min_label"])
+        ratio_row.addWidget(QLabel("to"))
+        ratio_row.addWidget(w["image_ratio_max"])
+        ratio_row.addWidget(w["image_ratio_max_label"])
+        layout.addLayout(ratio_row, row, 3)
         row += 1
 
         # Phase 32: Image Rendering (independent from video transitions) --
@@ -3216,7 +3248,8 @@ class MainWindow(QMainWindow):
             w["mode"], w["image_duration"], w["insert_percent"],
             w["image_transition"], w["image_transition_duration"],
             w["image_visual_effect"], w["image_visual_effect_intensity"],
-            w["image_motion"], w["image_fit_mode"], w["timeline_mode"],
+            w["image_motion"], w["image_fit_mode"], w["cooldown_videos"],
+            w["image_ratio_min"], w["image_ratio_max"], w["timeline_mode"],
         ):
             signal = getattr(control, "valueChanged", None)
             if signal is None:
@@ -3271,6 +3304,7 @@ class MainWindow(QMainWindow):
                     "analyze_button", "randomize_button", "analyze_list",
                     "image_transition", "image_transition_duration",
                     "image_visual_effect", "image_motion", "image_fit_mode",
+                    "cooldown_videos", "image_ratio_min", "image_ratio_max",
                     "broll_behavior", "timeline_mode", "timeline_confirmed",
                     "edit_start", "edit_duration", "replace_visual",
                     "remove_visual", "restore_visual"):
@@ -3346,6 +3380,9 @@ class MainWindow(QMainWindow):
             image_duration=clamp_smart_image_duration(w["image_duration"].value()),
             insert_percent=clamp_smart_insert_percent(w["insert_percent"].value()),
             randomize_nonce=clamp_smart_visual_nonce(w.get("_randomize_nonce", 0)),
+            cooldown_videos=int(w["cooldown_videos"].value()),
+            image_ratio_min=int(w["image_ratio_min"].value()),
+            image_ratio_max=int(w["image_ratio_max"].value()),
             timeline_mode=data("timeline_mode", "auto"),
             manual_overrides=dict(w.get("_manual_overrides", {}) or {}),
             timeline_confirmed=bool(w["timeline_confirmed"].isChecked()),
@@ -3431,7 +3468,7 @@ class MainWindow(QMainWindow):
         elif action == "duration":
             value, ok = QInputDialog.getDouble(
                 self, "Smart Visual Duration", "Duration (seconds):",
-                float(current.get("duration", 5.0) or 5.0), 4.0, 15.0, 3,
+                float(current.get("duration", 5.0) or 5.0), 4.0, 12.0, 3,
             )
             if not ok:
                 return
@@ -3687,7 +3724,7 @@ class MainWindow(QMainWindow):
             # defaults: Smart Match / 5.0 s / 25 % / nonce 0).
             set_combo(w["mode"], str(value("mode", "smart_match")), "smart_match")
             try:
-                w["image_duration"].setValue(max(0.5, min(15.0, float(value("image_duration", 5.0)))))
+                w["image_duration"].setValue(max(4.0, min(12.0, float(value("image_duration", 5.0)))))
             except (TypeError, ValueError):
                 w["image_duration"].setValue(5.0)
             try:
@@ -3698,6 +3735,12 @@ class MainWindow(QMainWindow):
                 w["_randomize_nonce"] = max(0, int(value("randomize_nonce", 0)))
             except (TypeError, ValueError):
                 w["_randomize_nonce"] = 0
+            cooldown_name = "shorts_asset_cooldown_videos" if prefix == "sv_short" else "asset_cooldown_videos"
+            ratio_min_name = "shorts_image_ratio_min" if prefix == "sv_short" else "image_ratio_min"
+            ratio_max_name = "shorts_image_ratio_max" if prefix == "sv_short" else "image_ratio_max"
+            w["cooldown_videos"].setValue(max(0, min(100, int(getattr(saved, cooldown_name, 3) or 0))))
+            w["image_ratio_min"].setValue(max(0, min(100, int(getattr(saved, ratio_min_name, 30) or 0))))
+            w["image_ratio_max"].setValue(max(0, min(100, int(getattr(saved, ratio_max_name, 40) or 0))))
             set_combo(w["timeline_mode"], str(value("timeline_mode", "auto")), "auto")
             raw_overrides = value("manual_overrides", {})
             w["_manual_overrides"] = dict(raw_overrides) if isinstance(raw_overrides, dict) else {}
@@ -3787,6 +3830,16 @@ class MainWindow(QMainWindow):
             kwargs[f"smart_visual_{key}"] = value
         for key, value in values("sv_short", "shorts_smart_visual_").items():
             kwargs[f"shorts_smart_visual_{key}"] = value
+        long_profile = self._smart_visual_profile_from_ui("sv_long")
+        short_profile = self._smart_visual_profile_from_ui("sv_short")
+        kwargs.update(
+            asset_cooldown_videos=long_profile.cooldown_videos,
+            image_ratio_min=long_profile.image_ratio_min,
+            image_ratio_max=long_profile.image_ratio_max,
+            shorts_asset_cooldown_videos=short_profile.cooldown_videos,
+            shorts_image_ratio_min=short_profile.image_ratio_min,
+            shorts_image_ratio_max=short_profile.image_ratio_max,
+        )
         # Phase 32: dedicated image rendering per profile (Long-Form keeps
         # the long_form_* fields, Shorts keeps its strictly separate
         # shorts_* fields).

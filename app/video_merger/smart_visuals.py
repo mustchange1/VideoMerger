@@ -133,13 +133,12 @@ DEFAULT_SMART_INSERT_PERCENT = 25
 #: Inserted image duration (seconds). One single configurable value.
 DEFAULT_SMART_IMAGE_DURATION = 5.0
 MIN_SMART_IMAGE_DURATION = 0.5
-MAX_SMART_IMAGE_DURATION = 15.0
-# Automatic speech-aware visibility contract. Phase 36 raises the preferred
-# window to 5–15 seconds while retaining 4 seconds as the absolute hard floor.
-# The Phase-35 names remain aliases for API/project compatibility.
+MAX_SMART_IMAGE_DURATION = 12.0
+# Unified Master Timeline visibility contract: every normal visual slot is
+# strictly 4–12 seconds. The Phase-35/36 names remain API aliases.
 PHASE36_HARD_MIN_DURATION = 4.0
-PHASE36_TARGET_MIN_DURATION = 5.0
-PHASE36_TARGET_MAX_DURATION = 15.0
+PHASE36_TARGET_MIN_DURATION = 4.0
+PHASE36_TARGET_MAX_DURATION = 12.0
 PHASE35_AUTO_MIN_DURATION = PHASE36_HARD_MIN_DURATION
 PHASE35_AUTO_MAX_DURATION = PHASE36_TARGET_MAX_DURATION
 
@@ -276,6 +275,9 @@ class SmartVisualProfile:
     #: Randomize counter; changes the seeded assignment without touching the
     #: mode, the duration or the timeline itself.
     randomize_nonce: int = 0
+    cooldown_videos: int = 3
+    image_ratio_min: int = 30
+    image_ratio_max: int = 40
     # Phase 35 editor state is scoped to Smart Visuals and never touches the
     # ordinary project timeline.
     timeline_mode: str = "auto"
@@ -284,8 +286,8 @@ class SmartVisualProfile:
 
     @property
     def active(self) -> bool:
-        """Enabled AND at least one source folder configured."""
-        return bool(self.enabled) and any(str(folder).strip() for folder in self.folders)
+        """The unified pool is active when enabled; source videos are members."""
+        return bool(self.enabled)
 
     @property
     def threshold(self) -> float:
@@ -338,6 +340,9 @@ def smart_visual_profile_from_settings(settings: object) -> SmartVisualProfile:
             getattr(settings, "smart_visual_insert_percent", DEFAULT_SMART_INSERT_PERCENT)
         ),
         randomize_nonce=clamp_smart_visual_nonce(getattr(settings, "smart_visual_randomize_nonce", 0)),
+        cooldown_videos=max(0, min(100, int(getattr(settings, "asset_cooldown_videos", 3) or 0))),
+        image_ratio_min=max(0, min(100, int(getattr(settings, "image_ratio_min", 30) or 0))),
+        image_ratio_max=max(0, min(100, int(getattr(settings, "image_ratio_max", 40) or 0))),
         timeline_mode=(
             str(getattr(settings, "smart_visual_timeline_mode", "auto") or "auto").casefold()
             if str(getattr(settings, "smart_visual_timeline_mode", "auto") or "auto").casefold()
@@ -1097,11 +1102,6 @@ class SmartVisualSlot:
     def effective_insert_duration(self) -> float:
         """Phase 33: the real duration of the inserted element."""
         if self.resolved_insert_duration > 0:
-            # Phase 36 keeps the semantic section's acoustic duration.  The
-            # sectioner guarantees 4–15 seconds except when one sentence is
-            # genuinely unsplittable, which is the sole documented exception.
-            if self.speech_boundary_reason == "unsplittable_sentence":
-                return float(self.resolved_insert_duration)
             return min(MAX_SMART_IMAGE_DURATION, float(self.resolved_insert_duration))
         if self.insert_duration > 0:
             return max(MIN_SMART_IMAGE_DURATION, min(MAX_SMART_IMAGE_DURATION, float(self.insert_duration)))

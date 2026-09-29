@@ -148,7 +148,7 @@ def test_image_duration_and_percent_clamps():
     assert clamp_smart_image_duration(None) == 5.0
     assert clamp_smart_image_duration("abc") == 5.0
     assert clamp_smart_image_duration(0.1) == 0.5
-    assert clamp_smart_image_duration(99) == 15.0
+    assert clamp_smart_image_duration(99) == 12.0
     assert clamp_smart_image_duration(5.0) == 5.0
     assert clamp_smart_insert_percent(-4) == 0
     assert clamp_smart_insert_percent(250) == 100
@@ -408,7 +408,7 @@ def test_explicit_image_duration_is_preserved_and_clamped(tmp_path):
     assert profile.image_duration == pytest.approx(99.0)
     settings = ExportSettings(smart_visual_image_duration=120.0)
     resolved = smart_visual_profile_from_settings(settings)
-    assert resolved.image_duration == pytest.approx(15.0)
+    assert resolved.image_duration == pytest.approx(12.0)
 
 
 # ---------------------------------------------------------------------------

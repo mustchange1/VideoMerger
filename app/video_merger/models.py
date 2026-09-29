@@ -796,11 +796,17 @@ class ExportSettings:
     smart_visual_insert_percent: int = 25
     smart_visual_randomize_nonce: int = 0
     smart_visual_image_fit_mode: str = "fill"       # fit | fill | crop
+    asset_cooldown_videos: int = 3
+    image_ratio_min: int = 30
+    image_ratio_max: int = 40
     shorts_smart_visual_mode: str = "smart_match"
     shorts_smart_visual_image_duration: float = 5.0
     shorts_smart_visual_insert_percent: int = 25
     shorts_smart_visual_randomize_nonce: int = 0
     shorts_smart_visual_image_fit_mode: str = "fill"
+    shorts_asset_cooldown_videos: int = 3
+    shorts_image_ratio_min: int = 30
+    shorts_image_ratio_max: int = 40
     # Phase 35 remains wholly inside Smart Visuals. AUTO needs no overrides;
     # HYBRID/MANUAL store edits separately from the production source timeline.
     smart_visual_timeline_mode: str = "auto"       # auto | hybrid | manual

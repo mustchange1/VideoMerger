@@ -65,10 +65,10 @@ def test_dense_short_sentences_merge_instead_of_flashing(tmp_path):
     assert automatic[0].effective_insert_duration == pytest.approx(9.0)
 
 
-def test_automatic_visual_duration_maximum_is_fifteen_seconds(tmp_path):
+def test_automatic_visual_duration_maximum_is_twelve_seconds(tmp_path):
     plan = _plan(tmp_path, [0.0, 15.0], [12.0, 28.0])
     durations = [slot.effective_insert_duration for slot in _automatic(plan)]
-    assert durations == pytest.approx([12.0, 13.0])
+    assert durations == pytest.approx([12.0, 6.5, 6.5])
     assert max(durations) <= PHASE36_TARGET_MAX_DURATION
 
 

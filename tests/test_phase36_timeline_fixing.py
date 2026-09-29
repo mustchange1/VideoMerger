@@ -101,7 +101,7 @@ def test_duration_guard_has_no_generated_fragment_below_four_or_above_fifteen():
     assert all(section.duration <= PHASE36_TARGET_MAX_SECONDS for section in sections)
 
 
-def test_long_22_second_section_splits_into_two_balanced_sentence_units():
+def test_long_22_second_section_splits_into_three_strict_sentence_units():
     units = [
         unit(0, "Climate systems store energy.", 0.0, 5.4),
         unit(1, "Climate systems move energy.", 5.5, 10.9),
@@ -109,11 +109,10 @@ def test_long_22_second_section_splits_into_two_balanced_sentence_units():
         unit(3, "Climate systems affect everyone.", 16.5, 22.0),
     ]
     sections = build_semantic_sections(units)
-    assert len(sections) == 2
-    assert [section.speech_unit_indices for section in sections] == [(0, 1), (2, 3)]
-    assert [section.duration for section in sections] == pytest.approx([10.9, 11.0], abs=0.2)
-    assert sections[0].end == pytest.approx(units[1].end)
-    assert sections[1].start == pytest.approx(units[2].start)
+    assert len(sections) == 3
+    assert [section.speech_unit_indices for section in sections] == [(0,), (1, 2), (3,)]
+    assert [section.duration for section in sections] == pytest.approx([5.4, 10.9, 5.5], abs=0.2)
+    assert all(4.0 <= section.duration <= 12.0 for section in sections)
 
 
 def test_short_section_merges_instead_of_creating_a_flash():
@@ -134,14 +133,14 @@ def test_short_section_merges_instead_of_creating_a_flash():
     ]
 
 
-def test_single_unsplittable_sentence_is_the_only_over_fifteen_exception():
+def test_single_long_sentence_gets_inferred_strict_thought_boundaries():
     sections = build_semantic_sections([
         unit(0, "One intentionally uninterrupted spoken sentence.", 0.0, 18.0)
     ])
-    assert len(sections) == 1
-    assert sections[0].duration == pytest.approx(18.0)
-    assert sections[0].unsplittable is True
-    assert sections[0].boundary_reason == "unsplittable_sentence"
+    assert len(sections) == 2
+    assert [section.duration for section in sections] == pytest.approx([9.0, 9.0])
+    assert all(section.unsplittable is False for section in sections)
+    assert all(section.boundary_reason == "inferred_thought_boundary" for section in sections)
 
 
 def test_gui_removes_block_7_and_exposes_unified_media_controls():

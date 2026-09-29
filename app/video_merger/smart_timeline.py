@@ -248,12 +248,71 @@ def build_speech_units(script: str, words: Sequence[WordTiming]) -> list[SpeechU
             last_word_index=last,
         ))
         next_word = last + 1
-    return result
+
+    # A punctuation sentence can still contain several acoustically distinct
+    # thoughts. Split long sentences at aligned word/pause boundaries before
+    # semantic grouping so a 20–30 second topic becomes three or four strict
+    # 4–12 second visuals instead of one oversized exception.
+    expanded: list[SpeechUnit] = []
+    for unit in result:
+        duration = unit.end - unit.start
+        if duration <= 12.0 + 1e-9:
+            expanded.append(unit)
+            continue
+        part_count = max(2, int(math.ceil(duration / 12.0)))
+        if 20.0 <= duration <= 30.0:
+            part_count = max(3, min(4, int(round(duration / 8.0))))
+        starts = [unit.first_word_index]
+        search_from = unit.first_word_index + 1
+        for part in range(1, part_count):
+            ideal = unit.start + duration * part / part_count
+            remaining = part_count - part
+            candidates: list[tuple[float, float, int]] = []
+            for word_index in range(search_from, unit.last_word_index + 1):
+                boundary = float(words[word_index].start)
+                left = boundary - float(words[starts[-1]].start)
+                right = unit.end - boundary
+                if (
+                    left < 4.0 - 1e-9 or left > 12.0 + 1e-9
+                    or right < remaining * 4.0 - 1e-9
+                    or right > remaining * 12.0 + 1e-9
+                ):
+                    continue
+                pause = max(0.0, boundary - float(words[word_index - 1].end))
+                # Significant pauses win near-ties; otherwise the nearest
+                # aligned word start is an inferred thought boundary.
+                candidates.append((abs(boundary - ideal), -pause, word_index))
+            if not candidates:
+                break
+            _distance, _pause, cut = min(candidates)
+            starts.append(cut)
+            search_from = cut + 1
+        starts.append(unit.last_word_index + 1)
+        if len(starts) != part_count + 1:
+            expanded.append(unit)
+            continue
+        for part, (first, stop) in enumerate(zip(starts, starts[1:])):
+            last = stop - 1
+            char_start = max(unit.char_start, int(words[first].script_start or unit.char_start))
+            char_end = min(unit.char_end, int(words[last].script_end or unit.char_end))
+            text = script[char_start:char_end].strip() or " ".join(
+                word.text for word in words[first:stop]
+            )
+            pause = 0.0 if first == unit.first_word_index else max(
+                0.0, float(words[first].start) - float(words[first - 1].end)
+            )
+            expanded.append(SpeechUnit(
+                index=len(expanded), text=text, char_start=char_start, char_end=char_end,
+                start=float(words[first].start), end=float(words[last].end),
+                first_word_index=first, last_word_index=last,
+                boundary_reason=("significant_pause" if pause >= 0.25 else "inferred_thought"),
+            ))
+    return [replace(unit, index=index) for index, unit in enumerate(expanded)]
 
 
 PHASE36_HARD_MIN_SECONDS = 4.0
-PHASE36_TARGET_MIN_SECONDS = 5.0
-PHASE36_TARGET_MAX_SECONDS = 15.0
+PHASE36_TARGET_MIN_SECONDS = 4.0
+PHASE36_TARGET_MAX_SECONDS = 12.0
 
 
 def _section_tokens(text: str) -> set[str]:
@@ -301,7 +360,7 @@ def _balanced_split_run(units: Sequence[SpeechUnit]) -> list[list[SpeechUnit]]:
     if duration <= PHASE36_TARGET_MAX_SECONDS + 1e-9 or len(units) == 1:
         return [list(units)]
     minimum_parts = max(2, int(math.ceil(duration / PHASE36_TARGET_MAX_SECONDS)))
-    preferred_parts = max(minimum_parts, int(round(duration / 10.0)))
+    preferred_parts = max(minimum_parts, int(round(duration / 8.0)))
     maximum_parts = max(1, int(math.floor(duration / PHASE36_TARGET_MIN_SECONDS)))
     part_count = min(len(units), max(minimum_parts, min(preferred_parts, maximum_parts)))
     result: list[list[SpeechUnit]] = []
@@ -394,16 +453,26 @@ def build_semantic_sections(units: Sequence[SpeechUnit]) -> list[SemanticSection
             del pieces[index]
             index -= 1
     sections: list[SemanticSection] = []
-    for index, piece in enumerate(pieces):
+    for piece in pieces:
         duration = piece[-1].end - piece[0].start
+        if len(piece) == 1 and duration > PHASE36_TARGET_MAX_SECONDS + 1e-9:
+            part_count = max(2, int(math.ceil(duration / PHASE36_TARGET_MAX_SECONDS)))
+            if 20.0 <= duration <= 30.0:
+                part_count = max(3, min(4, int(round(duration / 8.0))))
+            boundaries = [piece[0].start + duration * part / part_count for part in range(part_count + 1)]
+            for start, end in zip(boundaries, boundaries[1:]):
+                sections.append(SemanticSection(
+                    index=len(sections), text=piece[0].text,
+                    start=float(start), end=float(end),
+                    speech_unit_indices=(piece[0].index,),
+                    boundary_reason="inferred_thought_boundary", unsplittable=False,
+                ))
+            continue
         sections.append(SemanticSection(
-            index=index,
-            text=" ".join(item.text for item in piece),
-            start=float(piece[0].start),
-            end=float(piece[-1].end),
+            index=len(sections), text=" ".join(item.text for item in piece),
+            start=float(piece[0].start), end=float(piece[-1].end),
             speech_unit_indices=tuple(item.index for item in piece),
-            boundary_reason=("unsplittable_sentence" if len(piece) == 1 and duration > PHASE36_TARGET_MAX_SECONDS else "semantic_section"),
-            unsplittable=bool(len(piece) == 1 and duration > PHASE36_TARGET_MAX_SECONDS),
+            boundary_reason="semantic_section", unsplittable=False,
         ))
     return sections
 
@@ -629,10 +698,7 @@ def validate_timeline(
                     f"{item.placement_id}: visual {item.visual_duration:.6f}s below "
                     f"{PHASE36_HARD_MIN_SECONDS:.1f}s hard minimum"
                 )
-            if (
-                item.visual_duration > PHASE36_TARGET_MAX_SECONDS + 1e-6
-                and "unsplittable_sentence" not in item.semantic_reason
-            ):
+            if item.visual_duration > PHASE36_TARGET_MAX_SECONDS + 1e-6:
                 errors.append(
                     f"{item.placement_id}: visual {item.visual_duration:.6f}s above "
                     f"{PHASE36_TARGET_MAX_SECONDS:.1f}s maximum"

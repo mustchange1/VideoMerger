@@ -976,6 +976,15 @@ def short_settings(
             if str(getattr(settings, "shorts_smart_visual_image_fit_mode", "fill") or "fill")
             in {"fit", "fill", "crop"} else "fill"
         ),
+        asset_cooldown_videos=max(0, min(100, int(
+            getattr(settings, "shorts_asset_cooldown_videos", 3) or 0
+        ))),
+        image_ratio_min=max(0, min(100, int(
+            getattr(settings, "shorts_image_ratio_min", 30) or 0
+        ))),
+        image_ratio_max=max(0, min(100, int(
+            getattr(settings, "shorts_image_ratio_max", 40) or 0
+        ))),
         smart_visual_timeline_mode=str(
             getattr(settings, "shorts_smart_visual_timeline_mode", "auto") or "auto"
         ),

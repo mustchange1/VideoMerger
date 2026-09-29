@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -105,10 +106,15 @@ from .image_timeline import (
     profile_from_settings as image_timeline_profile_from_settings,
 )
 from .smart_visuals import (
+    SmartVisualApplyResult,
     apply_smart_visual_plan,
+    build_media_index,
     build_smart_visual_plan,
     smart_visual_profile_from_settings,
 )
+from .asset_cooldown import AssetCooldownHistory
+from .master_timeline import MasterTimelineBuilder, materialize_master_timeline
+from .media_pool import MediaPool
 from .validation import validate_output
 from .video_pool import (
     VIDEO_ORDER_RANDOM,
@@ -1068,6 +1074,10 @@ class MainProjectEngine:
         duration_fit_mode = settings.duration_fit_mode if settings.duration_fit_mode in {"cut", "stretch"} else "cut"
         max_stretch = max(1.0, min(50.0, float(getattr(settings, "max_stretch_percent", 10.0) or 10.0)))
         timeline_plan: MainTimeline | None = None
+        # The unified mode builds directly from the complete source/media pool;
+        # the legacy fitter is bypassed rather than creating a timeline that
+        # would later be modified or trimmed.
+        pre_master_profile = smart_visual_profile_from_settings(settings)
         if voice_assets:
             # Canonical timeline of this render: [visual intro][voiceover +
             # normal video][visual outro]. One source of truth for the video
@@ -1076,7 +1086,7 @@ class MainProjectEngine:
             timeline_plan = main_timeline(settings, voice_total)
             target = timeline_plan.target
             selection_media = media
-            if short_video_pool is not None:
+            if short_video_pool is not None and not pre_master_profile.active:
                 # The pool owns only cross-Short consumption. The established
                 # duration selector still decides the prefix for this Short;
                 # this call merely removes that raw prefix from the shared
@@ -1106,16 +1116,24 @@ class MainProjectEngine:
                 selection_media = order_media_by_timeline_areas(
                     selection_media, target, settings, log=log
                 )
-            render_media, timing_warnings = fit_media_to_duration(
-                selection_media, target, settings.transition_duration, fps, settings.short_video_mode,
-                duration_fit_mode=duration_fit_mode,
-                max_stretch_percent=max_stretch,
-                playback_rate=duration_before_merge,
-                # The effective project sequence was chosen above. Do not run
-                # a second automatic folder shuffle after Required-Only
-                # selection has begun; that could select a different prefix.
-                folder_aware=False,
-            )
+            if pre_master_profile.active:
+                render_media = list(selection_media)
+                timing_warnings = []
+                log(
+                    "Unified Master Timeline active: skipped legacy video fitting; "
+                    "the final audio-locked sequence will be built once from the unified pool."
+                )
+            else:
+                render_media, timing_warnings = fit_media_to_duration(
+                    selection_media, target, settings.transition_duration, fps, settings.short_video_mode,
+                    duration_fit_mode=duration_fit_mode,
+                    max_stretch_percent=max_stretch,
+                    playback_rate=duration_before_merge,
+                    # The effective project sequence was chosen above. Do not run
+                    # a second automatic folder shuffle after Required-Only
+                    # selection has begun; that could select a different prefix.
+                    folder_aware=False,
+                )
             warnings.extend(timing_warnings)
             # Voiceover and clip-original audio cover the visual intro and the
             # spoken timeline; the visual outro stays without them, exactly like
@@ -1158,7 +1176,7 @@ class MainProjectEngine:
         # timeline target and every cache identity byte-identical. The net
         # added smart-visual time extends the Stage-1 target exactly like the
         # Phase-30 images do, so the full program plays to its final frame.
-        smart_profile = smart_visual_profile_from_settings(settings)
+        smart_profile = pre_master_profile
         smart_apply = None
         smart_target_extension = 0.0
         phase35_script = ""
@@ -1208,7 +1226,77 @@ class MainProjectEngine:
                 phase35_alignment = None
                 phase35_speech_units = []
         smart_base_media = list(render_media)
-        if smart_profile.active and render_media:
+        master_selected_assets: tuple[str, ...] = ()
+        master_applied = False
+        if smart_profile.active and render_media and voice_assets:
+            try:
+                from .smart_timeline import SemanticSection, build_semantic_sections
+
+                master_canvas = resolve_export(render_media, settings)
+                sections = build_semantic_sections(phase35_speech_units) if phase35_speech_units else [
+                    SemanticSection(
+                        index=0, text=phase35_script, start=0.0, end=voice_total,
+                        speech_unit_indices=(), boundary_reason="inferred_thought_boundary",
+                    )
+                ]
+                entries, pool_stats = build_media_index(
+                    smart_profile.folders, project_root() / "cache" / "smart_visual_index"
+                )
+                unified_pool = MediaPool.unified(render_media, entries)
+                cooldown_history = AssetCooldownHistory()
+                master_plan = MasterTimelineBuilder(
+                    media_pool=unified_pool,
+                    sections=sections,
+                    voiceover_duration=voice_total,
+                    mode=("pure_random" if smart_profile.mode == "random_only" else "smart_visuals"),
+                    image_ratio_min=smart_profile.image_ratio_min,
+                    image_ratio_max=smart_profile.image_ratio_max,
+                    cooldown_videos=smart_profile.cooldown_videos,
+                    cooldown_history=cooldown_history,
+                    seed_parts=(
+                        getattr(settings, "export_mode", ""), video_order_seed,
+                        smart_profile.randomize_nonce, "|".join(smart_profile.folders),
+                    ),
+                ).build()
+                render_media = materialize_master_timeline(
+                    master_plan,
+                    width=master_canvas.width, height=master_canvas.height,
+                    fps=master_canvas.fps, transition_type=settings.transition_type,
+                    image_profile=image_timeline_profile_from_settings(settings),
+                    ffprobe_path=self.engine.ffprobe_path, render_settings=settings,
+                )
+                master_selected_assets = master_plan.selected_asset_ids
+                identity_payload = [
+                    (slot.start, slot.end, slot.asset.asset_id, slot.asset.kind)
+                    for slot in master_plan.slots
+                ]
+                master_identity = hashlib.sha256(
+                    json.dumps(identity_payload, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                smart_apply = SmartVisualApplyResult(
+                    media=render_media,
+                    inserted=[
+                        (slot.index, Path(slot.asset.path), slot.duration, slot.asset.kind)
+                        for slot in master_plan.slots
+                    ],
+                    identity=master_identity,
+                )
+                master_applied = True
+                log(
+                    f"Unified Master Timeline: {len(master_plan.slots)} slot(s), "
+                    f"{master_plan.image_count} image(s), {master_plan.video_count} video(s), "
+                    f"endpoint={master_plan.target_duration:.3f}s; pool={len(unified_pool.assets)} "
+                    f"asset(s), indexed={pool_stats.indexed}, reused={pool_stats.reused}."
+                )
+                for diagnostic in master_plan.diagnostics:
+                    log("Unified Master Timeline: " + diagnostic)
+            except Exception as exc:
+                # Never bypass cooldown or ratio constraints by silently
+                # falling back to the former split timeline. The user can
+                # lower the cooldown/ratio constraints or add pool media.
+                raise VideoMergerError(f"Unified Master Timeline planning failed: {exc}") from exc
+
+        if smart_profile.active and render_media and not master_applied:
             try:
                 smart_canvas = resolve_export(render_media, settings)
                 smart_script_text = phase35_script or (
@@ -1445,6 +1533,8 @@ class MainProjectEngine:
                 subtitle_output_mode=subtitle_mode,
             )
             if cached_result is not None:
+                if master_selected_assets:
+                    AssetCooldownHistory().record_video(master_selected_assets)
                 return cached_result
 
         # 1.3.0 Clean Output Directory: the user-facing folder receives only
@@ -2057,6 +2147,12 @@ class MainProjectEngine:
                 # is unavailable; a later One-Click run will simply render.
                 timings["render_cache_saved"] = False
                 log(f"WARNUNG: Stage 1 cache konnte nicht gespeichert werden: {exc}")
+            if master_selected_assets:
+                AssetCooldownHistory().record_video(master_selected_assets)
+                log(
+                    f"Asset cooldown history committed for {len(set(master_selected_assets))} "
+                    "asset(s) after successful output validation."
+                )
             result = MainVideoResult(
                 output_video, srt_path, vtt_path, report, alignment, warnings,
                 canonical_timeline=timeline_path,

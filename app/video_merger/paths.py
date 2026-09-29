@@ -13,7 +13,7 @@ def project_root() -> Path:
 
 def ensure_project_directories() -> None:
     root = project_root()
-    for name in ("input", "output", "temp", "logs", "config", "tools"):
+    for name in ("input", "output", "temp", "logs", "config", "tools", "data"):
         (root / name).mkdir(parents=True, exist_ok=True)
 
 
