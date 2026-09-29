@@ -148,7 +148,7 @@ def test_profiles_are_strictly_separate_in_settings(window):
     short_w["enabled"].setChecked(True)
     short_w["folders"].addItem("/tmp/short_media")
     short_w["mode"].setCurrentIndex(short_w["mode"].findData("random_only"))
-    short_w["image_duration"].setValue(3.0)
+    short_w["image_duration"].setValue(4.0)
 
     settings = window._settings()
     assert settings.smart_visual_enabled is True
@@ -159,7 +159,7 @@ def test_profiles_are_strictly_separate_in_settings(window):
     assert settings.shorts_smart_visual_enabled is True
     assert settings.shorts_smart_visual_folders == ["/tmp/short_media"]
     assert settings.shorts_smart_visual_mode == "random_only"
-    assert settings.shorts_smart_visual_image_duration == pytest.approx(3.0)
+    assert settings.shorts_smart_visual_image_duration == pytest.approx(4.0)
     # The Shorts insert frequency keeps its own (default) value.
     assert settings.shorts_smart_visual_insert_percent == 25
 
@@ -189,7 +189,7 @@ def test_load_saved_smart_visual_settings_into_widgets(window):
     assert short_w["enabled"].isChecked() is True
     assert short_w["folders"].item(0).text() == "/tmp/saved_sh"
     assert short_w["mode"].currentData() == "random_only"
-    assert short_w["image_duration"].value() == pytest.approx(2.5)
+    assert short_w["image_duration"].value() == pytest.approx(4.0)
 
 
 def test_build_index_button_reports_incremental_counts(window, tmp_path, monkeypatch):

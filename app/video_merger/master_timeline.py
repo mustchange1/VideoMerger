@@ -198,10 +198,24 @@ class MasterTimelineBuilder:
         slot_count = len(intervals)
         minimum_images = int(math.ceil(slot_count * self.image_ratio_min / 100.0 - 1e-12))
         maximum_images = int(math.floor(slot_count * self.image_ratio_max / 100.0 + 1e-12))
-        if maximum_images < minimum_images:
-            maximum_images = minimum_images
         preferred = int(round(slot_count * ((self.image_ratio_min + self.image_ratio_max) / 200.0)))
-        image_target = max(minimum_images, min(maximum_images, preferred))
+        if maximum_images < minimum_images:
+            # No exact integer percentage exists at this short duration. Pick
+            # the closest feasible count instead of biasing upward to images.
+            def distance(count: int) -> tuple[float, int]:
+                percent = 100.0 * count / slot_count
+                outside = (
+                    self.image_ratio_min - percent if percent < self.image_ratio_min
+                    else percent - self.image_ratio_max if percent > self.image_ratio_max
+                    else 0.0
+                )
+                return outside, abs(count - preferred)
+            image_target = min(range(slot_count + 1), key=distance)
+            timeline.diagnostics.append(
+                "Image ratio approximated: duration permits no exact integer slot allocation."
+            )
+        else:
+            image_target = max(minimum_images, min(maximum_images, preferred))
         if not pool.images:
             image_target = 0
             timeline.diagnostics.append("Image ratio relaxed: no eligible images.")

@@ -140,6 +140,9 @@ def _smart_lf(folder: Path | None = None, **overrides) -> dict:
         smart_visual_threshold_custom=0.5,
         smart_visual_generation_strategy="only_when_no_match",
         smart_visual_repetition_window=3,
+        asset_cooldown_videos=0,
+        image_ratio_min=100,
+        image_ratio_max=100,
         smart_visual_style="cinematic",
         smart_visual_cadence="every_1",
     )
@@ -188,24 +191,32 @@ def test_A_disabled_smart_visuals_keep_historical_render_byte_identical(ffmpeg_p
     )
     assert historical.video.is_file() and historical.report.ok
 
-    # Fully configured but switched OFF, and enabled with empty folders:
-    # both must stay exactly the historical video-only render.
+    # Fully configured but switched OFF stays exactly historical.
     city = _city_folder(tmp_path, ffmpeg)
-    for name, overrides in (
-        ("configured_but_disabled", dict(
-            smart_visual_enabled=False,
+    disabled = MainProjectEngine(engine).create_main(
+        media,
+        _base_settings(
+            voice, script, smart_visual_enabled=False,
             smart_visual_folders=[str(city)],
             smart_visual_generation_strategy="always",
-            smart_visual_style="custom",
-            smart_visual_style_custom="anything",
-        )),
-        ("enabled_but_no_folders", dict(smart_visual_enabled=True, smart_visual_folders=[])),
-    ):
-        result = MainProjectEngine(engine).create_main(
-            media, _base_settings(voice, script, **overrides), tmp_path / name, aligner=aligner,
-        )
-        assert result.video.is_file() and result.report.ok
-        assert result.video.read_bytes() == historical.video.read_bytes(), name
+            smart_visual_style="custom", smart_visual_style_custom="anything",
+        ),
+        tmp_path / "configured_but_disabled", aligner=aligner,
+    )
+    assert disabled.video.is_file() and disabled.report.ok
+    assert disabled.video.read_bytes() == historical.video.read_bytes()
+
+    # Unified mode remains usable without extra folders because ordinary
+    # source videos are first-class members of the single Media Pool.
+    source_only = MainProjectEngine(engine).create_main(
+        media,
+        _base_settings(
+            voice, script, smart_visual_enabled=True,
+            smart_visual_folders=[], asset_cooldown_videos=0,
+        ),
+        tmp_path / "enabled_source_only", aligner=aligner,
+    )
+    assert source_only.video.is_file() and source_only.report.ok
     assert not _generated_dir(tmp_path).exists()
 
 
@@ -262,7 +273,10 @@ def test_C_matching_video_chosen_with_video_first_priority(ffmpeg_paths, tmp_pat
         media, _base_settings(voice, script), tmp_path / "base", aligner=aligner,
     )
     result = MainProjectEngine(engine).create_main(
-        media, _base_settings(voice, script, **_smart_lf(city, smart_visual_source_priority="video_first")),
+        media, _base_settings(voice, script, **_smart_lf(
+            city, smart_visual_source_priority="video_first",
+            image_ratio_min=0, image_ratio_max=0,
+        )),
         tmp_path / "smart_video", aligner=aligner,
     )
     assert result.video.is_file() and result.report.ok

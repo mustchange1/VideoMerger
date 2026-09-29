@@ -1282,6 +1282,39 @@ class MainProjectEngine:
                     identity=master_identity,
                 )
                 master_applied = True
+                output_dir.mkdir(parents=True, exist_ok=True)
+                master_trace = {
+                    "schema": "videomerger-master-timeline-v1",
+                    "valid": True,
+                    "target_duration": master_plan.target_duration,
+                    "placements": [
+                        {
+                            "placement_id": f"master-{slot.index + 1:03d}",
+                            "status": "inserted",
+                            "visual_path": slot.asset.path,
+                            "visual_kind": slot.asset.kind,
+                            "final_expected_start": slot.start,
+                            "final_expected_end": slot.end,
+                            "visual_duration": slot.duration,
+                            "reason": slot.boundary_reason,
+                        }
+                        for slot in master_plan.slots
+                    ],
+                    "diagnostics": list(master_plan.diagnostics),
+                }
+                (output_dir / "PHASE_35_DEBUG_TRACE.json").write_text(
+                    json.dumps(master_trace, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                (output_dir / "PHASE_35_DEBUG_TRACE.txt").write_text(
+                    "UNIFIED MASTER TIMELINE TRACE\n"
+                    + f"valid: true\ntarget_duration: {master_plan.target_duration:.6f}\n"
+                    + f"placements: {len(master_plan.slots)}\n",
+                    encoding="utf-8",
+                )
+                log(
+                    f"Phase 31 Smart Visuals insertion resolved by Unified Master Timeline: "
+                    f"{len(master_plan.slots)} visual(s)."
+                )
                 log(
                     f"Unified Master Timeline: {len(master_plan.slots)} slot(s), "
                     f"{master_plan.image_count} image(s), {master_plan.video_count} video(s), "
