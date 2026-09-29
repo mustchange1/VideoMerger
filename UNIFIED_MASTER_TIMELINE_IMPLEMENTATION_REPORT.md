@@ -84,4 +84,17 @@ Local verification completed:
 - Python compilation for all production modules and GUI modules: **passed**;
 - `git diff --check`: **passed**.
 
-Native Windows complete-suite verification is recorded after the implementation commit is pushed and `.github/workflows/phase35-windows-regression.yml` completes.
+## Final native Windows verification
+
+The implementation commit `8ab16cfb1c1b93eb45be93379c113541ad502677` passed the complete native Windows workflow:
+
+- workflow: `.github/workflows/phase35-windows-regression.yml`;
+- run: `36515009861`;
+- job: `109235233503` (`windows-regression`);
+- result: **SUCCESS**;
+- complete Windows regression suite: **passed**;
+- regression-summary publication: **passed**;
+- evidence upload: **passed**;
+- duration: **14m 37s** (2026-09-29 02:57:51–03:12:28 UTC).
+
+The only annotation was GitHub's infrastructure warning that Node.js 20 actions are being forced onto Node.js 24. There were no application test failures or errors.
