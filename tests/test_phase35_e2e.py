@@ -162,11 +162,14 @@ def test_phase35_real_rendered_boundaries_and_drift(tmp_path, ffmpeg_paths):
     assert result.report.ok and result.video.is_file()
     trace_path = output_dir / "PHASE_35_DEBUG_TRACE.json"
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
-    placements = [item for item in trace["placements"] if item["status"] == "inserted"]
-    # Phase 36 merges these three short topic sentences into one stable
-    # 13-second semantic section instead of producing three 3–4 second cuts.
+    placements = [
+        item for item in trace["placements"]
+        if item["status"] == "inserted" and item["visual_kind"] == "image"
+    ]
+    # The Master Timeline includes source-video slots in the same plan and
+    # allocates one ratio-constrained semantic image slot here.
     assert len(placements) == 1
-    assert 5.0 <= placements[0]["visual_duration"] <= 15.0
+    assert 4.0 <= placements[0]["visual_duration"] <= 12.0
     assert placements[0]["final_expected_end"] <= 14.0
 
     frames = _decode_average_frames(ffmpeg, result.video)

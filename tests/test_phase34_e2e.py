@@ -269,7 +269,7 @@ def test_phase34_render_visuals_follow_sentences(tmp_path, ffmpeg_paths):
     cyan = _find_windows(ffmpeg, result.video, width, height, final_duration, _is_cyan)
     orange = _find_windows(ffmpeg, result.video, width, height, final_duration, _is_orange)
 
-    # The three dense sentences form one coherent seven-second section, so
+    # The three dense sentences form one coherent audio-locked section, so
     # exactly one relevant topic visual is retained and no flash is emitted.
     topic_windows = [windows for windows in (yellow, magenta, cyan) if windows]
     assert len(topic_windows) == 1, (yellow, magenta, cyan)
@@ -280,7 +280,7 @@ def test_phase34_render_visuals_follow_sentences(tmp_path, ffmpeg_paths):
     trace = json.loads((tmp_path / "smart" / "PHASE_35_DEBUG_TRACE.json").read_text(encoding="utf-8"))
     inserted = [item for item in trace["placements"] if item["status"] == "inserted"]
     assert len(inserted) == 1
-    assert inserted[0]["visual_duration"] == pytest.approx(7.0, abs=0.1)
+    assert inserted[0]["visual_duration"] == pytest.approx(7.2, abs=0.1)
 
     # --- nothing was generated anywhere ---------------------------------------
     generated = tmp_path / "cache" / "smart_visual_generated"

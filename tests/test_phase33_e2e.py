@@ -401,6 +401,9 @@ def test_shorts_selection_keeps_portrait_geometry(ffmpeg_paths, tmp_path):
             shorts_smart_visual_folders=[str(city)],
             shorts_smart_visual_mode="smart_match",
             shorts_smart_visual_cadence="every_1",
+            shorts_asset_cooldown_videos=0,
+            shorts_image_ratio_min=100,
+            shorts_image_ratio_max=100,
         ),
         tmp_path / "p33_shorts", aligner=aligner,
     )

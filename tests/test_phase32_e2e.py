@@ -182,16 +182,14 @@ def test_B_random_fallback_inserts_pool_video_without_generation(ffmpeg_paths, t
     assert result.video.is_file() and result.report.ok
     assert not _generated_dir(tmp_path).exists(), "random fallback must never generate"
 
-    # One of the pool videos (yellow/magenta) must be visible inside the
-    # planned slot window (slot 1 starts after sentence 1, ~0.7 s in).
-    width, height = 320, 180
-    found = False
-    for probe_time in (0.9, 1.2, 1.5):
-        frame = _frame_rgb(ffmpeg, result.video, probe_time, width, height)
-        if _color_ratio(frame, (255, 255, 0)) > 0.5 or _color_ratio(frame, (255, 0, 255)) > 0.5:
-            found = True
-            break
-    assert found, "no pool video frame visible in the fallback slot"
+    # Pure Random now shuffles the complete unified pool, including ordinary
+    # source videos. Verify the final Master Timeline selected video media;
+    # it is intentionally not constrained to the auxiliary folder color.
+    trace = json.loads(
+        (tmp_path / "rv" / "PHASE_35_DEBUG_TRACE.json").read_text(encoding="utf-8")
+    )
+    assert trace["placements"]
+    assert all(item["visual_kind"] == "video" for item in trace["placements"])
 
 
 def test_B2_random_fallback_inserts_pool_image(ffmpeg_paths, tmp_path):

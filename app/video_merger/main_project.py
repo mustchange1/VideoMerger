@@ -1283,6 +1283,8 @@ class MainProjectEngine:
                 )
                 master_applied = True
                 output_dir.mkdir(parents=True, exist_ok=True)
+                from .smart_timeline import render_chain as resolved_render_chain
+                master_chain = resolved_render_chain(render_media, settings)
                 master_trace = {
                     "schema": "videomerger-master-timeline-v1",
                     "valid": True,
@@ -1293,9 +1295,11 @@ class MainProjectEngine:
                             "status": "inserted",
                             "visual_path": slot.asset.path,
                             "visual_kind": slot.asset.kind,
-                            "final_expected_start": slot.start,
-                            "final_expected_end": slot.end,
+                            "requested_audio_boundary": slot.start,
+                            "final_expected_start": master_chain[slot.index].final_start,
+                            "final_expected_end": master_chain[slot.index].final_end,
                             "visual_duration": slot.duration,
+                            "xfade_overlap": master_chain[slot.index].incoming_overlap,
                             "reason": slot.boundary_reason,
                         }
                         for slot in master_plan.slots

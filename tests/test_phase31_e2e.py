@@ -364,6 +364,9 @@ def test_F_shorts_portrait_selection_and_profile_separation(ffmpeg_paths, tmp_pa
             shorts_smart_visual_enabled=True,
             shorts_smart_visual_folders=[str(city)],
             shorts_smart_visual_cadence="every_1",
+            shorts_asset_cooldown_videos=0,
+            shorts_image_ratio_min=100,
+            shorts_image_ratio_max=100,
         ),
         tmp_path / "smart_shorts", aligner=aligner,
     )
