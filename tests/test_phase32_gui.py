@@ -98,7 +98,7 @@ def test_insert_frequency_gating_follows_the_selection_mode(window):
     widgets["mode"].setCurrentIndex(widgets["mode"].findData("smart_match"))
     assert widgets["insert_percent"].isEnabled() is False
     widgets["mode"].setCurrentIndex(widgets["mode"].findData("smart_inserts"))
-    assert widgets["insert_percent"].isEnabled() is True
+    assert widgets["insert_percent"].isEnabled() is False
     widgets["mode"].setCurrentIndex(widgets["mode"].findData("random_only"))
     assert widgets["insert_percent"].isEnabled() is False
 

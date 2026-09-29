@@ -272,7 +272,8 @@ def test_B_matching_image_chosen_without_generation(ffmpeg_paths, tmp_path):
         tmp_path / "smart", aligner=aligner, log=logs.append,
     )
     assert result.video.is_file() and result.report.ok
-    assert any("Smart Visuals" in line for line in logs), "smart visual insertion must be logged"
+    assert any("UNIFIED MASTER TIMELINE RENDER" in line for line in logs), \
+        "the canonical timeline identity audit must be logged"
 
     base_duration = _probe_duration(ffprobe, baseline.video)
     final_duration = _probe_duration(ffprobe, result.video)

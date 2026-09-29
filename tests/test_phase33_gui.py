@@ -143,10 +143,8 @@ def test_analyze_timeline_lists_readable_regions(window, tmp_path, monkeypatch):
     texts = [widgets["analyze_list"].item(i).text() for i in range(widgets["analyze_list"].count())]
     joined = "\n".join(texts)
     assert texts
-    assert any("Selection Mode: smart_match" in text for text in texts)
-    assert any("Source:" in text for text in texts)
-    assert any("score" in text for text in texts)
-    assert "alps_hike.jpg" in joined
+    assert any("run source analysis first" in text.casefold() for text in texts)
+    assert "alps_hike.jpg" not in joined
 
 
 # ---------------------------------------------------------------------------

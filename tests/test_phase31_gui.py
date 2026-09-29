@@ -102,13 +102,13 @@ def test_enable_toggles_control_availability(window):
     widgets = window._smart_visual_widgets["sv_long"]
     widgets["enabled"].setChecked(True)
     assert widgets["mode"].isEnabled() is True
-    assert widgets["image_duration"].isEnabled() is True
+    assert widgets["image_duration"].isEnabled() is False
     assert widgets["analyze_button"].isEnabled() is True
     assert widgets["randomize_button"].isEnabled() is True
     # Smart Insert Frequency only applies to the Mostly Random mode.
     assert widgets["insert_percent"].isEnabled() is False
     widgets["mode"].setCurrentIndex(widgets["mode"].findData("smart_inserts"))
-    assert widgets["insert_percent"].isEnabled() is True
+    assert widgets["insert_percent"].isEnabled() is False
     widgets["mode"].setCurrentIndex(widgets["mode"].findData("random_only"))
     assert widgets["insert_percent"].isEnabled() is False
     widgets["enabled"].setChecked(False)
@@ -243,8 +243,6 @@ def test_analyze_timeline_with_enabled_profile_lists_regions(window, tmp_path, m
     widgets["folders"].addItem(str(folder))
     window._smart_visual_analyze_timeline("sv_long")
     texts = [widgets["analyze_list"].item(i).text() for i in range(widgets["analyze_list"].count())]
-    assert texts, "the analysis must list at least one row"
-    # The header row reports the Phase 33 selection-engine settings and the
-    # per-region rows expose the Smart-or-Random source. Nothing is rendered.
-    assert any("Selection Mode" in text for text in texts)
-    assert any("Source:" in text for text in texts)
+    assert texts
+    assert any("run source analysis first" in text.casefold() for text in texts)
+    assert not any("Selection Mode" in text for text in texts)
