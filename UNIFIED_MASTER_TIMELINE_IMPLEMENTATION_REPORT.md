@@ -43,7 +43,7 @@ Long-Form and Shorts each persist:
 - minimum image percentage, default 30;
 - maximum image percentage, default 40.
 
-The ratio is enforced against slot count. The builder increases the balanced slot count, without violating the four-second floor, when a small integer slot count cannot represent the requested percentage interval. If one media kind is genuinely absent, it chooses the closest feasible distribution and records a diagnostic.
+The ratio is enforced against the available semantic slot count; it never invents a speech cut merely to make a percentage exactly representable. When a short timeline has no exact integer allocation in the requested range, or one media kind is absent, the builder chooses the closest feasible distribution and records a diagnostic.
 
 ## Strict pacing
 

@@ -188,9 +188,12 @@ def test_phase35_real_rendered_boundaries_and_drift(tmp_path, ffmpeg_paths):
     end_frame_drift = round((rendered_end - planned_end) * FPS)
     max_frames = max(abs(start_frame_drift), abs(end_frame_drift))
     requested = float(placement["requested_audio_boundary"])
-    no_mid_word = abs(planned_start - requested) <= 2.0 / FPS + 1e-6
+    # Production xfade geometry begins the visual during its incoming overlap;
+    # the semantic cut is the fully-visible boundary after that overlap.
+    fully_visible_start = planned_start + float(placement["xfade_overlap"])
+    no_mid_word = abs(fully_visible_start - requested) <= 2.0 / FPS + 1e-6
     for _word, word_start, word_end in WORD_TIMINGS:
-        if word_start + 2.0 / FPS < planned_start < word_end - 2.0 / FPS:
+        if word_start + 2.0 / FPS < fully_visible_start < word_end - 2.0 / FPS:
             no_mid_word = False
     visuals = [{
         "visual": selected_term,

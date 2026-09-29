@@ -66,8 +66,8 @@ def test_long_single_thought_splits_into_three_or_four_same_topic_visuals() -> N
 
 def test_ratio_is_enforced_across_available_slots(tmp_path: Path) -> None:
     timeline = MasterTimelineBuilder(
-        media_pool=_pool(tmp_path, images=10, videos=10), sections=[_section(80.0)],
-        voiceover_duration=80.0, mode=MASTER_MODE_SMART,
+        media_pool=_pool(tmp_path, images=10, videos=10), sections=[_section(96.0)],
+        voiceover_duration=96.0, mode=MASTER_MODE_SMART,
         image_ratio_min=30, image_ratio_max=40, seed_parts=("ratio",),
     ).build()
     assert 30.0 <= timeline.image_percent <= 40.0

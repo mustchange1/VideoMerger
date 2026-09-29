@@ -124,19 +124,20 @@ def _partition(
         # Avoid a sub-four-second remainder by reducing the count when legal.
         while count > 1 and target / count < MASTER_SLOT_MIN_SECONDS:
             count -= 1
-        # A percentage interval can be impossible for a small integer slot
-        # count (for example 30–40% of seven slots). Add balanced slots, while
-        # respecting the four-second floor, until an exact integer allocation
-        # exists.
-        maximum_count = max(count, int(math.floor(target / MASTER_SLOT_MIN_SECONDS)))
-        for candidate in range(count, maximum_count + 1):
-            low = int(math.ceil(candidate * image_ratio_min / 100.0 - 1e-12))
-            high = int(math.floor(candidate * image_ratio_max / 100.0 + 1e-12))
-            if low <= high:
-                count = candidate
-                break
-    boundaries = [target * index / count for index in range(count + 1)]
     ordered = sorted(sections, key=lambda item: (item.start, item.index))
+    # Preserve canonical sentence/thought boundaries whenever the sectioner
+    # already produced the required strict slot count. Ratio allocation must
+    # operate across available slots; it must never invent extra cuts merely
+    # to make a percentage exactly representable.
+    if len(ordered) == count and count > 1:
+        candidate_boundaries = [0.0] + [float(item.start) for item in ordered[1:]] + [target]
+        durations = [right - left for left, right in zip(candidate_boundaries, candidate_boundaries[1:])]
+        if all(MASTER_SLOT_MIN_SECONDS - 1e-9 <= value <= MASTER_SLOT_MAX_SECONDS + 1e-9 for value in durations):
+            boundaries = candidate_boundaries
+        else:
+            boundaries = [target * index / count for index in range(count + 1)]
+    else:
+        boundaries = [target * index / count for index in range(count + 1)]
     fallback = ordered[0] if ordered else SemanticSection(
         index=0, text="", start=0.0, end=target, speech_unit_indices=(),
         boundary_reason="inferred_thought", unsplittable=False,
